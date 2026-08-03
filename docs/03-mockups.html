@@ -1,99 +1,770 @@
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>SmartReco — Wireframes</title>
+<title>SmartReco — Product Mockups</title>
 <style>
-  body { font-family: Arial, sans-serif; background:#f4f4f2; margin:0; padding:32px; color:#222; }
-  h1 { font-size:20px; margin-bottom:4px; }
-  .sub { color:#666; font-size:13px; margin-bottom:32px; }
-  .screen { background:#fff; border:1px solid #ccc; border-radius:6px; padding:20px; margin-bottom:36px; max-width:900px; }
-  .screen h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin:0 0 14px; }
-  .box { border:1.5px dashed #999; border-radius:4px; padding:10px 12px; font-size:12px; color:#555; background:#fafafa; }
-  .row { display:flex; gap:12px; }
-  .col { flex:1; }
-  .nav { display:flex; gap:16px; align-items:center; border:1px solid #ccc; border-radius:4px; padding:10px 14px; font-size:12px; margin-bottom:14px; background:#fff; }
-  .nav .logo { font-weight:bold; }
-  .nav .spacer { flex:1; }
-  .card { border:1px solid #ccc; border-radius:4px; padding:10px; font-size:11px; background:#fff; }
-  .card .thumb { height:50px; background:repeating-linear-gradient(45deg,#eee,#eee 6px,#e4e4e4 6px,#e4e4e4 12px); border-radius:3px; margin-bottom:6px; }
-  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
-  .status-ok { color:#2a7a2a; font-weight:bold; }
-  .status-pending { color:#a06a00; font-weight:bold; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  th, td { border-bottom:1px solid #ddd; text-align:left; padding:6px 8px; }
-  .btn { display:inline-block; border:1px solid #888; border-radius:4px; padding:5px 10px; font-size:11px; background:#eee; }
-  .narrative { font-size:12px; line-height:1.5; padding:10px; background:#fdf6e3; border:1px solid #e8dcb0; border-radius:4px; margin-bottom:12px; }
-  .tag { display:inline-block; font-size:10px; background:#e8e8e8; border-radius:10px; padding:2px 8px; margin-top:4px; color:#555; }
+  :root{
+    --bg:#12151c;
+    --panel:#1a1f29;
+    --panel-2:#1f2530;
+    --line:#2b3240;
+    --line-soft:#232a36;
+    --text:#eceff3;
+    --muted:#8b93a3;
+    --muted-2:#5c6472;
+    --amber:#e8a33d;
+    --amber-dim:#e8a33d33;
+    --cyan:#5ec8d8;
+    --violet:#a78bfa;
+    --rose:#f0708a;
+    --teal:#4fd1a5;
+    --good:#4fd1a5;
+    --mono: ui-monospace, "SF Mono", "IBM Plex Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  :root[data-theme="light"]{
+    --bg:#f3f1ea; --panel:#fbfaf6; --panel-2:#ffffff; --line:#ddd7c8; --line-soft:#e7e2d4;
+    --text:#1c1a16; --muted:#6b6455; --muted-2:#8f8875;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    background-image:
+      radial-gradient(circle at 1px 1px, var(--line-soft) 1px, transparent 1px);
+    background-size: 28px 28px;
+    min-height:100vh;
+  }
+  a{color:inherit;}
+  ::selection{background:var(--amber); color:#12151c;}
+
+  /* ---- top nav ---- */
+  .topbar{
+    position:sticky; top:0; z-index:50;
+    display:flex; align-items:center; gap:6px;
+    padding:14px 20px; border-bottom:1px solid var(--line);
+    background:color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter:blur(10px);
+    flex-wrap:wrap;
+  }
+  .brand{
+    font-family:var(--mono); font-weight:700; font-size:14px; letter-spacing:.14em;
+    padding:6px 10px; border:1px solid var(--line); border-radius:4px; margin-right:10px;
+    color:var(--amber);
+  }
+  .brand small{color:var(--muted); font-weight:400; letter-spacing:.05em;}
+  .tabs{display:flex; gap:2px; flex-wrap:wrap;}
+  .tab{
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.04em; text-transform:uppercase;
+    padding:9px 14px; border-radius:4px; cursor:pointer; color:var(--muted); border:1px solid transparent;
+    user-select:none;
+  }
+  .tab:hover{color:var(--text); border-color:var(--line);}
+  .tab.active{color:var(--bg); background:var(--amber); font-weight:700;}
+  .topbar-spacer{flex:1;}
+  .persona-pill{
+    font-family:var(--mono); font-size:10.5px; color:var(--muted); border:1px dashed var(--line);
+    padding:6px 10px; border-radius:20px;
+  }
+
+  .page{display:none; padding:28px 20px 90px; max-width:1180px; margin:0 auto;}
+  .page.active{display:block;}
+
+  .page-head{margin-bottom:22px;}
+  .eyebrow{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 8px;
+  }
+  h1.page-title{font-size:26px; margin:0 0 6px; letter-spacing:-.01em;}
+  .page-sub{color:var(--muted); font-size:13.5px; max-width:640px; line-height:1.5; margin:0;}
+
+  /* ---- chips / filters ---- */
+  .filter-row{display:flex; gap:8px; flex-wrap:wrap; margin:18px 0 20px;}
+  .chip{
+    font-family:var(--mono); font-size:11.5px; padding:7px 12px; border-radius:20px;
+    border:1px solid var(--line); color:var(--muted); cursor:pointer; display:flex; gap:6px; align-items:center;
+  }
+  .chip .dot{width:7px; height:7px; border-radius:50%; display:inline-block;}
+  .chip.active{border-color:var(--amber); color:var(--text); background:var(--amber-dim);}
+  .searchbar{
+    display:flex; align-items:center; gap:10px; border:1px solid var(--line); background:var(--panel);
+    border-radius:8px; padding:11px 14px; margin-bottom:6px; max-width:520px;
+  }
+  .searchbar input{
+    background:none; border:none; outline:none; color:var(--text); font-size:13.5px; width:100%; font-family:var(--sans);
+  }
+  .searchbar input::placeholder{color:var(--muted-2);}
+  .kbd{font-family:var(--mono); font-size:10px; color:var(--muted-2); border:1px solid var(--line); border-radius:4px; padding:1px 5px;}
+
+  /* modality legend */
+  .legend{display:flex; gap:14px; flex-wrap:wrap; margin:14px 0 0; font-family:var(--mono); font-size:10.5px; color:var(--muted);}
+  .legend span{display:flex; align-items:center; gap:6px;}
+  .legend .dot{width:8px; height:8px; border-radius:2px;}
+
+  /* ---- catalog grid ---- */
+  .grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(230px,1fr)); gap:14px; margin-top:6px;}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:0;
+    position:relative; overflow:hidden; transition:border-color .15s ease, transform .15s ease;
+    cursor:pointer;
+  }
+  .card:hover{border-color:var(--muted-2); transform:translateY(-2px);}
+  .card .stripe{position:absolute; left:0; top:0; bottom:0; width:3px;}
+  .card-body{padding:14px 16px 16px 18px;}
+  .card-top{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;}
+  .part-id{font-family:var(--mono); font-size:10px; color:var(--muted-2);}
+  .modality-tag{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase;
+    padding:3px 7px; border-radius:3px; font-weight:700;
+  }
+  .card h3{font-size:15px; margin:0 0 3px; letter-spacing:-.005em;}
+  .provider{font-size:11.5px; color:var(--muted); margin:0 0 12px;}
+  .spec-row{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10.5px; color:var(--muted); padding:4px 0; border-top:1px dashed var(--line-soft);}
+  .spec-row b{color:var(--text); font-weight:600;}
+  .card-actions{display:flex; gap:8px; margin-top:12px;}
+  .btn{
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.03em; text-transform:uppercase;
+    padding:7px 10px; border-radius:5px; border:1px solid var(--line); background:var(--panel-2); color:var(--text);
+    cursor:pointer; flex:1; text-align:center;
+  }
+  .btn:hover{border-color:var(--muted-2);}
+  .btn.primary{background:var(--amber); color:#171208; border-color:var(--amber); font-weight:700;}
+  .btn.on{background:var(--amber-dim); border-color:var(--amber); color:var(--amber);}
+
+  /* compare tray */
+  .tray{
+    position:fixed; left:0; right:0; bottom:0; z-index:60;
+    display:flex; align-items:center; gap:14px; padding:14px 22px;
+    background:var(--panel-2); border-top:1px solid var(--line);
+    transform:translateY(100%); transition:transform .25s ease;
+  }
+  .tray.show{transform:translateY(0);}
+  .tray-slots{display:flex; gap:8px;}
+  .tray-slot{
+    font-family:var(--mono); font-size:11px; padding:6px 10px; border:1px solid var(--line); border-radius:5px; color:var(--text);
+    display:flex; align-items:center; gap:6px; background:var(--bg);
+  }
+  .tray-slot.empty{color:var(--muted-2); border-style:dashed;}
+  .tray .btn{flex:none; padding:9px 18px;}
+  .tray-note{font-family:var(--mono); font-size:10.5px; color:var(--muted); flex:1;}
+
+  /* ---- detail page ---- */
+  .detail-wrap{display:grid; grid-template-columns:1.3fr 1fr; gap:22px;}
+  @media (max-width:840px){.detail-wrap{grid-template-columns:1fr;}}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px;}
+  .detail-head{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px;}
+  .detail-head h2{font-size:22px; margin:0 0 4px;}
+  .spec-table{width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; margin-top:14px;}
+  .spec-table td{padding:9px 4px; border-top:1px solid var(--line-soft);}
+  .spec-table td:first-child{color:var(--muted); width:44%;}
+  .spec-table td:last-child{color:var(--text); text-align:right; font-weight:600;}
+  .desc{font-size:13.5px; line-height:1.65; color:var(--muted); margin-top:14px;}
+  .use-tags{display:flex; gap:6px; flex-wrap:wrap; margin-top:12px;}
+  .use-tag{font-family:var(--mono); font-size:10px; padding:4px 8px; border:1px solid var(--line); border-radius:20px; color:var(--muted);}
+  .related h4{font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 12px;}
+  .related-item{display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-top:1px solid var(--line-soft); font-size:12.5px;}
+  .related-item .rlt{font-family:var(--mono); font-size:10px; color:var(--muted-2);}
+
+  /* ---- compare page ---- */
+  .compare-table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:8px;}
+  table.compare{border-collapse:collapse; width:100%; min-width:640px;}
+  table.compare th, table.compare td{padding:13px 16px; text-align:left; border-bottom:1px solid var(--line-soft); font-size:13px;}
+  table.compare th{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); background:var(--panel); position:sticky; top:0;}
+  table.compare td.metric{font-family:var(--mono); color:var(--muted); font-size:11.5px;}
+  table.compare td.win{background:var(--amber-dim); font-weight:700; color:var(--amber); position:relative;}
+  table.compare td.win::after{content:"◆ best fit"; display:block; font-family:var(--mono); font-size:8.5px; color:var(--amber); margin-top:2px; font-weight:400;}
+  table.compare tr:first-child td{font-weight:700; font-size:14px;}
+
+  /* ---- dashboard ---- */
+  .stepper{display:flex; align-items:center; gap:0; margin:20px 0 26px; flex-wrap:wrap;}
+  .step{display:flex; align-items:center; gap:8px;}
+  .step .n{font-family:var(--mono); font-size:10.5px; width:22px; height:22px; border-radius:50%; border:1px solid var(--line); display:flex; align-items:center; justify-content:center; color:var(--muted);}
+  .step.done .n{background:var(--good); border-color:var(--good); color:#0d1a14; font-weight:700;}
+  .step.now .n{background:var(--amber); border-color:var(--amber); color:#171208; font-weight:700;}
+  .step .label{font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  .step.done .label, .step.now .label{color:var(--text);}
+  .step-line{width:26px; height:1px; background:var(--line); margin:0 8px;}
+
+  .narrative-card{
+    background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--amber);
+    border-radius:0 8px 8px 0; padding:20px 22px; margin-bottom:8px;
+  }
+  .narrative-card .tag-row{display:flex; gap:8px; margin-bottom:10px; align-items:center;}
+  .badge{font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.06em; padding:3px 8px; border-radius:3px;}
+  .badge.reason{background:var(--amber-dim); color:var(--amber);}
+  .badge.conf{border:1px solid var(--line); color:var(--muted);}
+  .narrative-text{font-size:15px; line-height:1.65; margin:0;}
+  .narrative-text b{color:var(--amber); font-weight:600;}
+  .delta-chip{font-family:var(--mono); font-size:10.5px; color:var(--teal); margin-top:12px; display:inline-block;}
+
+  .evidence-wrap{margin-top:28px;}
+  .evidence-wrap h4{font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-bottom:16px;}
+  .rec-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(250px,1fr)); gap:28px 16px;}
+  .rec-item{position:relative;}
+  .evidence-line{
+    position:absolute; top:-16px; left:20px; width:1px; height:16px;
+    background:repeating-linear-gradient(to bottom, var(--muted-2) 0 3px, transparent 3px 6px);
+  }
+  .evidence-note{
+    font-family:var(--mono); font-size:9.5px; color:var(--muted); position:absolute; top:-32px; left:10px;
+    background:var(--bg); padding:2px 4px; white-space:nowrap;
+  }
+
+  /* ---- activity log page ---- */
+  .activity-wrap{display:grid; grid-template-columns:1.4fr 1fr; gap:22px;}
+  @media (max-width:900px){.activity-wrap{grid-template-columns:1fr;}}
+  .log-row{display:grid; grid-template-columns:70px 90px 1fr; gap:12px; padding:11px 0; border-top:1px solid var(--line-soft); align-items:start;}
+  .log-row:first-child{border-top:none;}
+  .log-time{font-family:var(--mono); font-size:10.5px; color:var(--muted-2); padding-top:2px;}
+  .log-type{font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.04em; padding:3px 7px; border-radius:3px; height:fit-content; text-align:center;}
+  .log-detail{font-size:12.5px; color:var(--text); line-height:1.5;}
+  .log-detail span{color:var(--muted);}
+  .pipeline-flow{font-family:var(--mono); font-size:11.5px; line-height:2.1;}
+  .pipeline-flow .k{color:var(--muted);}
+  .pipeline-flow .v{color:var(--text); font-weight:600;}
+  .hash{color:var(--cyan);}
+  .divider-arrow{color:var(--muted-2); text-align:center; font-size:13px; margin:6px 0;}
+
+  /* ---- admin page ---- */
+  .admin-table{width:100%; border-collapse:collapse; margin-top:16px;}
+  .admin-table th{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); text-align:left; padding:10px 12px; border-bottom:1px solid var(--line);}
+  .admin-table td{padding:12px; border-bottom:1px solid var(--line-soft); font-size:13px;}
+  .sync-ok{color:var(--good); font-family:var(--mono); font-size:11px;}
+  .sync-pending{color:var(--amber); font-family:var(--mono); font-size:11px;}
+  .admin-actions a{font-family:var(--mono); font-size:11px; color:var(--muted); margin-right:10px; cursor:pointer;}
+  .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px;}
+  .form-grid .full{grid-column:1/-1;}
+  .field label{display:block; font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;}
+  .field input, .field select, .field textarea{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:9px 11px;
+    color:var(--text); font-family:var(--sans); font-size:13px; outline:none;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus{border-color:var(--amber);}
+  .field textarea{resize:vertical; min-height:60px;}
+
+  .note{
+    font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--panel);
+    border:1px dashed var(--line); border-radius:6px; padding:10px 12px; margin-top:22px;
+  }
+
+  @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+
+  /* ---- auth ---- */
+  .auth-wrap{display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:520px;}
+  @media (max-width:840px){.auth-wrap{grid-template-columns:1fr; min-height:0;}}
+  .auth-pitch{
+    background:var(--panel); padding:36px 32px; display:flex; flex-direction:column; justify-content:space-between;
+    border-right:1px solid var(--line); position:relative;
+  }
+  @media (max-width:840px){.auth-pitch{border-right:none; border-bottom:1px solid var(--line);}}
+  .auth-pitch .brand{margin:0 0 28px; display:inline-block;}
+  .auth-pitch h2{font-size:21px; line-height:1.35; margin:0 0 12px; max-width:340px;}
+  .auth-pitch p{color:var(--muted); font-size:13px; line-height:1.6; max-width:320px;}
+  .mini-ticket{
+    margin-top:24px; background:var(--panel-2); border:1px solid var(--line); border-left:3px solid var(--amber);
+    border-radius:0 6px 6px 0; padding:14px 16px; max-width:320px;
+  }
+  .mini-ticket .tag-row{display:flex; gap:6px; margin-bottom:8px;}
+  .mini-ticket p{margin:0; font-size:11.5px; color:var(--text); line-height:1.6;}
+  .mini-ticket p b{color:var(--amber);}
+  .auth-form-side{padding:36px 34px; display:flex; flex-direction:column;}
+  .auth-toggle{display:flex; gap:2px; border:1px solid var(--line); border-radius:6px; padding:3px; margin-bottom:26px; width:fit-content;}
+  .auth-toggle .opt{
+    font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding:7px 16px;
+    border-radius:4px; cursor:pointer; color:var(--muted);
+  }
+  .auth-toggle .opt.active{background:var(--amber); color:#171208; font-weight:700;}
+  .auth-field{margin-bottom:16px;}
+  .auth-field label{display:block; font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;}
+  .auth-field input{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:11px 12px;
+    color:var(--text); font-family:var(--sans); font-size:13.5px; outline:none;
+  }
+  .auth-field input:focus{border-color:var(--amber);}
+  .auth-field.only-register{display:none;}
+  .auth-form.register-mode .only-register{display:block;}
+  .auth-role-note{
+    font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--bg); border:1px dashed var(--line);
+    border-radius:6px; padding:11px 13px; margin:4px 0 20px; line-height:1.6;
+  }
+  .auth-role-note b{color:var(--text);}
+  .role-demo{display:flex; gap:8px; margin-top:2px;}
+  .role-demo .opt{
+    flex:1; font-family:var(--mono); font-size:10.5px; text-align:center; padding:8px; border:1px solid var(--line);
+    border-radius:5px; color:var(--muted); cursor:pointer;
+  }
+  .role-demo .opt.active{border-color:var(--amber); color:var(--amber); background:var(--amber-dim);}
+  .auth-submit{margin-top:auto; padding-top:6px;}
+  .auth-error{
+    display:none; font-family:var(--mono); font-size:11.5px; color:var(--rose); background:color-mix(in srgb, var(--rose) 14%, transparent);
+    border:1px solid var(--rose); border-radius:5px; padding:9px 12px; margin-bottom:16px;
+  }
+  .auth-error.show{display:block;}
+  .route-badge{
+    font-family:var(--mono); font-size:10.5px; color:var(--cyan); background:color-mix(in srgb, var(--cyan) 12%, transparent);
+    border:1px solid color-mix(in srgb, var(--cyan) 40%, transparent); border-radius:4px; padding:3px 9px; display:inline-block;
+  }
+  .route-badge.restricted{
+    color:var(--rose); background:color-mix(in srgb, var(--rose) 12%, transparent); border-color:color-mix(in srgb, var(--rose) 40%, transparent);
+  }
+  .admin-auth-side{border-top:3px solid var(--rose);}
+  .lock-row{display:flex; align-items:center; gap:8px; margin-bottom:18px;}
+  .lock-row .glyph{
+    width:30px; height:30px; border:1px solid var(--rose); border-radius:6px; display:flex; align-items:center;
+    justify-content:center; color:var(--rose); font-size:14px; flex:none;
+  }
+  .lock-row .txt{font-family:var(--mono); font-size:10.5px; color:var(--muted); line-height:1.5;}
+  .lock-row .txt b{color:var(--text);}
 </style>
-</head>
-<body>
 
-<h1>SmartReco — low-fidelity wireframes</h1>
-<div class="sub">MVP screens · not final visual design · for flow/layout validation only</div>
+<div class="topbar">
+  <div class="brand">SMARTRECO <small>/ model catalog</small></div>
+  <div class="tabs" id="tabs">
+    <div class="tab active" data-page="auth">Login</div>
+    <div class="tab" data-page="admin-auth">Admin login</div>
+    <div class="tab" data-page="catalog">Catalog</div>
+    <div class="tab" data-page="detail">Model</div>
+    <div class="tab" data-page="compare">Compare</div>
+    <div class="tab" data-page="dashboard">Dashboard</div>
+    <div class="tab" data-page="activity">Your activity</div>
+    <div class="tab" data-page="admin">Admin</div>
+  </div>
+  <div class="topbar-spacer"></div>
+  <div class="persona-pill" id="persona-pill">not signed in</div>
+</div>
 
-<div class="screen">
-  <h2>1. Catalog / search (learner, unauthenticated or authenticated)</h2>
-  <div class="nav"><span class="logo">SmartReco</span><span>Catalog</span><span>Dashboard</span><span class="spacer"></span><span>[ Search box ]</span><span class="btn">Login</span></div>
-  <div class="row" style="margin-bottom:10px;">
-    <div class="box" style="width:140px;">Category filters<br>▢ Agentic AI<br>▢ Data Science<br>▢ Cloud</div>
-    <div class="col">
-      <div class="cards">
-        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
-        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
-        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
-        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
+<!-- ================= AUTH (user) ================= -->
+<div class="page active" id="page-auth">
+  <div class="page-head">
+    <p class="eyebrow">00 — Sign in <span class="route-badge" style="margin-left:8px;">POST /login</span></p>
+    <h1 class="page-title">Sign in to your builder account</h1>
+    <p class="page-sub">Separate module from admin — this form only ever creates or authenticates a standard user account. There's no role picker here on purpose.</p>
+  </div>
+
+  <div class="auth-wrap">
+    <div class="auth-pitch">
+      <div>
+        <div class="brand">SMARTRECO <small>/ model catalog</small></div>
+        <h2>Compare AI models the way you'd compare lab equipment — by spec, not by hype.</h2>
+        <p>Every session you spend browsing quietly builds a picture of what you're actually trying to build — see it explained, never hidden, on the Activity tab.</p>
+      </div>
+      <div class="mini-ticket">
+        <div class="tag-row"><span class="badge reason">preview</span></div>
+        <p>"You've been comparing <b>low-latency voice models</b> — here's what fits that pattern..."</p>
+      </div>
+    </div>
+
+    <div class="auth-form-side">
+      <div class="auth-toggle" id="auth-toggle">
+        <div class="opt active" data-mode="login">Sign in</div>
+        <div class="opt" data-mode="register">Register</div>
+      </div>
+
+      <div class="auth-error" id="auth-error">Wrong email or password. Try again, or register below.</div>
+
+      <form class="auth-form" id="auth-form" onsubmit="return false;">
+        <div class="auth-field">
+          <label>Email</label>
+          <input type="email" placeholder="you@company.com" value="builder@smartreco.dev">
+        </div>
+        <div class="auth-field">
+          <label>Password</label>
+          <input type="password" placeholder="••••••••" value="••••••••">
+        </div>
+        <div class="auth-field only-register">
+          <label>Confirm password</label>
+          <input type="password" placeholder="••••••••">
+        </div>
+
+        <div class="auth-submit">
+          <div class="btn primary" style="padding:12px; font-size:11.5px;" onclick="submitAuth()">Sign in →</div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ================= AUTH (admin) ================= -->
+<div class="page" id="page-admin-auth">
+  <div class="page-head">
+    <p class="eyebrow">00b — Admin sign in <span class="route-badge restricted" style="margin-left:8px;">POST /admin/login</span></p>
+    <h1 class="page-title">Curator console access</h1>
+    <p class="page-sub">A distinct module from the builder login — different route, different form, no self-registration. Admin accounts are provisioned ahead of time, not created here.</p>
+  </div>
+
+  <div class="auth-wrap">
+    <div class="auth-pitch admin-auth-side">
+      <div>
+        <div class="brand">SMARTRECO <small>/ admin console</small></div>
+        <div class="lock-row" style="margin-top:22px;">
+          <div class="glyph">⛊</div>
+          <div class="txt">Restricted area.<br><b>Curator</b> role required — checked server-side on every admin route, never by hiding a nav item.</div>
+        </div>
+        <p>Manage the model catalog: create, edit, delete, and watch each write dual-write into the vector store with a visible sync status.</p>
+      </div>
+      <div class="mini-ticket" style="border-left-color:var(--rose);">
+        <div class="tag-row"><span class="badge" style="background:color-mix(in srgb, var(--rose) 18%, transparent); color:var(--rose);">no self-registration</span></div>
+        <p>Lost access? Ask another curator to re-provision your account — there's no "forgot password" self-serve flow in scope for this build.</p>
+      </div>
+    </div>
+
+    <div class="auth-form-side">
+      <div class="lock-row">
+        <div class="glyph">⛊</div>
+        <div class="txt">Signing in here always resolves to the <b>Admin</b> app, never the builder catalog.</div>
+      </div>
+
+      <div class="auth-error" id="admin-auth-error">Wrong email or password. Admin accounts are not self-service — contact another curator if you're locked out.</div>
+
+      <form class="auth-form" id="admin-auth-form" onsubmit="return false;">
+        <div class="auth-field">
+          <label>Admin email</label>
+          <input type="email" placeholder="curator@smartreco.dev" value="curator@smartreco.dev">
+        </div>
+        <div class="auth-field">
+          <label>Password</label>
+          <input type="password" placeholder="••••••••" value="••••••••">
+        </div>
+
+        <div class="auth-submit">
+          <div class="btn primary" style="padding:12px; font-size:11.5px; background:var(--rose); border-color:var(--rose);" onclick="submitAdminAuth()">Sign in to admin →</div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ================= CATALOG ================= -->
+<div class="page" id="page-catalog">
+  <div class="page-head">
+    <p class="eyebrow">01 — Catalog</p>
+    <h1 class="page-title">Find the model that fits, not just the one you've heard of</h1>
+    <p class="page-sub">Every view, search and comparison here quietly trains your dashboard — nothing is sent anywhere until you batch-flush, and you can see exactly what's tracked on the Activity tab.</p>
+  </div>
+
+  <div class="searchbar">
+    <span style="color:var(--muted-2)">⌕</span>
+    <input placeholder="Search by task — &quot;real-time voice&quot;, &quot;long context summarization&quot;…" value="real-time voice">
+    <span class="kbd">/</span>
+  </div>
+
+  <div class="filter-row" id="modality-filters">
+    <div class="chip active" data-dot="var(--cyan)"><span class="dot" style="background:var(--cyan)"></span>LLM</div>
+    <div class="chip" data-dot="var(--amber)"><span class="dot" style="background:var(--amber)"></span>Voice</div>
+    <div class="chip" data-dot="var(--violet)"><span class="dot" style="background:var(--violet)"></span>Image</div>
+    <div class="chip" data-dot="var(--rose)"><span class="dot" style="background:var(--rose)"></span>Video</div>
+    <div class="chip" data-dot="var(--teal)"><span class="dot" style="background:var(--teal)"></span>Embedding</div>
+    <div class="chip" style="margin-left:10px; border-style:dashed;">Provider ▾</div>
+    <div class="chip" style="border-style:dashed;">Latency &lt; 300ms</div>
+  </div>
+
+  <div class="grid" id="catalog-grid"></div>
+</div>
+
+<!-- compare tray -->
+<div class="tray" id="tray">
+  <span class="tray-note">Comparing <b id="tray-count">2</b> models — evaluation events like this drive your dashboard narrative</span>
+  <div class="tray-slots">
+    <div class="tray-slot">ElevenLabs Turbo v2.5 ×</div>
+    <div class="tray-slot">PlayHT Play 3.0 ×</div>
+    <div class="tray-slot empty">+ add one more</div>
+  </div>
+  <div class="btn primary" onclick="go('compare')" style="flex:none;">Compare →</div>
+</div>
+
+<!-- ================= MODEL DETAIL ================= -->
+<div class="page" id="page-detail">
+  <div class="page-head">
+    <p class="eyebrow">02 — Model detail · fires <span style="color:var(--text)">model_view</span></p>
+  </div>
+  <div class="detail-wrap">
+    <div class="panel">
+      <div class="detail-head">
+        <div>
+          <span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span>
+          <h2>ElevenLabs Turbo v2.5</h2>
+          <p class="provider">ElevenLabs · MDL-0142</p>
+        </div>
+        <div class="btn on" style="flex:none; padding:9px 16px;">✓ Added to compare</div>
+      </div>
+      <p class="desc">Low-latency text-to-speech tuned for conversational agents. Streams audio in chunks as small as 75ms, trading a small amount of naturalness for real-time responsiveness — the model builders reach for when a voice agent can't afford to feel laggy.</p>
+      <table class="spec-table">
+        <tr><td>Price</td><td>$0.0002 / character</td></tr>
+        <tr><td>Latency (first byte)</td><td>~275ms</td></tr>
+        <tr><td>Context window</td><td>5,000 characters / request</td></tr>
+        <tr><td>Languages</td><td>29</td></tr>
+        <tr><td>Source</td><td style="color:var(--cyan)">elevenlabs.io/docs · verified</td></tr>
+      </table>
+      <div class="use-tags">
+        <span class="use-tag">real-time voice</span>
+        <span class="use-tag">customer support agents</span>
+        <span class="use-tag">low-latency streaming</span>
+      </div>
+    </div>
+    <div class="panel related">
+      <h4>You might also be looking at</h4>
+      <div class="related-item"><span>PlayHT Play 3.0</span><span class="rlt">~330ms · $0.0003/char</span></div>
+      <div class="related-item"><span>OpenAI TTS-1</span><span class="rlt">~410ms · $0.015/1K char</span></div>
+      <div class="related-item"><span>Cartesia Sonic</span><span class="rlt">~135ms · $0.00015/char</span></div>
+      <p class="note" style="margin-top:20px;">You've spent 41s on this page and compared it once — enough for the dwell + comparison signal to count toward your next recommendation.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ================= COMPARE ================= -->
+<div class="page" id="page-compare">
+  <div class="page-head">
+    <p class="eyebrow">03 — Compare · fires <span style="color:var(--text)">model_compare</span></p>
+    <h1 class="page-title">Two voice models, side by side</h1>
+    <p class="page-sub">The dimension you've dwelt on most while browsing — latency — is auto-highlighted below.</p>
+  </div>
+  <div class="compare-table-wrap">
+    <table class="compare">
+      <tr><th>Spec</th><th>ElevenLabs Turbo v2.5</th><th>PlayHT Play 3.0</th></tr>
+      <tr><td class="metric">Provider</td><td>ElevenLabs</td><td>PlayHT</td></tr>
+      <tr><td class="metric">Latency ↓ your focus</td><td class="win">~275ms</td><td>~330ms</td></tr>
+      <tr><td class="metric">Price</td><td>$0.0002/char</td><td>$0.0003/char</td></tr>
+      <tr><td class="metric">Languages</td><td>29</td><td class="win">142</td></tr>
+      <tr><td class="metric">Max request length</td><td>5,000 chars</td><td>10,000 chars</td></tr>
+      <tr><td class="metric">Streaming</td><td>Chunked, 75ms</td><td>Chunked, 120ms</td></tr>
+    </table>
+  </div>
+  <p class="note">This comparison is itself a tracked signal — adding these two models to the compare tray logs a single <span style="color:var(--text)">model_compare</span> event; simply viewing both in one session does not.</p>
+</div>
+
+<!-- ================= DASHBOARD ================= -->
+<div class="page" id="page-dashboard">
+  <div class="page-head">
+    <p class="eyebrow">04 — Dashboard</p>
+    <h1 class="page-title">Your recommendation</h1>
+  </div>
+
+  <div class="stepper">
+    <div class="step done"><div class="n">✓</div><div class="label">Analyze</div></div><div class="step-line"></div>
+    <div class="step done"><div class="n">✓</div><div class="label">Retrieve</div></div><div class="step-line"></div>
+    <div class="step done"><div class="n">✓</div><div class="label">Grade / Refine</div></div><div class="step-line"></div>
+    <div class="step now"><div class="n">4</div><div class="label">Generate</div></div><div class="step-line"></div>
+    <div class="step"><div class="n">5</div><div class="label">Deliver</div></div>
+  </div>
+
+  <div class="narrative-card">
+    <div class="tag-row">
+      <span class="badge reason">trigger: event_count</span>
+      <span class="badge conf">grounded · 5/5 candidates verified</span>
+    </div>
+    <p class="narrative-text">You've spent the week evaluating <b>low-latency voice models</b> — three visits to ElevenLabs Turbo v2.5, a head-to-head against PlayHT, and two searches for "real-time voice." Here's what else fits that pattern.</p>
+    <span class="delta-chip">↑ 2 new picks since your last visit (Tue)</span>
+  </div>
+
+  <div class="evidence-wrap">
+    <h4>Recommended — because you did this ↓</h4>
+    <div class="rec-grid">
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">3 views · ElevenLabs Turbo</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0198</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>Cartesia Sonic</h3>
+            <p class="provider">Cartesia</p>
+            <div class="spec-row"><span>Latency</span><b>~135ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.00015/char</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">matched search</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0176</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>Deepgram Aura</h3>
+            <p class="provider">Deepgram</p>
+            <div class="spec-row"><span>Latency</span><b>~200ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.0135/1K char</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">1 comparison · PlayHT vs 11L</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0142</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>ElevenLabs Turbo v2.5</h3>
+            <p class="provider">ElevenLabs</p>
+            <div class="spec-row"><span>Latency</span><b>~275ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.0002/char</b></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
-<div class="screen">
-  <h2>2. Product detail (fires product_view + dwell-time tracking)</h2>
-  <div class="row">
-    <div class="box" style="width:260px;height:120px;">[ product image / placeholder ]</div>
-    <div class="col box">
-      <b>Course title</b><br>Category · $price<br><br>
-      Description text goes here...<br><br>
-      <span class="btn">Add to cart</span>
+<!-- ================= ACTIVITY LOG ================= -->
+<div class="page" id="page-activity">
+  <div class="page-head">
+    <p class="eyebrow">05 — Your activity</p>
+    <h1 class="page-title">Everything tracked, and where it went</h1>
+    <p class="page-sub">Nothing here is hidden from you. This is the same event stream the agent reads — batched client-side, never one network call per click.</p>
+  </div>
+  <div class="activity-wrap">
+    <div class="panel">
+      <div class="log-row">
+        <div class="log-time">14:02:11</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 41s</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:02:58</div>
+        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
+        <div class="log-detail">query: <span>"real-time voice"</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:04:20</div>
+        <div class="log-type" style="background:var(--cyan)33; color:var(--cyan);">model_compare</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>vs</span> PlayHT Play 3.0</div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:05:03</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">PlayHT Play 3.0 <span>· dwell 18s</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:06:47</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 22s (2nd visit)</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:09:15</div>
+        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
+        <div class="log-detail">query: <span>"lowest latency tts"</span></div>
+      </div>
+      <p class="note">6 events batched · flushed via sendBeacon at 14:09:16 · zero blocking calls on the browsing path</p>
+    </div>
+    <div class="panel">
+      <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 16px;">How this became your recommendation</h4>
+      <div class="pipeline-flow">
+        <div><span class="k">events_since_last</span> → <span class="v">6</span></div>
+        <div><span class="k">trigger</span> → <span class="v">event_count ≥ 5 ✓</span></div>
+      </div>
+      <div class="divider-arrow">↓</div>
+      <div class="pipeline-flow"><span class="k">behavior_summary</span> → <span class="v">"evaluating low-latency voice models"</span></div>
+      <div class="divider-arrow">↓</div>
+      <div class="pipeline-flow"><span class="k">activity_hash</span> → <span class="hash">a91f...02c4</span></div>
+      <div class="divider-arrow">↓</div>
+      <div class="pipeline-flow"><span class="k">retrieved</span> → <span class="v">8 candidates, top-k</span></div>
+      <div class="pipeline-flow"><span class="k">grade/refine</span> → <span class="v">passed, 0 retries</span></div>
+      <div class="divider-arrow">↓</div>
+      <div class="pipeline-flow"><span class="k">delivered</span> → <span class="v">3 models · dashboard</span></div>
+      <p class="note" style="margin-top:20px;">If your next session produces the same <span class="hash">activity_hash</span>, no new Mesh call is made — you'll see the same recommendation, not a reshuffled one.</p>
     </div>
   </div>
 </div>
 
-<div class="screen">
-  <h2>3. Learner dashboard — recommendations</h2>
-  <div class="nav"><span class="logo">SmartReco</span><span>Catalog</span><span><b>Dashboard</b></span><span class="spacer"></span><span class="btn">Logout</span></div>
-  <div class="narrative">
-    "You've been circling back to agentic AI content all week — three visits to advanced course
-    pages and two searches for 'multi-agent'. Here's where that leads next..."
+<!-- ================= ADMIN ================= -->
+<div class="page" id="page-admin">
+  <div class="page-head">
+    <p class="eyebrow">06 — Admin · curator</p>
+    <h1 class="page-title">Model catalog</h1>
+    <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
   </div>
-  <div class="cards">
-    <div class="card"><div class="thumb"></div>Recommended course A<br><span class="tag">Because you viewed: Agentic AI Fundamentals</span></div>
-    <div class="card"><div class="thumb"></div>Recommended course B<br><span class="tag">Because you searched: multi-agent</span></div>
-    <div class="card"><div class="thumb"></div>Recommended course C<br><span class="tag">Because you viewed: LangGraph 101</span></div>
-  </div>
-</div>
-
-<div class="screen">
-  <h2>4. Admin — product list (sync status is a visible UX element)</h2>
-  <div class="nav"><span class="logo">SmartReco Admin</span><span>Products</span><span class="spacer"></span><span class="btn">+ Add product</span></div>
-  <table>
-    <tr><th>Title</th><th>Category</th><th>Price</th><th>Vector sync</th><th></th></tr>
-    <tr><td>Agentic AI Fundamentals</td><td>Agentic AI</td><td>$49</td><td class="status-ok">✓ synced</td><td>Edit · Delete</td></tr>
-    <tr><td>LangGraph 101</td><td>Agentic AI</td><td>$39</td><td class="status-pending">⋯ indexing</td><td>Edit · Delete</td></tr>
-    <tr><td>SQL for Analysts</td><td>Data Science</td><td>$29</td><td class="status-ok">✓ synced</td><td>Edit · Delete</td></tr>
+  <table class="admin-table">
+    <tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr>
+    <tr><td>GPT-4o mini</td><td>OpenAI</td><td>LLM</td><td>$0.15/1M tok</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
+    <tr><td>ElevenLabs Turbo v2.5</td><td>ElevenLabs</td><td>Voice</td><td>$0.0002/char</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
+    <tr><td>Flux.1 Pro</td><td>Black Forest Labs</td><td>Image</td><td>$0.05/image</td><td class="sync-pending">⋯ indexing</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
+    <tr><td>Runway Gen-3</td><td>Runway</td><td>Video</td><td>$0.10/sec</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
   </table>
-</div>
 
-<div class="screen">
-  <h2>5. Admin — add / edit product form</h2>
-  <div class="box" style="max-width:420px;">
-    Title: [ ______________________ ]<br><br>
-    Description: [ ______________________ ]<br><br>
-    Category: [ dropdown ]&nbsp;&nbsp;Price: [ ____ ]<br><br>
-    <span class="btn">Save</span>
+  <div class="panel" style="margin-top:26px;">
+    <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 4px;">Add model</h4>
+    <div class="form-grid">
+      <div class="field"><label>Title</label><input placeholder="e.g. Cartesia Sonic"></div>
+      <div class="field"><label>Provider</label><input placeholder="e.g. Cartesia"></div>
+      <div class="field"><label>Modality</label><select><option>LLM</option><option selected>Voice</option><option>Image</option><option>Video</option><option>Embedding</option></select></div>
+      <div class="field"><label>Price / unit</label><input placeholder="$0.00015/char"></div>
+      <div class="field"><label>Latency (ms)</label><input placeholder="135"></div>
+      <div class="field"><label>Context window</label><input placeholder="n/a for voice"></div>
+      <div class="field full"><label>Use-case tags</label><input placeholder="real-time voice, customer support"></div>
+      <div class="field full"><label>Description</label><textarea placeholder="What this model is best at, in plain terms."></textarea></div>
+      <div class="field full"><label>Source URL</label><input placeholder="https://…"></div>
+    </div>
+    <div style="margin-top:16px; display:flex; gap:10px;">
+      <div class="btn primary" style="flex:none; padding:10px 22px;">Save model</div>
+      <div class="btn" style="flex:none; padding:10px 22px;">Cancel</div>
+    </div>
   </div>
 </div>
 
-</body>
-</html>
+<script>
+  const MODELS = [
+    {id:'MDL-0201', name:'GPT-4o mini', provider:'OpenAI', mod:'LLM', color:'var(--cyan)', s1:'Context', v1:'128K', s2:'Price', v2:'$0.15/1M tok'},
+    {id:'MDL-0188', name:'Claude Haiku 4.5', provider:'Anthropic', mod:'LLM', color:'var(--cyan)', s1:'Context', v1:'200K', s2:'Price', v2:'$0.25/1M tok'},
+    {id:'MDL-0165', name:'Gemini 1.5 Flash', provider:'Google', mod:'LLM', color:'var(--cyan)', s1:'Context', v1:'1M', s2:'Price', v2:'$0.075/1M tok'},
+    {id:'MDL-0142', name:'ElevenLabs Turbo v2.5', provider:'ElevenLabs', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~275ms', s2:'Price', v2:'$0.0002/char'},
+    {id:'MDL-0176', name:'Deepgram Aura', provider:'Deepgram', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~200ms', s2:'Price', v2:'$0.0135/1K char'},
+    {id:'MDL-0198', name:'Cartesia Sonic', provider:'Cartesia', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~135ms', s2:'Price', v2:'$0.00015/char'},
+    {id:'MDL-0119', name:'Flux.1 Pro', provider:'Black Forest Labs', mod:'Image', color:'var(--violet)', s1:'Resolution', v1:'2048px', s2:'Price', v2:'$0.05/image'},
+    {id:'MDL-0103', name:'Stable Diffusion 3.5', provider:'Stability', mod:'Image', color:'var(--violet)', s1:'Resolution', v1:'1536px', s2:'Price', v2:'$0.035/image'},
+    {id:'MDL-0087', name:'Runway Gen-3', provider:'Runway', mod:'Video', color:'var(--rose)', s1:'Max length', v1:'10s', s2:'Price', v2:'$0.10/sec'},
+    {id:'MDL-0071', name:'Voyage-3', provider:'Voyage AI', mod:'Embedding', color:'var(--teal)', s1:'Dimensions', v1:'1024', s2:'Price', v2:'$0.02/1M tok'},
+  ];
+
+  const grid = document.getElementById('catalog-grid');
+  grid.innerHTML = MODELS.map(m => `
+    <div class="card" onclick="go('detail')">
+      <div class="stripe" style="background:${m.color}"></div>
+      <div class="card-body">
+        <div class="card-top">
+          <span class="part-id">${m.id}</span>
+          <span class="modality-tag" style="background:color-mix(in srgb, ${m.color} 22%, transparent); color:${m.color};">${m.mod}</span>
+        </div>
+        <h3>${m.name}</h3>
+        <p class="provider">${m.provider}</p>
+        <div class="spec-row"><span>${m.s1}</span><b>${m.v1}</b></div>
+        <div class="spec-row"><span>${m.s2}</span><b>${m.v2}</b></div>
+        <div class="card-actions">
+          <div class="btn" onclick="event.stopPropagation(); this.classList.toggle('on'); this.textContent = this.classList.contains('on') ? '✓ Comparing' : '+ Compare';">+ Compare</div>
+          <div class="btn primary" onclick="event.stopPropagation(); go('detail');">View</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  function go(page){
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+    document.querySelector(`.tab[data-page="${page}"]`).classList.add('active');
+    window.scrollTo({top:0, behavior:'instant'});
+  }
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => go(t.dataset.page)));
+  document.querySelectorAll('#modality-filters .chip').forEach(c => c.addEventListener('click', () => c.classList.toggle('active')));
+
+  setTimeout(() => document.getElementById('tray').classList.add('show'), 500);
+
+  // ---- auth (user) ----
+  document.querySelectorAll('#auth-toggle .opt').forEach(o => o.addEventListener('click', () => {
+    document.querySelectorAll('#auth-toggle .opt').forEach(x => x.classList.remove('active'));
+    o.classList.add('active');
+    const registering = o.dataset.mode === 'register';
+    document.getElementById('auth-form').classList.toggle('register-mode', registering);
+    document.querySelector('#page-auth .auth-submit .btn').textContent = registering ? 'Create account →' : 'Sign in →';
+    document.getElementById('auth-error').classList.remove('show');
+  }));
+
+  function submitAuth(){
+    document.getElementById('auth-error').classList.remove('show');
+    document.getElementById('persona-pill').textContent = 'signed in as: builder';
+    go('catalog');
+  }
+
+  // ---- auth (admin) ----
+  function submitAdminAuth(){
+    document.getElementById('admin-auth-error').classList.remove('show');
+    document.getElementById('persona-pill').textContent = 'signed in as: curator (admin)';
+    go('admin');
+  }
+</script>

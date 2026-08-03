@@ -14,7 +14,7 @@ logic is trivial. This exists specifically to avoid the rubric's "faked/stubbed 
 by day 3 you already have a genuine Mesh API call, a genuine vector query, and a genuine dual-write.
 
 Scope:
-- AUTH-1, AUTH-2, AUTH-3, AUTH-4
+- AUTH-1, AUTH-2, AUTH-3, AUTH-4, AUTH-5, AUTH-6 (builder and admin login as separate modules from day 1 — cheap to do now, awkward to retrofit later)
 - CAT-1, CAT-4 (create only, dual-write working)
 - TRK-1, TRK-4 (tracking exists, naive per-event POST is acceptable here — batching comes next)
 - AGT-3, AGT-5, AGT-7 (single-shot: retrieve top-k, one LLM call, no grading/refine/cache yet)
@@ -26,12 +26,14 @@ Explicitly deferred: retries/grading, caching, batching, scheduling, observabili
 
 ## Iteration 1 — Production hardening of the core loop
 
-Maps to: TRK-2, TRK-3, TRK-5, AGT-1, AGT-2, AGT-6, CAT-2, CAT-3, NFR-1, NFR-2, NFR-3
+Maps to: TRK-2, TRK-3, TRK-5, TRK-6, AGT-1, AGT-2, AGT-6, CAT-2, CAT-3, DLV-4, NFR-1, NFR-2, NFR-3
 
 - Client-side event batching + `sendBeacon` flush
 - Trigger engine (event-count / time-since-last / cooldown) replacing "call LLM every request"
 - Activity-hash caching to skip redundant generations
-- Full CRUD on products with sync-status surfaced
+- Full CRUD on models with sync-status surfaced
+- Explicit `model_compare` event (compare tray) + same-modality view clustering in `analyze_activity`
+- `GET /api/activity/me` (DLV-4) — read-only, reuses data already persisted for AGT-2/AGT-6/NFR-6
 - This is the point where the "efficiency & production thinking" rubric line starts being satisfied
 
 **Sprint review demo:** show two browsing sessions — one that changes the recommendation, one that
@@ -67,7 +69,8 @@ Priority order (highest score-per-effort first, per team assessment):
 - README: architecture summary, setup steps, bonus features implemented, known limitations
 - `.gitignore` includes `.env`; GitHub secrets (`MESH_API_KEY`, `SUBMISSION_TOKEN`) configured
 - CI workflow file added, pushed, verified green in Actions tab
-- Seed script populating demo users/products so judges see something real without manual setup
+- Seed script populating demo users/models (curated AI-model catalog data, see
+  `docs/00-Domain-Decision.md` §6) so judges see something real without manual setup
 - Optional: deployed URL + 3–5 min demo video
 
 ---

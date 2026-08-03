@@ -2,9 +2,11 @@
 
 ## Project overview
 
-SmartReco is a planned FastAPI application for a learning-platform recommendation agent. It will
-track learner behavior, retrieve courses with Chroma semantic search, and generate grounded
-recommendations through the Mesh API using a LangGraph pipeline.
+SmartReco is a planned FastAPI application for an AI model/tool catalog recommendation agent. It
+will track a builder's browsing/comparison behavior, retrieve AI models with Chroma semantic
+search, and generate grounded, comparison-driven recommendations through the Mesh API using a
+LangGraph pipeline. See `docs/00-Domain-Decision.md` for why this domain (over alternatives like a
+grocery/quick-commerce catalog) was chosen.
 
 The repository is currently in the planning phase. The implementation directories (`app/`,
 `tests/`) and the seed script referenced by the README do not exist yet. Do not assume that the
@@ -14,14 +16,16 @@ documented runtime commands work until MVP-0 scaffolding has been added.
 
 Read these documents before making architectural or product changes:
 
-1. `docs/01-BRD.md` — business goals, scope, constraints, risks, and success metrics.
-2. `docs/02-FRD.md` — functional requirements and requirement IDs (`AUTH`, `CAT`, `TRK`, `AGT`,
+1. `docs/00-Domain-Decision.md` — why the AI model/tool catalog domain was chosen over the
+   alternatives considered.
+2. `docs/01-BRD.md` — business goals, scope, constraints, risks, and success metrics.
+3. `docs/02-FRD.md` — functional requirements and requirement IDs (`AUTH`, `CAT`, `TRK`, `AGT`,
    `DLV`, `OBS`).
-3. `docs/03-UX-Flows.md` and `docs/03-mockups.html` — personas, screens, and user flows.
-4. `docs/04-MVP-Roadmap.md` — delivery order and definition of done.
-5. `docs/05-HLD.md` — component boundaries and data flow.
-6. `docs/06-LLD.md` — schema, API paths, trigger logic, and LangGraph node contracts.
-7. `docs/07-Test-Strategy.md` — test cases mapped to requirements.
+4. `docs/03-UX-Flows.md` and `docs/03-mockups.html` — personas, screens, and user flows.
+5. `docs/04-MVP-Roadmap.md` — delivery order and definition of done.
+6. `docs/05-HLD.md` — component boundaries and data flow.
+7. `docs/06-LLD.md` — schema, API paths, trigger logic, and LangGraph node contracts.
+8. `docs/07-Test-Strategy.md` — test cases mapped to requirements.
 
 When code and planning documents disagree, preserve the requirement IDs and update the relevant
 design document as part of the change.
@@ -30,25 +34,30 @@ design document as part of the change.
 
 - FastAPI serves the API and server-rendered Jinja2/vanilla-JS UI.
 - SQLAlchemy uses SQLite locally and should remain portable to Postgres.
-- SQL is the source of truth for users, products, events, and recommendations.
-- Chroma stores the semantic product index. Product create/edit/delete operations must keep SQL
+- SQL is the source of truth for users, models, events, and recommendations.
+- Chroma stores the semantic model index. Model create/edit/delete operations must keep SQL
   and Chroma synchronized and expose `vector_synced` when synchronization fails.
-- Behavioral events are batched in the browser and ingested through `POST /api/events/batch`.
+- Behavioral events are batched in the browser and ingested through `POST /api/events/batch`
+  (`model_view`, `search`, `model_compare`, `dwell`, etc.).
 - Event ingestion must stay cheap and must not call an LLM for every event.
 - Trigger evaluation decides whether to start a background recommendation run.
 - The recommendation pipeline is expressed as named LangGraph nodes: analyze activity, retrieve,
-  grade/refine, generate, and store/deliver.
+  grade/refine, generate, and store/deliver. The generated narrative is comparison-driven (e.g.
+  "you've been comparing low-latency voice models").
 - Every LLM call must use the Mesh API through its OpenAI-compatible base URL. Never add direct
   OpenAI, Anthropic, or Gemini calls outside Mesh configuration.
+- Model catalog data (provider, modality, price, latency, context window) comes either from a
+  Mesh models endpoint if available, or AI-assisted curation from public provider sources with a
+  `source_url` kept per entry — see `docs/00-Domain-Decision.md` §6.
 
 ## Implementation order
 
 Follow the roadmap unless a task explicitly changes scope:
 
-1. MVP-0: auth, product creation plus dual-write, basic event ingestion, one real Mesh call,
+1. MVP-0: auth, model creation plus dual-write, basic event ingestion, one real Mesh call,
    vector retrieval, and dashboard delivery.
 2. Iteration 1: event batching/flush behavior, trigger thresholds and cooldown, activity-hash
-   caching, full product CRUD, and sync-status handling.
+   caching, full model CRUD, and sync-status handling.
 3. Iteration 2: the full LangGraph pipeline, bounded grading/refinement retries, and grounded
    “why this” metadata.
 4. Iteration 3: optional LangSmith tracing, scheduled digest delivery, and retrieval polish.
@@ -100,7 +109,7 @@ practical. Prioritize:
 - bulk event ingestion and malformed-event handling;
 - trigger threshold, cooldown, and activity-hash cache behavior;
 - retrieval grounding and bounded grade/refine retries;
-- filtering LLM-returned product IDs against retrieved candidates;
+- filtering LLM-returned model IDs against retrieved candidates;
 - asserting that the configured LLM client uses the Mesh base URL.
 
 Mock Mesh calls in normal CI tests to avoid spend and nondeterminism. Use temporary/in-memory test
@@ -114,7 +123,7 @@ nightly check.
 - Use typed Pydantic request/response models and explicit SQLAlchemy models.
 - Keep agent nodes small, named, and independently testable rather than building one monolithic
   prompt/function.
-- Validate model output server-side. Never trust product IDs returned by the LLM without checking
+- Validate LLM output server-side. Never trust model IDs returned by the LLM without checking
   them against the retrieval set.
 - Enforce roles server-side with dependencies; hiding UI controls is not authorization.
 - Preserve traceability: record recommendation `activity_hash`, `trigger_reason`, and timestamps.

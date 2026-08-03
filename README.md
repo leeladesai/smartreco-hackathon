@@ -2,8 +2,8 @@
 ## Krish Naik Hackathon 2026 Submission
 
 A production-grade platform where an agentic AI system observes user behavior, retrieves relevant
-products via RAG + semantic search, and generates personalized, persuasive recommendations that
-refresh as behavior evolves.
+AI models via RAG + semantic search, and generates personalized, persuasive comparison
+recommendations that refresh as behavior evolves.
 
 ---
 
@@ -11,14 +11,16 @@ refresh as behavior evolves.
 
 Read in order:
 
-1. **[docs/01-BRD.md](docs/01-BRD.md)** — Business Requirements: objectives, scope, success metrics
-2. **[docs/02-FRD.md](docs/02-FRD.md)** — Functional Requirements: AUTH, CAT, TRK, AGT, DLV, OBS modules
-3. **[docs/03-UX-Flows.md](docs/03-UX-Flows.md)** — UX Design: personas, flows, screen specs
-4. **[docs/03-mockups.html](docs/03-mockups.html)** — Wireframes (open in a browser)
-5. **[docs/04-MVP-Roadmap.md](docs/04-MVP-Roadmap.md)** — Agile sprint plan: MVP-0 → Iteration 3 → submission
-6. **[docs/05-HLD.md](docs/05-HLD.md)** — High-level architecture, components, tech choices
-7. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
-8. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
+1. **[docs/00-Domain-Decision.md](docs/00-Domain-Decision.md)** — Domain decision record: options
+   considered, scoring, and why the AI model/tool catalog was chosen
+2. **[docs/01-BRD.md](docs/01-BRD.md)** — Business Requirements: objectives, scope, success metrics
+3. **[docs/02-FRD.md](docs/02-FRD.md)** — Functional Requirements: AUTH, CAT, TRK, AGT, DLV, OBS modules
+4. **[docs/03-UX-Flows.md](docs/03-UX-Flows.md)** — UX Design: personas, flows, screen specs
+5. **[docs/03-mockups.html](docs/03-mockups.html)** — Wireframes (open in a browser)
+6. **[docs/04-MVP-Roadmap.md](docs/04-MVP-Roadmap.md)** — Agile sprint plan: MVP-0 → Iteration 3 → submission
+7. **[docs/05-HLD.md](docs/05-HLD.md)** — High-level architecture, components, tech choices
+8. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
+9. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
 
 ---
 
@@ -30,7 +32,7 @@ Read in order:
 | LLM integration | Mesh API (mandatory) |
 | Vector database | Chroma (local, zero deps) |
 | Agent framework | LangGraph (structured nodes) |
-| Domain | Learning platform (courses/bootcamps) |
+| Domain | AI model & tool catalog (comparison-based recs) — see `docs/00-Domain-Decision.md` |
 | Database | SQLite (dev) / Postgres (prod-shaped) |
 | Testing | pytest, TDD-driven |
 
