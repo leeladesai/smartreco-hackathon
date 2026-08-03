@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SmartReco — Wireframes</title>
+<style>
+  body { font-family: Arial, sans-serif; background:#f4f4f2; margin:0; padding:32px; color:#222; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:#666; font-size:13px; margin-bottom:32px; }
+  .screen { background:#fff; border:1px solid #ccc; border-radius:6px; padding:20px; margin-bottom:36px; max-width:900px; }
+  .screen h2 { font-size:14px; text-transform:uppercase; letter-spacing:.05em; color:#888; margin:0 0 14px; }
+  .box { border:1.5px dashed #999; border-radius:4px; padding:10px 12px; font-size:12px; color:#555; background:#fafafa; }
+  .row { display:flex; gap:12px; }
+  .col { flex:1; }
+  .nav { display:flex; gap:16px; align-items:center; border:1px solid #ccc; border-radius:4px; padding:10px 14px; font-size:12px; margin-bottom:14px; background:#fff; }
+  .nav .logo { font-weight:bold; }
+  .nav .spacer { flex:1; }
+  .card { border:1px solid #ccc; border-radius:4px; padding:10px; font-size:11px; background:#fff; }
+  .card .thumb { height:50px; background:repeating-linear-gradient(45deg,#eee,#eee 6px,#e4e4e4 6px,#e4e4e4 12px); border-radius:3px; margin-bottom:6px; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .status-ok { color:#2a7a2a; font-weight:bold; }
+  .status-pending { color:#a06a00; font-weight:bold; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th, td { border-bottom:1px solid #ddd; text-align:left; padding:6px 8px; }
+  .btn { display:inline-block; border:1px solid #888; border-radius:4px; padding:5px 10px; font-size:11px; background:#eee; }
+  .narrative { font-size:12px; line-height:1.5; padding:10px; background:#fdf6e3; border:1px solid #e8dcb0; border-radius:4px; margin-bottom:12px; }
+  .tag { display:inline-block; font-size:10px; background:#e8e8e8; border-radius:10px; padding:2px 8px; margin-top:4px; color:#555; }
+</style>
+</head>
+<body>
+
+<h1>SmartReco — low-fidelity wireframes</h1>
+<div class="sub">MVP screens · not final visual design · for flow/layout validation only</div>
+
+<div class="screen">
+  <h2>1. Catalog / search (learner, unauthenticated or authenticated)</h2>
+  <div class="nav"><span class="logo">SmartReco</span><span>Catalog</span><span>Dashboard</span><span class="spacer"></span><span>[ Search box ]</span><span class="btn">Login</span></div>
+  <div class="row" style="margin-bottom:10px;">
+    <div class="box" style="width:140px;">Category filters<br>▢ Agentic AI<br>▢ Data Science<br>▢ Cloud</div>
+    <div class="col">
+      <div class="cards">
+        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
+        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
+        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
+        <div class="card"><div class="thumb"></div>Course title<br>Category · $price</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="screen">
+  <h2>2. Product detail (fires product_view + dwell-time tracking)</h2>
+  <div class="row">
+    <div class="box" style="width:260px;height:120px;">[ product image / placeholder ]</div>
+    <div class="col box">
+      <b>Course title</b><br>Category · $price<br><br>
+      Description text goes here...<br><br>
+      <span class="btn">Add to cart</span>
+    </div>
+  </div>
+</div>
+
+<div class="screen">
+  <h2>3. Learner dashboard — recommendations</h2>
+  <div class="nav"><span class="logo">SmartReco</span><span>Catalog</span><span><b>Dashboard</b></span><span class="spacer"></span><span class="btn">Logout</span></div>
+  <div class="narrative">
+    "You've been circling back to agentic AI content all week — three visits to advanced course
+    pages and two searches for 'multi-agent'. Here's where that leads next..."
+  </div>
+  <div class="cards">
+    <div class="card"><div class="thumb"></div>Recommended course A<br><span class="tag">Because you viewed: Agentic AI Fundamentals</span></div>
+    <div class="card"><div class="thumb"></div>Recommended course B<br><span class="tag">Because you searched: multi-agent</span></div>
+    <div class="card"><div class="thumb"></div>Recommended course C<br><span class="tag">Because you viewed: LangGraph 101</span></div>
+  </div>
+</div>
+
+<div class="screen">
+  <h2>4. Admin — product list (sync status is a visible UX element)</h2>
+  <div class="nav"><span class="logo">SmartReco Admin</span><span>Products</span><span class="spacer"></span><span class="btn">+ Add product</span></div>
+  <table>
+    <tr><th>Title</th><th>Category</th><th>Price</th><th>Vector sync</th><th></th></tr>
+    <tr><td>Agentic AI Fundamentals</td><td>Agentic AI</td><td>$49</td><td class="status-ok">✓ synced</td><td>Edit · Delete</td></tr>
+    <tr><td>LangGraph 101</td><td>Agentic AI</td><td>$39</td><td class="status-pending">⋯ indexing</td><td>Edit · Delete</td></tr>
+    <tr><td>SQL for Analysts</td><td>Data Science</td><td>$29</td><td class="status-ok">✓ synced</td><td>Edit · Delete</td></tr>
+  </table>
+</div>
+
+<div class="screen">
+  <h2>5. Admin — add / edit product form</h2>
+  <div class="box" style="max-width:420px;">
+    Title: [ ______________________ ]<br><br>
+    Description: [ ______________________ ]<br><br>
+    Category: [ dropdown ]&nbsp;&nbsp;Price: [ ____ ]<br><br>
+    <span class="btn">Save</span>
+  </div>
+</div>
+
+</body>
+</html>
