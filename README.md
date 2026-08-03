@@ -40,9 +40,8 @@ Read in order:
 
 ```bash
 cd smartreco-hackathon
-python -m venv venv
-source venv/bin/activate       # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+uv sync
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
 cp .env.example .env           # fill in MESH_API_KEY=rsk_...
 python seed_data.py
 python -m uvicorn app.main:app --reload
