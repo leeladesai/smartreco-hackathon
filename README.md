@@ -21,6 +21,7 @@ Read in order:
 7. **[docs/05-HLD.md](docs/05-HLD.md)** — High-level architecture, components, tech choices
 8. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
 9. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
+10. **[docs/08-Build-Status.md](docs/08-Build-Status.md)** — what's actually built vs. planned, and what's next
 
 ---
 
