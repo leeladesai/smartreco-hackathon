@@ -38,5 +38,5 @@ chroma_data/
 logs/
 tmp/
 
-# Local planning/reference docs — not pushed to GitHub
-docs/
+# Internal build tracker — not pushed to GitHub, local reference only
+docs/08-Build-Status.md

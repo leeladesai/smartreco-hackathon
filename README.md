@@ -22,7 +22,6 @@ Read in order:
 8. **[docs/05-architecture-diagram.md](docs/05-architecture-diagram.md)** — component diagram: deployment boundary, both loops, agent pipeline, SQL/vector DBs, external LLM call
 9. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
 10. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
-11. **[docs/08-Build-Status.md](docs/08-Build-Status.md)** — what's actually built vs. planned, and what's next
 
 ---
 
@@ -47,10 +46,23 @@ cd smartreco-hackathon
 uv sync
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 cp .env.example .env           # fill in MESH_API_KEY=rsk_...
-uv run uvicorn app.main:app --reload
+uv run python seed_data.py
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
-Open http://localhost:8000
+Open http://localhost:8001
+
+### One-command development startup
+
+The current FastAPI process serves both the backend APIs and the frontend UI. Start it with log
+tailing enabled:
+
+```bash
+./scripts/start_dev.sh
+```
+
+It uses port `8001` by default. Override it with `PORT=8002 ./scripts/start_dev.sh`. Press Ctrl-C
+to stop the server and log tail.
 
 ---
 
@@ -74,8 +86,12 @@ See `docs/06-LLD.md` for the intended `app/` internal structure (models, api, ag
 The first slice serves the updated self-contained UI at `/`. It includes the AI engineer and Curator
 entry points, model catalog, model detail, comparison tray, dashboard recommendation preview,
 activity trace, and catalog management view using local demo data from `docs/03-mockups.html`.
-Authentication, persistence, event ingestion, vector retrieval, and model generation are next;
-the current UI intentionally does not call external model APIs.
+The backend now includes local authentication, SQL/Chroma model catalog APIs, seed data, batched
+event ingestion, and server-rendered routes for each screen. The Curator login and model catalog
+screens use those APIs; dashboard candidates are grounded in Chroma and, when `MESH_API_KEY` is
+configured, the triggered recommendation is generated through Mesh and persisted with only
+retrieved model IDs. Without a Mesh key the dashboard honestly remains in retrieval-ready mode.
+For the seeded local demo, use `curator@smartreco.dev` / `admin@123`.
 
 ---
 
@@ -89,4 +105,4 @@ the current UI intentionally does not call external model APIs.
 
 ---
 
-**Status:** ✅ Planning phase complete. Ready for MVP-0 implementation.
+**Status:** ✅ Planning phase complete. MVP-0 implementation is in progress.
