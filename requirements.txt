@@ -1,5 +1,6 @@
 # FastAPI & Web
 fastapi==0.104.1
+jinja2==3.1.2
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
@@ -20,6 +21,7 @@ alembic==1.13.0
 # Auth & Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.1.2
 python-multipart==0.0.6
 
 # Utilities

@@ -11,15 +11,18 @@ the code — it must never drift into a second, stale plan.
 
 ## Project overview
 
-SmartReco is a planned FastAPI application for an AI model/tool catalog recommendation agent. It
-will track an AI engineer's browsing/comparison behavior, retrieve AI models with Chroma semantic
-search, and generate grounded, comparison-driven recommendations through the Mesh API using a
-LangGraph pipeline. See `docs/00-Domain-Decision.md` for why this domain (over alternatives like a
-grocery/quick-commerce catalog) was chosen.
+SmartReco is a FastAPI application for an AI model/tool catalog recommendation agent. It tracks an
+AI engineer's browsing/comparison behavior, retrieves candidate models via Chroma semantic search,
+and generates grounded, comparison-driven recommendations through the Mesh API using a 5-node
+LangGraph pipeline (analyze → retrieve → grade/refine → generate → store). See
+`docs/00-Domain-Decision.md` for why this domain (over alternatives like a grocery/quick-commerce
+catalog) was chosen.
 
-The repository is currently in the planning phase. The implementation directories (`app/`,
-`tests/`) and the seed script referenced by the README do not exist yet. Do not assume that the
-documented runtime commands work until MVP-0 scaffolding has been added.
+The full walking-skeleton loop is live end-to-end and verified against the real Mesh API, not
+mocked: register/login, catalog browse with dwell-aware event tracking, trigger evaluation,
+Chroma retrieval with bounded grade/refine retry, Mesh narrative generation with a grounding
+filter, and a dashboard that reflects the real recommendation state. See
+`docs/08-Build-Status.md` for exactly what's done vs. still open.
 
 ## Source of truth
 

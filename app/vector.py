@@ -1,0 +1,84 @@
+import hashlib
+import re
+from collections.abc import Sequence
+from pathlib import Path
+
+import chromadb
+
+
+class DeterministicEmbeddingFunction:
+    """Small offline embedding used for the MVP handshake and local tests."""
+
+    dimension = 64
+
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        return [self._embed(text) for text in input]
+
+    def _embed(self, text: str) -> list[float]:
+        values = [0.0] * self.dimension
+        for token in re.findall(r"[a-z0-9]+", text.lower()):
+            digest = hashlib.sha256(token.encode()).digest()
+            index = int.from_bytes(digest[:2], "big") % self.dimension
+            values[index] += 1.0
+        norm = sum(value * value for value in values) ** 0.5 or 1.0
+        return [value / norm for value in values]
+
+
+class ModelVectorStore:
+    def __init__(self, path: str) -> None:
+        Path(path).mkdir(parents=True, exist_ok=True)
+        client = chromadb.PersistentClient(path=path)
+        self.collection = client.get_or_create_collection(
+            name="models",
+            embedding_function=DeterministicEmbeddingFunction(),
+        )
+
+    @staticmethod
+    def document(model) -> str:
+        tags = ", ".join(model.use_case_tags or [])
+        return (
+            f"{model.title}. {model.provider}. {model.modality}. "
+            f"{model.description}. {tags}"
+        )
+
+    def upsert(self, model) -> None:
+        self.collection.upsert(
+            ids=[str(model.id)],
+            documents=[self.document(model)],
+            metadatas=[
+                {
+                    "provider": model.provider,
+                    "modality": model.modality,
+                    "price": model.price,
+                    "latency_ms": model.latency_ms or -1,
+                }
+            ],
+        )
+
+    def delete(self, model_id: int) -> None:
+        self.collection.delete(ids=[str(model_id)])
+
+    def query(self, text: str, limit: int = 5) -> list[int]:
+        if not text.strip() or self.collection.count() == 0:
+            return []
+        results = self.collection.query(query_texts=[text], n_results=limit)
+        ids = results.get("ids", [[]])[0]
+        return [int(model_id) for model_id in ids]
+
+    def query_scored(self, text: str, limit: int = 5) -> list[tuple[int, float]]:
+        """Like `query`, but also returns each result's distance (lower = more similar) —
+        used by the grade/refine node to detect weak retrieval."""
+        if not text.strip() or self.collection.count() == 0:
+            return []
+        results = self.collection.query(
+            query_texts=[text], n_results=limit, include=["distances"]
+        )
+        ids = results.get("ids", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+        return [
+            (int(model_id), float(distance))
+            for model_id, distance in zip(ids, distances)
+        ]
+
+    def count(self) -> int:
+        return self.collection.count()
