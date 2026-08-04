@@ -19,9 +19,24 @@ SEED_MODELS = [
         "provider": "OpenAI",
         "modality": "LLM",
         "price": "$0.15 / 1M input tokens",
+        "latency_ms": 820,
         "context_window": "128K",
         "use_case_tags": ["structured output", "classification", "cost sensitive"],
         "source_url": "https://platform.openai.com/docs/models",
+    },
+    {
+        "title": "Claude 3.5 Sonnet",
+        "description": (
+            "Anthropic's balanced flagship — strong reasoning and long-document "
+            "work at a lower cost than top-tier frontier models."
+        ),
+        "provider": "Anthropic",
+        "modality": "LLM",
+        "price": "$3.00 / 1M input tokens",
+        "latency_ms": 640,
+        "context_window": "200K",
+        "use_case_tags": ["long context", "reasoning", "document analysis"],
+        "source_url": "https://www.anthropic.com/pricing",
     },
     {
         "title": "ElevenLabs Turbo v2.5",
@@ -38,6 +53,20 @@ SEED_MODELS = [
         "source_url": "https://elevenlabs.io/docs",
     },
     {
+        "title": "Cartesia Sonic",
+        "description": (
+            "Ultra-low-latency speech generation built for real-time voice agents "
+            "where every millisecond of round trip matters."
+        ),
+        "provider": "Cartesia",
+        "modality": "Voice",
+        "price": "$0.00015 / character",
+        "latency_ms": 135,
+        "context_window": "N/A",
+        "use_case_tags": ["real-time voice", "low latency", "voice agents"],
+        "source_url": "https://cartesia.ai",
+    },
+    {
         "title": "Flux.1 Pro",
         "description": (
             "High-fidelity image generation for product concepts, marketing "
@@ -51,6 +80,32 @@ SEED_MODELS = [
         "source_url": "https://bfl.ai/models",
     },
     {
+        "title": "Stable Diffusion 3.5",
+        "description": (
+            "Open-weight image generation with strong prompt adherence at a "
+            "fraction of the cost of closed-source alternatives."
+        ),
+        "provider": "Stability AI",
+        "modality": "Image",
+        "price": "$0.035 / image",
+        "context_window": "1,536px",
+        "use_case_tags": ["image generation", "open weights", "cost sensitive"],
+        "source_url": "https://stability.ai/news/stable-diffusion-3-5",
+    },
+    {
+        "title": "Runway Gen-3",
+        "description": (
+            "Text-to-video generation for short-form clips, concept previews, "
+            "and storyboard exploration."
+        ),
+        "provider": "Runway",
+        "modality": "Video",
+        "price": "$0.10 / second",
+        "context_window": "10s max",
+        "use_case_tags": ["video generation", "storyboarding", "concept preview"],
+        "source_url": "https://runwayml.com/research/introducing-gen-3-alpha",
+    },
+    {
         "title": "Voyage-3",
         "description": (
             "Embedding model for semantic retrieval across technical documents "
@@ -62,6 +117,19 @@ SEED_MODELS = [
         "context_window": "32K",
         "use_case_tags": ["semantic search", "retrieval", "reranking"],
         "source_url": "https://docs.voyageai.com/docs/embeddings",
+    },
+    {
+        "title": "Cohere Embed v3",
+        "description": (
+            "Multilingual embedding model tuned for retrieval-augmented generation "
+            "and search re-ranking."
+        ),
+        "provider": "Cohere",
+        "modality": "Embedding",
+        "price": "$0.10 / 1M tokens",
+        "context_window": "512",
+        "use_case_tags": ["semantic search", "multilingual", "reranking"],
+        "source_url": "https://cohere.com/pricing",
     },
 ]
 

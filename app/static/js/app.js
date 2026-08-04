@@ -227,6 +227,96 @@
     }
   }
 
+  // ---- login-page "live comparison" widget — always computed from the real catalog,
+  // never hardcoded numbers, so it can't drift from what's actually in the DB.
+  function parseTokenCount(text){
+    if (!text) return null;
+    const match = String(text).match(/([\d,.]+)\s*([kKmM]?)/);
+    if (!match) return null;
+    let value = parseFloat(match[1].replace(/,/g, ''));
+    if (Number.isNaN(value)) return null;
+    const unit = match[2].toLowerCase();
+    if (unit === 'k') value *= 1000;
+    if (unit === 'm') value *= 1000000;
+    return value;
+  }
+
+  function parsePriceValue(text){
+    if (!text) return null;
+    const match = String(text).match(/\$([\d.]+)/);
+    return match ? parseFloat(match[1]) : null;
+  }
+
+  async function loadLoginPitch(){
+    const liveCompare = document.getElementById('live-compare');
+    const pillsEl = document.getElementById('category-pills');
+    const footnoteEl = document.getElementById('catalog-footnote');
+    if (!liveCompare || !pillsEl || !footnoteEl) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/api/models`);
+      const models = response.ok ? await response.json() : [];
+      if (!Array.isArray(models) || !models.length) {
+        liveCompare.style.display = 'none';
+        footnoteEl.textContent = 'Catalog is empty right now — check back soon.';
+        return;
+      }
+
+      const countsByModality = {};
+      models.forEach(model => { countsByModality[model.modality] = (countsByModality[model.modality] || 0) + 1; });
+      const modalityOrder = ['LLM', 'Voice', 'Image', 'Video', 'Embedding'];
+      pillsEl.innerHTML = modalityOrder.filter(modality => countsByModality[modality]).map(modality =>
+        `<span class="pill"><span class="dot" style="background:${modalityColors[modality] || 'var(--muted)'}"></span>${escapeHtml(modality)} · ${countsByModality[modality]}</span>`
+      ).join('');
+
+      const categoryCount = Object.keys(countsByModality).length;
+      footnoteEl.textContent = `${models.length} model${models.length === 1 ? '' : 's'} tracked across ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} · live catalog`;
+
+      let pair = null;
+      for (const modality of modalityOrder) {
+        const group = models.filter(model => model.modality === modality);
+        if (group.length >= 2) { pair = group.slice(0, 2); break; }
+      }
+      if (!pair) { liveCompare.style.display = 'none'; return; }
+
+      const [a, b] = pair;
+      document.getElementById('live-compare-pair').innerHTML =
+        `<span style="color:var(--cyan)">${escapeHtml(a.title)}</span> vs <span style="color:var(--amber)">${escapeHtml(b.title)}</span>`;
+
+      const rows = [];
+      const contextA = parseTokenCount(a.context_window), contextB = parseTokenCount(b.context_window);
+      if (contextA != null && contextB != null) {
+        rows.push({label: 'Context window', textA: a.context_window, textB: b.context_window, valueA: contextA, valueB: contextB});
+      }
+      const priceA = parsePriceValue(a.price), priceB = parsePriceValue(b.price);
+      if (priceA != null && priceB != null) {
+        rows.push({label: 'Price', textA: a.price, textB: b.price, valueA: priceA, valueB: priceB});
+      }
+      if (a.latency_ms != null && b.latency_ms != null) {
+        rows.push({label: 'Avg latency', textA: `${a.latency_ms}ms`, textB: `${b.latency_ms}ms`, valueA: a.latency_ms, valueB: b.latency_ms});
+      }
+
+      if (!rows.length) { liveCompare.style.display = 'none'; return; }
+
+      liveCompare.style.display = '';
+      document.getElementById('live-compare-rows').innerHTML = rows.map(row => {
+        const max = Math.max(row.valueA, row.valueB) || 1;
+        const widthA = Math.max(8, Math.round(row.valueA / max * 100));
+        const widthB = Math.max(8, Math.round(row.valueB / max * 100));
+        return `
+          <div class="compare-row">
+            <div class="compare-label">${escapeHtml(row.label)}</div>
+            <div class="compare-cols">
+              <div><span class="compare-value">${escapeHtml(row.textA)}</span><div class="compare-bar"><div class="compare-bar-fill cyan" style="width:${widthA}%"></div></div></div>
+              <div><span class="compare-value">${escapeHtml(row.textB)}</span><div class="compare-bar"><div class="compare-bar-fill amber" style="width:${widthB}%"></div></div></div>
+            </div>
+          </div>`;
+      }).join('');
+    } catch (error) {
+      liveCompare.style.display = 'none';
+    }
+  }
+
   function setFormStatus(message, kind=''){
     modelFormStatus.textContent = message;
     modelFormStatus.className = `form-status ${kind}`;
@@ -514,6 +604,7 @@
   });
 
   loadModels();
+  loadLoginPitch();
 
   renderCatalog();
   renderAdminTable();
@@ -604,34 +695,29 @@
   });
 
   // ---- auth (AI engineer) ----
-  const AUTH_COPY = {
-    login: {
-      eyebrow: 'Sign in', heading: 'Welcome back',
-      sub: 'Sign in to pick up where you left off — your comparisons and dashboard are waiting.',
-      button: 'Sign in →',
-      switch: 'New here? <span onclick="setAuthMode(\'register\')">Create an account</span>',
-    },
-    register: {
-      eyebrow: 'Get started', heading: 'Create your account',
-      sub: 'Free during the beta — takes about 30 seconds, no credit card.',
-      button: 'Create account →',
-      switch: 'Already have an account? <span onclick="setAuthMode(\'login\')">Sign in</span>',
-    },
+  const AUTH_BUTTON_LABEL = {login: 'Sign in →', register: 'Create account →'};
+  const AUTH_SWITCH_HTML = {
+    login: 'New here? <span onclick="setAuthMode(\'register\')">Create an account</span>',
+    register: 'Already have an account? <span onclick="setAuthMode(\'login\')">Sign in</span>',
   };
 
   function setAuthMode(mode){
     const registering = mode === 'register';
     document.querySelectorAll('#auth-toggle .opt').forEach(x => x.classList.toggle('active', x.dataset.mode === mode));
+    document.querySelectorAll('.auth-copy').forEach(el => el.classList.toggle('active', el.dataset.copy === mode));
     document.getElementById('auth-form').classList.toggle('register-mode', registering);
-    const copy = AUTH_COPY[mode];
-    document.getElementById('auth-eyebrow').textContent = copy.eyebrow;
-    document.getElementById('auth-heading').textContent = copy.heading;
-    document.getElementById('auth-subheading').textContent = copy.sub;
-    document.getElementById('auth-submit-btn').textContent = copy.button;
-    document.getElementById('auth-switch').innerHTML = copy.switch;
+    document.getElementById('auth-submit-btn').textContent = AUTH_BUTTON_LABEL[mode];
+    document.getElementById('auth-switch').innerHTML = AUTH_SWITCH_HTML[mode];
     document.getElementById('auth-error').classList.remove('show');
     document.querySelector('#auth-form .only-register input').tabIndex = registering ? 0 : -1;
+    document.getElementById('auth-forgot').tabIndex = registering ? -1 : 0;
   }
+
+  document.getElementById('auth-forgot').addEventListener('click', () => {
+    const note = document.getElementById('auth-error');
+    note.textContent = "Password reset isn't available in this build yet — contact your curator to have your account reset.";
+    note.classList.add('show');
+  });
 
   document.querySelectorAll('#auth-toggle .opt').forEach(o => o.addEventListener('click', () => setAuthMode(o.dataset.mode)));
 

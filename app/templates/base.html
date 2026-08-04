@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartReco — Model Catalog</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312151c'/%3E%3Crect x='1' y='1' width='30' height='30' rx='6' fill='none' stroke='%232b3240'/%3E%3Crect x='6' y='18' width='5' height='9' rx='1.5' fill='%235ec8d8'/%3E%3Crect x='13.5' y='12' width='5' height='15' rx='1.5' fill='%23e8a33d'/%3E%3Crect x='21' y='6' width='5' height='21' rx='1.5' fill='%23a78bfa'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -17,7 +18,7 @@
   spec quickly — it is explicitly NOT part of the product UI and should not be implemented.
 -->
 <header class="app-nav" id="app-nav" data-state="none">
-  <div class="brand">SMARTRECO <small id="brand-sub">/ model catalog</small></div>
+  <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>SMARTRECO <small id="brand-sub">/ model catalog</small></div>
   <nav class="nav-links engineer-links">
     <div class="nav-link" data-page="catalog" onclick="go('catalog')">Catalog</div>
     <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Dashboard</div>
@@ -36,46 +37,42 @@
   <div class="auth-wrap">
     <div class="auth-pitch">
       <div>
-        <div class="brand">SMARTRECO <small>/ model catalog</small></div>
+        <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>SMARTRECO <small>/ model catalog</small></div>
         <h2>Compare AI models the way you'd compare lab equipment — by spec, not by hype.</h2>
-        <p>Every session you spend browsing quietly builds a picture of what you're actually trying to build — see it explained, never hidden, on the Your Activity screen.</p>
-        <div class="modality-scan">
-          <span><span class="dot" style="background:var(--cyan)"></span>LLM</span>
-          <span><span class="dot" style="background:var(--amber)"></span>Voice</span>
-          <span><span class="dot" style="background:var(--violet)"></span>Image</span>
-          <span><span class="dot" style="background:var(--rose)"></span>Video</span>
-          <span><span class="dot" style="background:var(--teal)"></span>Embedding</span>
-        </div>
+        <p>Pricing, context windows, and latency, side by side — not marketing pages.</p>
       </div>
 
-      <div class="spec-ticker">
-        <div class="spec-card">
-          <div class="tag-row"><span class="badge" style="background:var(--amber-dim); color:var(--amber);">voice · latency</span></div>
-          <p>Cartesia Sonic beats ElevenLabs Turbo by <b>140ms</b> — the full spec table is one click away, not five open tabs.</p>
+      <div class="live-compare" id="live-compare">
+        <div class="live-compare-head">
+          <span class="live-compare-label">Live comparison</span>
+          <span class="live-compare-pair" id="live-compare-pair">Loading…</span>
         </div>
-        <div class="spec-card">
-          <div class="tag-row"><span class="badge" style="background:color-mix(in srgb, var(--cyan) 20%, transparent); color:var(--cyan);">llm · context</span></div>
-          <p><b>128K context</b>, $0.15/1M tokens — see how that stacks up against every other provider in one view.</p>
-        </div>
-        <div class="spec-card">
-          <div class="tag-row"><span class="badge" style="background:color-mix(in srgb, var(--violet) 20%, transparent); color:var(--violet);">image · price</span></div>
-          <p>Flux.1 Pro and SDXL render at the same resolution — the price gap is <b>3x</b>. The spec sheet shows why.</p>
-        </div>
+        <div class="live-compare-rows" id="live-compare-rows"></div>
       </div>
+
+      <div class="category-pills" id="category-pills"></div>
+
+      <p class="catalog-footnote" id="catalog-footnote"></p>
     </div>
 
     <div class="auth-form-side">
-      <div class="auth-form-heading">
-        <p class="eyebrow" id="auth-eyebrow">Sign in</p>
-        <h1 id="auth-heading">Welcome back</h1>
-        <p id="auth-subheading">Sign in to pick up where you left off — your comparisons and dashboard are waiting.</p>
-      </div>
       <div class="auth-toggle" id="auth-toggle">
         <div class="opt active" data-mode="login">Sign in</div>
         <div class="opt" data-mode="register">Register</div>
       </div>
 
-      <div class="auth-error" id="auth-error">Wrong email or password. Try again, or register below.</div>
+      <div class="auth-form-heading">
+        <div class="auth-copy active" data-copy="login">
+          <h1>Welcome back</h1>
+          <p>Sign in to pick up where you left off — your comparisons are waiting.</p>
+        </div>
+        <div class="auth-copy" data-copy="register">
+          <h1>Create your account</h1>
+          <p>Free during the beta — takes about 30 seconds, no credit card.</p>
+        </div>
+      </div>
+
+      <div class="auth-error" id="auth-error">Wrong email or password. Try again, or check you're on the right tab above.</div>
 
       <form class="auth-form" id="auth-form" onsubmit="submitAuth(event); return false;">
         <div class="auth-field">
@@ -90,13 +87,12 @@
           <label>Confirm password</label>
           <input type="password" placeholder="••••••••" tabindex="-1">
         </div>
+        <p class="auth-forgot only-login" id="auth-forgot" tabindex="0">Forgot password?</p>
 
         <div class="auth-submit">
-          <button class="btn primary" type="submit" id="auth-submit-btn" style="padding:12px; font-size:11.5px;">Sign in →</button>
+          <button class="btn-cta" type="submit" id="auth-submit-btn">Sign in →</button>
         </div>
       </form>
-
-      <div class="auth-role-note">No role picker here — every account made through this form is a standard AI-engineer account. Curator access is provisioned separately.</div>
 
       <p class="auth-switch" id="auth-switch">New here? <span onclick="setAuthMode('register')">Create an account</span></p>
     </div>
@@ -114,7 +110,7 @@
   <div class="auth-wrap">
     <div class="auth-pitch admin-auth-side">
       <div>
-        <div class="brand">SMARTRECO <small>/ admin console</small></div>
+        <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--rose)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--amber)"/></svg>SMARTRECO <small>/ admin console</small></div>
         <div class="lock-row" style="margin-top:22px;">
           <div class="glyph">⛊</div>
           <div class="txt">Restricted area.<br><b>Curator</b> role required — checked server-side on every admin route, never by hiding a nav item.</div>
