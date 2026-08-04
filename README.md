@@ -19,7 +19,7 @@ Read in order:
 5. **[docs/03-mockups.html](docs/03-mockups.html)** — Wireframes (open in a browser)
 6. **[docs/04-MVP-Roadmap.md](docs/04-MVP-Roadmap.md)** — Agile sprint plan: MVP-0 → Iteration 3 → submission
 7. **[docs/05-HLD.md](docs/05-HLD.md)** — High-level architecture, components, tech choices
-8. **[docs/05-architecture-diagram.html](docs/05-architecture-diagram.html)** — end-to-end system diagram: deployment → both loops → agent pipeline → data → external call
+8. **[docs/05-architecture-diagram.md](docs/05-architecture-diagram.md)** — component diagram: deployment boundary, both loops, agent pipeline, SQL/vector DBs, external LLM call
 9. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
 10. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
 11. **[docs/08-Build-Status.md](docs/08-Build-Status.md)** — what's actually built vs. planned, and what's next
