@@ -37,3 +37,6 @@ chroma_data/
 # Misc
 logs/
 tmp/
+
+# Local planning/reference docs — not pushed to GitHub
+docs/
