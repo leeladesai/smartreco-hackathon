@@ -7,17 +7,63 @@ spec of record for scope and phase ordering, `docs/02-FRD.md` for acceptance cri
 `docs/06-LLD.md` for schema/API/node contracts. This file only answers two questions: **what's
 done**, and **what's next**.
 
-**Convention:** whoever closes an item (Claude or Codex) checks the box and updates "Next up" as
-part of the same commit as the code — don't let this drift into a second, stale plan.
+**Convention:** whoever closes an item checks the box and updates "Next up" as part of the same
+commit as the code — don't let this drift into a second, stale plan.
 
 ---
 
 ## Next up
 
-> Data layer first: SQLAlchemy models (`users`, `models`, `events`, `recommendations`), the Chroma
-> collection, and a single `create_model()` service function that dual-writes both and sets
-> `vector_synced`. Then a `seed_data.py` that calls it to populate ~10-20 real models — this proves
-> CAT-1/CAT-4 without needing the admin UI yet. See the "MVP-0 build order" note below for why.
+> Frontend routing migration (below) — the app currently serves one static file
+> (`docs/03-mockups.html`) for every screen via `FileResponse`, so every page shows the same URL
+> and there's no real client-server routing. Do this before resuming the generation-seam work.
+> After this lands, resume: add the generation seam through the configured provider, then persist
+> the grounded result for the dashboard — the dashboard currently stops at retrieval-ready
+> candidates.
+
+---
+
+## Frontend routing migration — Jinja2 templates + vanilla JS
+
+Replaces the current `FileResponse(docs/03-mockups.html)` shortcut in `app/main.py`, which is why
+every screen currently shows the same URL (`/`) — it's one static file with JS toggling which
+`<div class="page">` is visible, not real routing. This was a deliberate decision (see the
+conversation this task was added from): Jinja2 + vanilla JS over React/TypeScript or Streamlit,
+because it already matches `docs/05-HLD.md`/`AGENTS.md`'s documented architecture, needs no new
+build tooling (keeps the "single container, no separate frontend deploy" story), and reuses ~90%
+of the existing HTML/CSS design system instead of a rewrite. `docs/03-mockups.html` stops being
+served as live app code once this lands — it goes back to being purely the design reference.
+
+- [ ] Add `jinja2` to `pyproject.toml` dependencies
+- [ ] `app/static/css/app.css` — extract the `<style>` block from `docs/03-mockups.html` unchanged
+- [ ] `app/static/js/app.js` — extract the API/interaction JS (`trackEvent`, compare tray, modal,
+      forms); delete the fake `go(page)` SPA router entirely, it's no longer needed
+- [ ] `app/templates/base.html` — shared nav chrome (already auth-state-driven in the mockup),
+      `{% block content %}`
+- [ ] Per-screen templates extending `base.html`: `login.html`, `admin_login.html`, `catalog.html`,
+      `model_detail.html`, `compare.html`, `dashboard.html`, `activity.html`, `admin.html`
+- [ ] Wire `Jinja2Templates` + `StaticFiles` in `app/main.py`; add the `GET` route per template
+      below, each auth-gated **server-side** (redirect to `/login` or `/admin/login` on a
+      missing/wrong-role session cookie — a real correctness improvement over today's client-only
+      nav-state toggle, which only controls visibility, not access)
+- [ ] Compare tray selection persists via `localStorage` (an in-memory JS variable doesn't survive
+      a real page navigation); `/compare?ids=12,7` reads the actual query string, making a specific
+      comparison a real, shareable link
+- [ ] Retire `FileResponse(MOCKUP_PATH)` and the catch-all `/` route
+- [ ] Update `README.md` quick-start once routes/URLs are final
+
+**Route map:**
+
+| Route | Template | Auth |
+|---|---|---|
+| `GET /login` | `login.html` | none |
+| `GET /admin/login` | `admin_login.html` | none |
+| `GET /` or `/catalog` | `catalog.html` | AI engineer (public browse allowed per UX doc; personalized recs require login) |
+| `GET /models/{id}` | `model_detail.html` | AI engineer |
+| `GET /compare` | `compare.html` | AI engineer |
+| `GET /dashboard` | `dashboard.html` | AI engineer |
+| `GET /activity` | `activity.html` | AI engineer |
+| `GET /admin` | `admin.html` | curator |
 
 ---
 

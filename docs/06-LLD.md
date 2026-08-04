@@ -80,6 +80,26 @@ password-hashing logic, but not the same route or handler — the AI engineer mo
 `admin` role, and the admin module has no register counterpart. Admin accounts are created only via
 the seed script or an authenticated admin user-management action.
 
+### 2a. Page routes (server-rendered, Jinja2)
+
+Separate from the JSON API above — these return HTML pages, each a real, bookmarkable route (not a
+client-side view toggle). See `docs/08-Build-Status.md`'s frontend routing migration task for the
+implementation checklist.
+
+| Route | Template | Auth |
+|---|---|---|
+| GET `/login` | `login.html` | none |
+| GET `/admin/login` | `admin_login.html` | none |
+| GET `/` or `/catalog` | `catalog.html` | AI engineer (public browse allowed; personalized recs require login) |
+| GET `/models/{id}` | `model_detail.html` | AI engineer |
+| GET `/compare` | `compare.html` — reads selection from `?ids=12,7`, a real shareable comparison link | AI engineer |
+| GET `/dashboard` | `dashboard.html` | AI engineer |
+| GET `/activity` | `activity.html` | AI engineer |
+| GET `/admin` | `admin.html` | curator |
+
+Auth-gating on these routes is server-side (redirect to `/login` or `/admin/login` on a missing or
+wrong-role session cookie) — not merely a client-side nav toggle.
+
 **POST /api/events/batch — request**
 ```json
 {
