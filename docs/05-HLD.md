@@ -1,6 +1,10 @@
 # High-Level Design (HLD)
 ## SmartReco
 
+A full end-to-end diagram — deployment shell, both loops, the 5-node agent pipeline, data layer,
+and the single external LLM call — is at [`05-architecture-diagram.html`](05-architecture-diagram.html)
+(open in a browser). This document is the prose/tabular companion; the diagram is the visual one.
+
 ## 1. Architecture overview
 
 Two decoupled loops sharing storage:
