@@ -68,8 +68,8 @@ entity (`model`, not generic `product`) and its comparison-oriented attributes d
 ## 5. Security & config
 
 - Passwords hashed (passlib/bcrypt); session via signed cookie or short-lived JWT.
-- Builder and admin auth are separate router modules (`/api/auth/*` vs `/api/admin/login`) — the
-  builder module can never mint an `admin` role, and there is no admin self-registration endpoint.
+- AI engineer and admin auth are separate router modules (`/api/auth/*` vs `/api/admin/login`) — the
+  AI engineer module can never mint an `admin` role, and there is no admin self-registration endpoint.
 - Admin routes protected by a server-side dependency (`require_role("admin")`), never
   client-side-only.
 - `MESH_API_KEY` read from environment only; `.env` gitignored; CI secrets configured per submission

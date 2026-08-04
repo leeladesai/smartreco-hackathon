@@ -38,15 +38,14 @@ Read in order:
 
 ---
 
-## 🚀 Quick start (once code is scaffolded)
+## 🚀 Quick start
 
 ```bash
 cd smartreco-hackathon
 uv sync
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 cp .env.example .env           # fill in MESH_API_KEY=rsk_...
-python seed_data.py
-python -m uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 Open http://localhost:8000
@@ -58,7 +57,7 @@ Open http://localhost:8000
 ```
 smartreco-hackathon/
 ├── docs/                 # SDLC documentation (complete)
-├── app/                  # FastAPI app (build during MVP-0 — not yet scaffolded)
+├── app/                  # FastAPI application
 ├── tests/                # pytest suite (TDD)
 ├── requirements.txt
 ├── .env.example
@@ -67,6 +66,14 @@ smartreco-hackathon/
 ```
 
 See `docs/06-LLD.md` for the intended `app/` internal structure (models, api, agent, utils, frontend).
+
+### Current handshake MVP
+
+The first slice serves the updated self-contained UI at `/`. It includes the AI engineer and Curator
+entry points, model catalog, model detail, comparison tray, dashboard recommendation preview,
+activity trace, and catalog management view using local demo data from `docs/03-mockups.html`.
+Authentication, persistence, event ingestion, vector retrieval, and model generation are next;
+the current UI intentionally does not call external model APIs.
 
 ---
 

@@ -15,7 +15,8 @@ CREATE TABLE users (
 CREATE TABLE models (
   id             INTEGER PRIMARY KEY,
   title          TEXT NOT NULL,
-  description    TEXT NOT NULL,
+  description    TEXT NOT NULL,     -- plain technical summary: what the model does
+  story          TEXT,              -- curator's pitch: who should pick it, what trade-off it makes
   provider       TEXT NOT NULL,     -- 'OpenAI' | 'Anthropic' | 'ElevenLabs' | ...
   modality       TEXT NOT NULL,     -- 'LLM' | 'Voice' | 'Image' | 'Video' | 'Embedding' | 'Multimodal'
   price          NUMERIC NOT NULL,  -- cost per unit; unit documented in description (e.g. per 1M tokens, per char)
@@ -52,8 +53,9 @@ CREATE INDEX idx_reco_user_time ON recommendations(user_id, created_at);
 ```
 
 Vector store (Chroma) — one collection `models`, document id = `models.id` (string), embedding
-input = `f"{title}. {provider}. {modality}. {description}"`, metadata =
-`{"provider": ..., "modality": ..., "price": ..., "latency_ms": ...}`.
+input = `f"{title}. {provider}. {modality}. {description}. {story}"` (the story field is included
+because it carries use-case/trade-off language that closely matches how builders phrase what
+they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..., "latency_ms": ...}`.
 
 ---
 
@@ -61,8 +63,8 @@ input = `f"{title}. {provider}. {modality}. {description}"`, metadata =
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/auth/register` | none | AUTH-1, builder self-registration only — always creates role `user` |
-| POST | `/api/auth/login` | none | AUTH-2, builder login, returns session/JWT |
+| POST | `/api/auth/register` | none | AUTH-1, AI engineer self-registration only — always creates role `user` |
+| POST | `/api/auth/login` | none | AUTH-2, AI engineer login, returns session/JWT |
 | POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, admin-only login, returns session/JWT with role `admin`; no `/api/admin/register` exists |
 | GET | `/api/models` | none | CAT-5, list/search catalog (filter by modality/provider) |
 | GET | `/api/models/{id}` | none | model detail |
@@ -74,7 +76,7 @@ input = `f"{title}. {provider}. {modality}. {description}"`, metadata =
 | GET | `/api/activity/me` | user | DLV-4, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
 
 `/api/auth/*` and `/api/admin/login` are separate router modules sharing the same `users` table and
-password-hashing logic, but not the same route or handler — the builder module can never issue an
+password-hashing logic, but not the same route or handler — the AI engineer module can never issue an
 `admin` role, and the admin module has no register counterpart. Admin accounts are created only via
 the seed script or an authenticated admin user-management action.
 

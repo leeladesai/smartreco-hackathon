@@ -9,7 +9,7 @@ design and layout.
 
 ## 1. Personas
 
-**Builder (primary user)**
+**AI engineer (primary user)**
 Goal: find the AI model best suited to what they're currently trying to build, with minimal
 searching — often by comparing a few candidates against each other on price, latency, or capability.
 Behavior: browses by modality/provider, searches loosely, revisits and compares models before
@@ -21,10 +21,10 @@ retrieval, not just listed.
 
 ---
 
-## 2. Primary user flow — Builder
+## 2. Primary user flow — AI engineer
 
 1. Lands on catalog (unauthenticated browse allowed; login required to get personalized recs)
-2. Registers/logs in at the builder login screen (`POST /api/auth/register` /
+2. Registers/logs in at the AI engineer login screen (`POST /api/auth/register` /
    `POST /api/auth/login`) — no role picker; this screen can only ever produce a `user` account
 3. Browses by modality/provider, searches, opens model detail pages, spends time reading — every
    meaningful action is silently tracked and batched
@@ -33,40 +33,46 @@ retrieval, not just listed.
    is what fires `model_compare`, not simply viewing multiple models in one session
 5. After the trigger threshold is crossed (e.g. 5 tracked actions or 10 minutes with new activity),
    a recommendation is generated in the background
-6. Builder visits their **Dashboard** and sees a persuasive narrative + 3–5 recommended models, each
+6. AI engineer visits their **Dashboard** and sees a persuasive narrative + 3–5 recommended models, each
    connected by an **evidence trail** back to the specific views/searches/comparisons that produced
    it, plus a stepper showing the agent pipeline stage by stage and a delta chip flagging what's new
    since their last visit
-7. Curious builders can open **Your Activity** to see the raw tracked event log and exactly how it
+7. Curious AI engineers can open **Your Activity** to see the raw tracked event log and exactly how it
    collapsed into the behavior summary, activity hash, and trigger reason behind the current
    recommendation — nothing about the tracking is hidden from them
-8. Builder continues browsing → new activity → next visit to Dashboard shows an updated
+8. AI engineer continues browsing → new activity → next visit to Dashboard shows an updated
    recommendation (or the same one, unchanged, if behavior hasn't meaningfully shifted)
-9. *(Bonus)* Builder receives an afternoon email/Telegram digest without visiting the site
+9. *(Bonus)* AI engineer receives an afternoon email/Telegram digest without visiting the site
 
 ## 3. Primary flow — Curator
 
 1. Logs in at a **separate admin login screen** (`POST /api/admin/login`) — distinct route and
-   form from the builder login, no register option; landing here always resolves to the admin
+   form from the AI engineer login, no register option; landing here always resolves to the admin
    console → sees the **Admin** nav item
 2. **Model list** view: table of models with a sync-status indicator per row
-3. **Add/Edit model** form → on save, model appears in the SQL-backed list immediately;
-   sync-status shows "indexing…" then "synced" once the vector write completes
-4. Can delete a model; it should disappear from future recommendations
+3. A **+ Add model** button (top-right, not buried in the list) opens the create form as a
+   focused modal overlay, capturing title, description, story (curator's pitch — who should pick
+   this model and what trade-off it makes), provider, modality, price, latency, context window,
+   use-case tags, and source URL. Editing an existing model reuses the same modal, pre-filled —
+   one form, two entry points, not two layouts to keep in sync
+4. On save, the model appears in the SQL-backed list immediately; sync-status shows "indexing…"
+   then "synced" once the vector write completes, while the modal itself fades/closes rather than
+   snapping shut
+5. Can delete a model; it should disappear from future recommendations
 
 ## 4. Screens required (MVP)
 
 | Screen | Users | Notes |
 |---|---|---|
-| Login / Register | Builder | `/login` — sign-in + register toggle, no role picker |
+| Login / Register | AI engineer | `/login` — sign-in + register toggle, no role picker |
 | Admin login | Curator | `/admin/login` — separate screen, single fixed form, no register option |
-| Catalog / search | Builder | Card grid, search/filter chips, persistent compare tray at the bottom |
-| Model detail | Builder | Triggers `model_view` + dwell-time tracking; explicit "add to comparison" action (not inferred from dwell) feeds the compare tray |
-| Compare | Builder | Side-by-side spec table for 2–3 tray models; the dimension the builder has dwelt on most is auto-highlighted; fires `model_compare` |
-| Dashboard (recommendations) | Builder | Narrative block + pipeline stepper + model cards with evidence-trail annotations back to source events + "new since last visit" delta |
-| Your Activity | Builder | Chronological log of tracked events, plus a panel showing how they collapse into `behavior_summary` → `activity_hash` → `trigger_reason` → the delivered recommendation |
-| Admin: model list | Curator | Table with sync-status column |
-| Admin: model form | Curator | Create/edit |
+| Catalog / search | AI engineer | Card grid, search/filter chips, persistent compare tray at the bottom |
+| Model detail | AI engineer | Triggers `model_view` + dwell-time tracking; explicit "add to comparison" action (not inferred from dwell) feeds the compare tray |
+| Compare | AI engineer | Side-by-side spec table for 2–3 tray models; the dimension the AI engineer has dwelt on most is auto-highlighted; fires `model_compare` |
+| Dashboard (recommendations) | AI engineer | Narrative block + pipeline stepper + model cards with evidence-trail annotations back to source events + "new since last visit" delta |
+| Your Activity | AI engineer | Chronological log of tracked events, plus a panel showing how they collapse into `behavior_summary` → `activity_hash` → `trigger_reason` → the delivered recommendation |
+| Admin: model list | Curator | Table with sync-status column; `+ Add model` entry point top-right |
+| Admin: model form | Curator | Modal overlay (not inline/bottom-of-list), shared by create and edit; captures description *and* story as separate fields |
 
 ## 5. Key UX principles for this build
 
@@ -86,5 +92,13 @@ retrieval, not just listed.
   `model_compare` signal, and a UI element (the tray) that makes browsing itself a little stickier.
 - **Tracking is legible, not just present.** The Your Activity screen turns the internals TRK/AGT
   requirements already produce (raw events, `activity_hash`, `trigger_reason`) into a real product
-  surface instead of a hidden debug log — it's simultaneously a trust feature for builders and the
+  surface instead of a hidden debug log — it's simultaneously a trust feature for AI engineers and the
   most direct proof, for a judge, that recommendations are grounded rather than stubbed.
+- **Navigation mirrors real app state, not a design-review switcher.** What a screen can navigate
+  to depends on who's signed in (nobody / AI engineer / curator) — there's no single nav exposing
+  every screen as an equal, always-clickable peer, and nothing in the AI-engineer flow links to
+  admin login. This matters beyond visual polish: a spec that shows every screen as reachable from
+  everywhere will get implemented that way.
+- **Catalog edits happen in a focused overlay, not inline.** Add/edit model opens as a modal over
+  the list rather than a form pushing the table around — the list stays the stable "home" view, and
+  create/edit share one form definition instead of drifting into two.

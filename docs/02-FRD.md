@@ -22,22 +22,22 @@ end-to-end traceability.
 ## 2. Functional requirements
 
 ### AUTH
-Builder and admin auth are deliberately two separate modules — a separate route, a separate form,
+AI engineer and admin auth are deliberately two separate modules — a separate route, a separate form,
 and (for admin) no self-registration — not one login screen with a role picker.
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
-| AUTH-1 | Builder can register with email/password at `POST /api/auth/register` | Password hashed (bcrypt/argon2); duplicate email rejected; role always created as `user` — this endpoint can never create an admin |
-| AUTH-2 | Builder can log in and receive a session at `POST /api/auth/login` | Session cookie or JWT issued; invalid credentials rejected with generic error |
+| AUTH-1 | AI engineer can register with email/password at `POST /api/auth/register` | Password hashed (bcrypt/argon2); duplicate email rejected; role always created as `user` — this endpoint can never create an admin |
+| AUTH-2 | AI engineer can log in and receive a session at `POST /api/auth/login` | Session cookie or JWT issued; invalid credentials rejected with generic error |
 | AUTH-3 | Two roles exist: `user`, `admin` | Role stored on user record; at least 1 admin seeded at setup; no runtime endpoint grants the `admin` role |
 | AUTH-4 | Admin-only routes are protected | Non-admin hitting `/api/admin/*` receives 403, enforced server-side by a role dependency |
-| AUTH-5 | Admin logs in through a separate module at `POST /api/admin/login` | Distinct route/handler from builder login; **no corresponding admin-registration endpoint exists** — admin accounts are only ever created by seeding or by another admin via a user-management action, never self-service |
+| AUTH-5 | Admin logs in through a separate module at `POST /api/admin/login` | Distinct route/handler from AI engineer login; **no corresponding admin-registration endpoint exists** — admin accounts are only ever created by seeding or by another admin via a user-management action, never self-service |
 | AUTH-6 | `POST /api/admin/login` only authenticates accounts with role `admin` | A correct password for a non-admin account is rejected with the same generic error as a wrong password — the endpoint never reveals whether the account exists or merely lacks the admin role |
 
 ### CAT
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
-| CAT-1 | Admin can create a model (title, description, provider, modality, price, latency, context window, use-case tags) | Row written to SQL; response includes generated ID |
+| CAT-1 | Admin can create a model (title, description, story, provider, modality, price, latency, context window, use-case tags) via a modal form, not an inline page element | Row written to SQL; response includes generated ID; the create/edit form is a focused overlay, not a form embedded in the catalog list |
 | CAT-2 | Admin can edit a model | SQL row updated; `updated_at` bumped |
 | CAT-3 | Admin can delete a model | SQL row removed (or soft-deleted); no longer retrievable by agent |
 | CAT-4 | Every create/edit/delete dual-writes to the vector store | Vector store reflects the model within the same request; failure sets `vector_synced=false` and is retried |
@@ -51,7 +51,7 @@ and (for admin) no self-registration — not one login screen with a role picker
 | TRK-3 | Events flush on a timer, size threshold, or page unload | Uses `sendBeacon` on unload; periodic flush otherwise |
 | TRK-4 | Backend ingests events in bulk without blocking the request | Single POST accepts an array; bulk insert |
 | TRK-5 | Tracking never breaks or visibly slows the page | No synchronous blocking calls in the tracking path; verified via manual perf check |
-| TRK-6 | A `model_compare` event is recorded only when the builder takes an explicit "add to comparison" action (compare tray / Compare screen) | Never inferred from dwell time or session view count alone; powers the high-confidence "because you compared X vs Y" narrative tag |
+| TRK-6 | A `model_compare` event is recorded only when the AI engineer takes an explicit "add to comparison" action (compare tray / Compare screen) | Never inferred from dwell time or session view count alone; powers the high-confidence "because you compared X vs Y" narrative tag |
 
 ### AGT
 | ID | Requirement | Acceptance criteria |
@@ -70,7 +70,7 @@ and (for admin) no self-registration — not one login screen with a role picker
 | DLV-1 | Latest recommendation is shown on the user's dashboard | Narrative + model cards rendered |
 | DLV-2 | Recommendation view refreshes after new agent runs | Stale recommendation not shown once a new one is stored |
 | DLV-3 (bonus) | Scheduled digest delivered via email/Telegram | Real scheduler (APScheduler/Celery Beat), not a manual trigger |
-| DLV-4 | Builder can view their own tracked activity and how it produced their current recommendation | Read-only view over already-persisted data (`events`, `activity_hash`, `trigger_reason` from `recommendations`) — no new backend logic; shows the raw event log plus the `behavior_summary` → `activity_hash` → `trigger_reason` chain behind the delivered recommendation |
+| DLV-4 | AI engineer can view their own tracked activity and how it produced their current recommendation | Read-only view over already-persisted data (`events`, `activity_hash`, `trigger_reason` from `recommendations`) — no new backend logic; shows the raw event log plus the `behavior_summary` → `activity_hash` → `trigger_reason` chain behind the delivered recommendation |
 
 ### OBS
 | ID | Requirement | Acceptance criteria |

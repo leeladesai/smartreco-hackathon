@@ -14,7 +14,7 @@ logic is trivial. This exists specifically to avoid the rubric's "faked/stubbed 
 by day 3 you already have a genuine Mesh API call, a genuine vector query, and a genuine dual-write.
 
 Scope:
-- AUTH-1, AUTH-2, AUTH-3, AUTH-4, AUTH-5, AUTH-6 (builder and admin login as separate modules from day 1 — cheap to do now, awkward to retrofit later)
+- AUTH-1, AUTH-2, AUTH-3, AUTH-4, AUTH-5, AUTH-6 (AI engineer and admin login as separate modules from day 1 — cheap to do now, awkward to retrofit later)
 - CAT-1, CAT-4 (create only, dual-write working)
 - TRK-1, TRK-4 (tracking exists, naive per-event POST is acceptable here — batching comes next)
 - AGT-3, AGT-5, AGT-7 (single-shot: retrieve top-k, one LLM call, no grading/refine/cache yet)

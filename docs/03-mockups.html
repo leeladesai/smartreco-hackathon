@@ -35,8 +35,8 @@
   a{color:inherit;}
   ::selection{background:var(--amber); color:#12151c;}
 
-  /* ---- top nav ---- */
-  .topbar{
+  /* ---- app nav (flow-based, not a tab bar — see §0 note in body) ---- */
+  .app-nav{
     position:sticky; top:0; z-index:50;
     display:flex; align-items:center; gap:6px;
     padding:14px 20px; border-bottom:1px solid var(--line);
@@ -44,24 +44,51 @@
     backdrop-filter:blur(10px);
     flex-wrap:wrap;
   }
+  .app-nav[data-state="none"]{display:none;}
   .brand{
     font-family:var(--mono); font-weight:700; font-size:14px; letter-spacing:.14em;
     padding:6px 10px; border:1px solid var(--line); border-radius:4px; margin-right:10px;
     color:var(--amber);
   }
   .brand small{color:var(--muted); font-weight:400; letter-spacing:.05em;}
-  .tabs{display:flex; gap:2px; flex-wrap:wrap;}
-  .tab{
+  .app-nav[data-state="admin"] .brand{color:var(--rose);}
+  .nav-links{display:none; gap:2px;}
+  .app-nav[data-state="builder"] .builder-links{display:flex;}
+  .app-nav[data-state="admin"] .admin-links{display:flex;}
+  .nav-link{
     font-family:var(--mono); font-size:11.5px; letter-spacing:.04em; text-transform:uppercase;
     padding:9px 14px; border-radius:4px; cursor:pointer; color:var(--muted); border:1px solid transparent;
     user-select:none;
   }
-  .tab:hover{color:var(--text); border-color:var(--line);}
-  .tab.active{color:var(--bg); background:var(--amber); font-weight:700;}
-  .topbar-spacer{flex:1;}
+  .nav-link:hover{color:var(--text); border-color:var(--line);}
+  .nav-link.active{color:var(--bg); background:var(--amber); font-weight:700;}
+  .app-nav[data-state="admin"] .nav-link.active{background:var(--rose);}
+  .app-nav-spacer{flex:1;}
   .persona-pill{
     font-family:var(--mono); font-size:10.5px; color:var(--muted); border:1px dashed var(--line);
-    padding:6px 10px; border-radius:20px;
+    padding:6px 10px; border-radius:20px; margin-right:8px;
+  }
+  .logout-link{
+    font-family:var(--mono); font-size:11px; color:var(--muted); cursor:pointer;
+    border:1px solid var(--line); padding:7px 12px; border-radius:5px; user-select:none;
+  }
+  .logout-link:hover{color:var(--text); border-color:var(--muted-2);}
+
+  .flow-link{
+    font-family:var(--mono); font-size:11px; color:var(--muted); cursor:pointer; display:inline-block;
+    margin-bottom:16px; user-select:none;
+  }
+  .flow-link:hover{color:var(--text);}
+
+  /* ---- reviewer-only screen jump (NOT product chrome) ---- */
+  .reviewer-jump{
+    position:fixed; right:14px; bottom:14px; z-index:80;
+    font-family:var(--mono); font-size:9.5px; color:var(--muted-2); background:var(--panel);
+    border:1px dashed var(--line); border-radius:6px; padding:7px 9px; display:flex; align-items:center; gap:6px;
+  }
+  .reviewer-jump select{
+    background:var(--panel-2); color:var(--text); border:1px solid var(--line); border-radius:4px;
+    font-family:var(--mono); font-size:10.5px; padding:4px 6px;
   }
 
   .page{display:none; padding:28px 20px 90px; max-width:1180px; margin:0 auto;}
@@ -228,7 +255,35 @@
   .admin-table td{padding:12px; border-bottom:1px solid var(--line-soft); font-size:13px;}
   .sync-ok{color:var(--good); font-family:var(--mono); font-size:11px;}
   .sync-pending{color:var(--amber); font-family:var(--mono); font-size:11px;}
-  .admin-actions a{font-family:var(--mono); font-size:11px; color:var(--muted); margin-right:10px; cursor:pointer;}
+  .admin-actions button{font-family:var(--mono); font-size:11px; color:var(--muted); margin-right:10px; cursor:pointer; background:none; border:0; padding:0;}
+  .admin-actions button:hover{color:var(--text);}
+  .admin-actions button.delete:hover{color:var(--rose);}
+  .form-status{font-family:var(--mono); font-size:11px; color:var(--muted); min-height:16px; margin-top:12px;}
+  .form-status.success{color:var(--good);}
+  .form-status.error{color:var(--rose);}
+  .admin-head-row{display:flex; align-items:flex-end; justify-content:space-between; gap:20px;}
+  .admin-head-row .btn{flex:none; padding:10px 16px;}
+  .modal-backdrop{
+    position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; padding:24px;
+    background:rgba(8,10,14,.76); backdrop-filter:blur(8px);
+    opacity:0; visibility:hidden; pointer-events:none; transition:opacity .16s ease, visibility 0s linear .16s;
+  }
+  .modal-backdrop.show{opacity:1; visibility:visible; pointer-events:auto; transition:opacity .16s ease;}
+  .modal{
+    width:min(720px, 100%); max-height:min(850px, calc(100vh - 48px)); overflow:auto; background:var(--panel);
+    border:1px solid var(--line); border-top:3px solid var(--amber); border-radius:8px; box-shadow:0 24px 80px rgba(0,0,0,.42);
+    transform:translateY(10px) scale(.98); transition:transform .18s ease;
+  }
+  .modal-backdrop.show .modal{transform:translateY(0) scale(1);}
+  .modal-head{display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:20px 22px 16px; border-bottom:1px solid var(--line-soft);}
+  .modal-head h3{margin:0 0 4px; font-size:17px;}
+  .modal-head p{margin:0; color:var(--muted); font-size:12px; line-height:1.5;}
+  .modal-close{font-family:var(--mono); color:var(--muted); background:none; border:1px solid var(--line); border-radius:4px; width:30px; height:30px; cursor:pointer;}
+  .modal-close:hover{color:var(--text); border-color:var(--muted-2);}
+  .modal .form-grid{padding:20px 22px 22px; margin-top:0;}
+  .modal .form-status{padding:0 22px; margin:0;}
+  .modal .modal-actions{padding:0 22px 22px; display:flex; gap:10px;}
+  @media (max-width:620px){.admin-head-row{align-items:flex-start; flex-direction:column;}.admin-head-row .btn{width:100%;}.modal-backdrop{padding:12px;}.modal{max-height:calc(100vh - 24px);}}
   .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px;}
   .form-grid .full{grid-column:1/-1;}
   .field label{display:block; font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px;}
@@ -314,27 +369,49 @@
   .lock-row .txt b{color:var(--text);}
 </style>
 
-<div class="topbar">
-  <div class="brand">SMARTRECO <small>/ model catalog</small></div>
-  <div class="tabs" id="tabs">
-    <div class="tab active" data-page="auth">Login</div>
-    <div class="tab" data-page="admin-auth">Admin login</div>
-    <div class="tab" data-page="catalog">Catalog</div>
-    <div class="tab" data-page="detail">Model</div>
-    <div class="tab" data-page="compare">Compare</div>
-    <div class="tab" data-page="dashboard">Dashboard</div>
-    <div class="tab" data-page="activity">Your activity</div>
-    <div class="tab" data-page="admin">Admin</div>
-  </div>
-  <div class="topbar-spacer"></div>
+<!--
+  This file models real application flow, not a design-review tab switcher: each screen only
+  links to screens a user could actually reach from it. There is exactly ONE nav bar element
+  (#app-nav below) and it changes shape by auth state — "none" (logged out), "builder", or
+  "admin" — instead of exposing every screen as an equal, always-clickable tab. Admin login is
+  reached by URL only; nothing in the builder flow links to it, mirroring the real product.
+  The floating control in the bottom-right corner is a reviewer aid for clicking through this
+  spec quickly — it is explicitly NOT part of the product UI and should not be implemented.
+-->
+<header class="app-nav" id="app-nav" data-state="none">
+  <div class="brand">SMARTRECO <small id="brand-sub">/ model catalog</small></div>
+  <nav class="nav-links builder-links">
+    <div class="nav-link" data-page="catalog" onclick="go('catalog')">Catalog</div>
+    <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Dashboard</div>
+    <div class="nav-link" data-page="activity" onclick="go('activity')">Your activity</div>
+  </nav>
+  <nav class="nav-links admin-links">
+    <div class="nav-link" data-page="admin" onclick="go('admin')">Models</div>
+  </nav>
+  <div class="app-nav-spacer"></div>
   <div class="persona-pill" id="persona-pill">not signed in</div>
+  <div class="logout-link" onclick="logout()">Log out</div>
+</header>
+
+<div class="reviewer-jump" title="Reviewer aid only — not part of the product UI">
+  ↳ jump to screen (review only)
+  <select onchange="go(this.value)">
+    <option value="auth" selected>Login (AI engineer)</option>
+    <option value="admin-auth">Admin login</option>
+    <option value="catalog">Catalog</option>
+    <option value="detail">Model detail</option>
+    <option value="compare">Compare</option>
+    <option value="dashboard">Dashboard</option>
+    <option value="activity">Your activity</option>
+    <option value="admin">Admin console</option>
+  </select>
 </div>
 
 <!-- ================= AUTH (user) ================= -->
 <div class="page active" id="page-auth">
   <div class="page-head">
     <p class="eyebrow">00 — Sign in <span class="route-badge" style="margin-left:8px;">POST /login</span></p>
-    <h1 class="page-title">Sign in to your builder account</h1>
+    <h1 class="page-title">Sign in to your AI engineer account</h1>
     <p class="page-sub">Separate module from admin — this form only ever creates or authenticates a standard user account. There's no role picker here on purpose.</p>
   </div>
 
@@ -343,7 +420,7 @@
       <div>
         <div class="brand">SMARTRECO <small>/ model catalog</small></div>
         <h2>Compare AI models the way you'd compare lab equipment — by spec, not by hype.</h2>
-        <p>Every session you spend browsing quietly builds a picture of what you're actually trying to build — see it explained, never hidden, on the Activity tab.</p>
+        <p>Every session you spend browsing quietly builds a picture of what you're actually trying to build — see it explained, never hidden, on the Your Activity screen.</p>
       </div>
       <div class="mini-ticket">
         <div class="tag-row"><span class="badge reason">preview</span></div>
@@ -362,7 +439,7 @@
       <form class="auth-form" id="auth-form" onsubmit="return false;">
         <div class="auth-field">
           <label>Email</label>
-          <input type="email" placeholder="you@company.com" value="builder@smartreco.dev">
+          <input type="email" placeholder="you@company.com" value="engineer@smartreco.dev">
         </div>
         <div class="auth-field">
           <label>Password</label>
@@ -386,7 +463,7 @@
   <div class="page-head">
     <p class="eyebrow">00b — Admin sign in <span class="route-badge restricted" style="margin-left:8px;">POST /admin/login</span></p>
     <h1 class="page-title">Curator console access</h1>
-    <p class="page-sub">A distinct module from the builder login — different route, different form, no self-registration. Admin accounts are provisioned ahead of time, not created here.</p>
+    <p class="page-sub">A distinct module from the AI engineer login — different route, different form, no self-registration. Admin accounts are provisioned ahead of time, not created here.</p>
   </div>
 
   <div class="auth-wrap">
@@ -408,7 +485,7 @@
     <div class="auth-form-side">
       <div class="lock-row">
         <div class="glyph">⛊</div>
-        <div class="txt">Signing in here always resolves to the <b>Admin</b> app, never the builder catalog.</div>
+        <div class="txt">Signing in here always resolves to the <b>Admin</b> app, never the AI engineer catalog.</div>
       </div>
 
       <div class="auth-error" id="admin-auth-error">Wrong email or password. Admin accounts are not self-service — contact another curator if you're locked out.</div>
@@ -436,7 +513,7 @@
   <div class="page-head">
     <p class="eyebrow">01 — Catalog</p>
     <h1 class="page-title">Find the model that fits, not just the one you've heard of</h1>
-    <p class="page-sub">Every view, search and comparison here quietly trains your dashboard — nothing is sent anywhere until you batch-flush, and you can see exactly what's tracked on the Activity tab.</p>
+    <p class="page-sub">Every view, search and comparison here quietly trains your dashboard — nothing is sent anywhere until you batch-flush, and you can see exactly what's tracked on the Your Activity screen.</p>
   </div>
 
   <div class="searchbar">
@@ -471,6 +548,7 @@
 
 <!-- ================= MODEL DETAIL ================= -->
 <div class="page" id="page-detail">
+  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
   <div class="page-head">
     <p class="eyebrow">02 — Model detail · fires <span style="color:var(--text)">model_view</span></p>
   </div>
@@ -484,7 +562,7 @@
         </div>
         <div class="btn on" style="flex:none; padding:9px 16px;">✓ Added to compare</div>
       </div>
-      <p class="desc">Low-latency text-to-speech tuned for conversational agents. Streams audio in chunks as small as 75ms, trading a small amount of naturalness for real-time responsiveness — the model builders reach for when a voice agent can't afford to feel laggy.</p>
+      <p class="desc">Low-latency text-to-speech tuned for conversational agents. Streams audio in chunks as small as 75ms, trading a small amount of naturalness for real-time responsiveness — the models that teams reach for when a voice agent can't afford to feel laggy.</p>
       <table class="spec-table">
         <tr><td>Price</td><td>$0.0002 / character</td></tr>
         <tr><td>Latency (first byte)</td><td>~275ms</td></tr>
@@ -510,6 +588,7 @@
 
 <!-- ================= COMPARE ================= -->
 <div class="page" id="page-compare">
+  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
   <div class="page-head">
     <p class="eyebrow">03 — Compare · fires <span style="color:var(--text)">model_compare</span></p>
     <h1 class="page-title">Two voice models, side by side</h1>
@@ -599,11 +678,13 @@
         </div>
       </div>
     </div>
+    <p class="note">Curious how this was built? <span class="flow-link" style="margin:0; display:inline;" onclick="go('activity')">See your activity →</span></p>
   </div>
 </div>
 
 <!-- ================= ACTIVITY LOG ================= -->
 <div class="page" id="page-activity">
+  <div class="flow-link" onclick="go('dashboard')">← Back to dashboard</div>
   <div class="page-head">
     <p class="eyebrow">05 — Your activity</p>
     <h1 class="page-title">Everything tracked, and where it went</h1>
@@ -665,37 +746,48 @@
 
 <!-- ================= ADMIN ================= -->
 <div class="page" id="page-admin">
-  <div class="page-head">
-    <p class="eyebrow">06 — Admin · curator</p>
-    <h1 class="page-title">Model catalog</h1>
-    <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">06 — Admin · curator</p>
+      <h1 class="page-title">Model catalog</h1>
+      <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
+    </div>
+    <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
   </div>
   <table class="admin-table">
-    <tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr>
-    <tr><td>GPT-4o mini</td><td>OpenAI</td><td>LLM</td><td>$0.15/1M tok</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
-    <tr><td>ElevenLabs Turbo v2.5</td><td>ElevenLabs</td><td>Voice</td><td>$0.0002/char</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
-    <tr><td>Flux.1 Pro</td><td>Black Forest Labs</td><td>Image</td><td>$0.05/image</td><td class="sync-pending">⋯ indexing</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
-    <tr><td>Runway Gen-3</td><td>Runway</td><td>Video</td><td>$0.10/sec</td><td class="sync-ok">✓ synced</td><td class="admin-actions"><a>Edit</a><a>Delete</a></td></tr>
+    <thead><tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr></thead>
+    <tbody id="admin-model-table"></tbody>
   </table>
+</div>
 
-  <div class="panel" style="margin-top:26px;">
-    <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 4px;">Add model</h4>
-    <div class="form-grid">
-      <div class="field"><label>Title</label><input placeholder="e.g. Cartesia Sonic"></div>
-      <div class="field"><label>Provider</label><input placeholder="e.g. Cartesia"></div>
-      <div class="field"><label>Modality</label><select><option>LLM</option><option selected>Voice</option><option>Image</option><option>Video</option><option>Embedding</option></select></div>
-      <div class="field"><label>Price / unit</label><input placeholder="$0.00015/char"></div>
-      <div class="field"><label>Latency (ms)</label><input placeholder="135"></div>
-      <div class="field"><label>Context window</label><input placeholder="n/a for voice"></div>
-      <div class="field full"><label>Use-case tags</label><input placeholder="real-time voice, customer support"></div>
-      <div class="field full"><label>Description</label><textarea placeholder="What this model is best at, in plain terms."></textarea></div>
-      <div class="field full"><label>Source URL</label><input placeholder="https://…"></div>
+<div class="modal-backdrop" id="model-modal" role="presentation" onclick="closeModelModal(event)">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h3 id="model-form-title">Add model</h3>
+        <p>Capture the model's specs, plus the story that helps a builder pick it over alternatives.</p>
+      </div>
+      <button class="modal-close" type="button" aria-label="Close" onclick="closeModelModal()">×</button>
     </div>
-    <div style="margin-top:16px; display:flex; gap:10px;">
-      <div class="btn primary" style="flex:none; padding:10px 22px;">Save model</div>
-      <div class="btn" style="flex:none; padding:10px 22px;">Cancel</div>
+    <form class="form-grid" id="model-form" onsubmit="saveModel(event)">
+      <div class="field"><label for="model-title">Title</label><input id="model-title" required placeholder="e.g. Cartesia Sonic"></div>
+      <div class="field"><label for="model-provider">Provider</label><input id="model-provider" required placeholder="e.g. Cartesia"></div>
+      <div class="field"><label for="model-modality">Modality</label><select id="model-modality"><option>LLM</option><option selected>Voice</option><option>Image</option><option>Video</option><option>Embedding</option></select></div>
+      <div class="field"><label for="model-price">Price / unit</label><input id="model-price" required placeholder="$0.00015/char"></div>
+      <div class="field"><label for="model-latency">Latency (ms)</label><input id="model-latency" placeholder="135"></div>
+      <div class="field"><label for="model-context">Context window</label><input id="model-context" placeholder="n/a for voice"></div>
+      <div class="field full"><label for="model-tags">Use-case tags</label><input id="model-tags" placeholder="real-time voice, customer support"></div>
+      <div class="field full"><label for="model-description">Description</label><textarea id="model-description" placeholder="What this model does, in plain technical terms."></textarea></div>
+      <div class="field full"><label for="model-story">Story — why this model</label><textarea id="model-story" placeholder="Who should reach for it, what trade-off it makes, and when it beats the alternatives."></textarea></div>
+      <div class="field full"><label for="model-source">Source URL</label><input id="model-source" type="url" placeholder="https://…"></div>
+      <input id="model-edit-id" type="hidden">
+      <div class="full" id="model-form-status" role="status" aria-live="polite"></div>
+    </form>
+    <div class="modal-actions">
+      <button class="btn primary" type="submit" form="model-form" style="flex:none; padding:10px 22px;">Save model</button>
+      <button class="btn" type="button" onclick="closeModelModal()" style="flex:none; padding:10px 22px;">Cancel</button>
     </div>
-  </div>
+  </section>
 </div>
 
 <script>
@@ -706,46 +798,189 @@
     {id:'MDL-0142', name:'ElevenLabs Turbo v2.5', provider:'ElevenLabs', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~275ms', s2:'Price', v2:'$0.0002/char'},
     {id:'MDL-0176', name:'Deepgram Aura', provider:'Deepgram', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~200ms', s2:'Price', v2:'$0.0135/1K char'},
     {id:'MDL-0198', name:'Cartesia Sonic', provider:'Cartesia', mod:'Voice', color:'var(--amber)', s1:'Latency', v1:'~135ms', s2:'Price', v2:'$0.00015/char'},
-    {id:'MDL-0119', name:'Flux.1 Pro', provider:'Black Forest Labs', mod:'Image', color:'var(--violet)', s1:'Resolution', v1:'2048px', s2:'Price', v2:'$0.05/image'},
+    {id:'MDL-0119', name:'Flux.1 Pro', provider:'Black Forest Labs', mod:'Image', color:'var(--violet)', s1:'Resolution', v1:'2048px', s2:'Price', v2:'$0.05/image', sync:'indexing'},
     {id:'MDL-0103', name:'Stable Diffusion 3.5', provider:'Stability', mod:'Image', color:'var(--violet)', s1:'Resolution', v1:'1536px', s2:'Price', v2:'$0.035/image'},
     {id:'MDL-0087', name:'Runway Gen-3', provider:'Runway', mod:'Video', color:'var(--rose)', s1:'Max length', v1:'10s', s2:'Price', v2:'$0.10/sec'},
     {id:'MDL-0071', name:'Voyage-3', provider:'Voyage AI', mod:'Embedding', color:'var(--teal)', s1:'Dimensions', v1:'1024', s2:'Price', v2:'$0.02/1M tok'},
   ];
 
   const grid = document.getElementById('catalog-grid');
-  grid.innerHTML = MODELS.map(m => `
-    <div class="card" onclick="go('detail')">
-      <div class="stripe" style="background:${m.color}"></div>
-      <div class="card-body">
-        <div class="card-top">
-          <span class="part-id">${m.id}</span>
-          <span class="modality-tag" style="background:color-mix(in srgb, ${m.color} 22%, transparent); color:${m.color};">${m.mod}</span>
-        </div>
-        <h3>${m.name}</h3>
-        <p class="provider">${m.provider}</p>
-        <div class="spec-row"><span>${m.s1}</span><b>${m.v1}</b></div>
-        <div class="spec-row"><span>${m.s2}</span><b>${m.v2}</b></div>
-        <div class="card-actions">
-          <div class="btn" onclick="event.stopPropagation(); this.classList.toggle('on'); this.textContent = this.classList.contains('on') ? '✓ Comparing' : '+ Compare';">+ Compare</div>
-          <div class="btn primary" onclick="event.stopPropagation(); go('detail');">View</div>
+  const adminTable = document.getElementById('admin-model-table');
+  const modelForm = document.getElementById('model-form');
+  const modelFormStatus = document.getElementById('model-form-status');
+  const modelModal = document.getElementById('model-modal');
+  const modalityColors = {
+    LLM: 'var(--cyan)', Voice: 'var(--amber)', Image: 'var(--violet)',
+    Video: 'var(--rose)', Embedding: 'var(--teal)', Multimodal: 'var(--cyan)'
+  };
+
+  function modelColor(model){ return modalityColors[model.mod] || 'var(--muted)'; }
+
+  function renderCatalog(){
+    grid.innerHTML = MODELS.map(m => `
+      <div class="card" onclick="go('detail')">
+        <div class="stripe" style="background:${modelColor(m)}"></div>
+        <div class="card-body">
+          <div class="card-top">
+            <span class="part-id">${m.id}</span>
+            <span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(m)} 22%, transparent); color:${modelColor(m)};">${m.mod}</span>
+          </div>
+          <h3>${m.name}</h3>
+          <p class="provider">${m.provider}</p>
+          <div class="spec-row"><span>${m.s1}</span><b>${m.v1}</b></div>
+          <div class="spec-row"><span>${m.s2}</span><b>${m.v2}</b></div>
+          <div class="card-actions">
+            <div class="btn" onclick="event.stopPropagation(); this.classList.toggle('on'); this.textContent = this.classList.contains('on') ? '✓ Comparing' : '+ Compare';">+ Compare</div>
+            <div class="btn primary" onclick="event.stopPropagation(); go('detail');">View</div>
+          </div>
         </div>
       </div>
-    </div>
-  `).join('');
+    `).join('');
+  }
+
+  function renderAdminTable(){
+    adminTable.innerHTML = MODELS.map(m => `
+      <tr>
+        <td>${m.name}</td><td>${m.provider}</td><td>${m.mod}</td><td>${m.v2}</td>
+        <td class="${m.sync === 'indexing' ? 'sync-pending' : 'sync-ok'}">${m.sync === 'indexing' ? '⋯ indexing' : '✓ synced'}</td>
+        <td class="admin-actions">
+          <button type="button" onclick="editModel('${m.id}')">Edit</button>
+          <button type="button" class="delete" onclick="deleteModel('${m.id}')">Delete</button>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  function setFormStatus(message, kind=''){
+    modelFormStatus.textContent = message;
+    modelFormStatus.className = `form-status ${kind}`;
+  }
+
+  function openModelModal(){
+    resetModelForm();
+    modelModal.classList.add('show');
+    requestAnimationFrame(() => document.getElementById('model-title').focus());
+  }
+
+  function closeModelModal(event){
+    if (event && event.target !== modelModal) return;
+    modelModal.classList.remove('show');
+    resetModelForm();
+  }
+
+  function resetModelForm(){
+    modelForm.reset();
+    document.getElementById('model-edit-id').value = '';
+    document.getElementById('model-form-title').textContent = 'Add model';
+    setFormStatus('');
+  }
+
+  function editModel(id){
+    const model = MODELS.find(item => item.id === id);
+    if (!model) return;
+    document.getElementById('model-edit-id').value = model.id;
+    document.getElementById('model-title').value = model.name;
+    document.getElementById('model-provider').value = model.provider;
+    document.getElementById('model-modality').value = model.mod;
+    document.getElementById('model-price').value = model.v2;
+    document.getElementById('model-latency').value = model.latency || '';
+    document.getElementById('model-context').value = model.context || '';
+    document.getElementById('model-tags').value = model.tags || '';
+    document.getElementById('model-description').value = model.description || '';
+    document.getElementById('model-story').value = model.story || '';
+    document.getElementById('model-source').value = model.source || '';
+    document.getElementById('model-form-title').textContent = `Edit ${model.name}`;
+    setFormStatus(`Editing ${model.id}. Save to re-index this model.`);
+    modelModal.classList.add('show');
+    requestAnimationFrame(() => document.getElementById('model-title').focus());
+  }
+
+  function deleteModel(id){
+    const model = MODELS.find(item => item.id === id);
+    if (!model || !window.confirm(`Delete ${model.name} from the catalog?`)) return;
+    MODELS.splice(MODELS.indexOf(model), 1);
+    renderAdminTable();
+    renderCatalog();
+    closeModelModal();
+    setFormStatus(`${model.name} deleted from the mock catalog.`, 'success');
+  }
+
+  function saveModel(event){
+    event.preventDefault();
+    const editId = document.getElementById('model-edit-id').value;
+    const model = editId ? MODELS.find(item => item.id === editId) : null;
+    const name = document.getElementById('model-title').value.trim();
+    const provider = document.getElementById('model-provider').value.trim();
+    const mod = document.getElementById('model-modality').value;
+    const price = document.getElementById('model-price').value.trim();
+    if (!name || !provider || !price) {
+      setFormStatus('Title, provider, and price are required.', 'error');
+      return;
+    }
+    const next = model || {id:`MDL-${String(200 + MODELS.length + 1).padStart(4, '0')}`};
+    Object.assign(next, {
+      name, provider, mod, color:modelColor({mod}), s1: mod === 'Voice' ? 'Latency' : 'Context',
+      v1: document.getElementById('model-latency').value.trim() || 'n/a', s2:'Price', v2:price,
+      latency:document.getElementById('model-latency').value.trim(),
+      context:document.getElementById('model-context').value.trim(), tags:document.getElementById('model-tags').value.trim(),
+      description:document.getElementById('model-description').value.trim(),
+      story:document.getElementById('model-story').value.trim(),
+      source:document.getElementById('model-source').value.trim(), sync:'indexing'
+    });
+    if (!model) MODELS.push(next);
+    renderAdminTable();
+    renderCatalog();
+    setFormStatus(`${name} saved. Vector index is updating…`, 'success');
+    setTimeout(() => {
+      next.sync = 'synced';
+      renderAdminTable();
+      if (modelModal.classList.contains('show')) setFormStatus(`${name} saved and marked as synced.`, 'success');
+    }, 900);
+    modelModal.classList.remove('show');
+    resetModelForm();
+  }
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && modelModal.classList.contains('show')) closeModelModal();
+  });
+
+  renderCatalog();
+  renderAdminTable();
+
+  // Real app-flow navigation: each screen only exposes the destinations a user could actually
+  // reach from it. Auth state (none / builder / admin) drives which nav links exist at all —
+  // there is no single tab bar exposing every screen as an equal peer.
+  const BUILDER_PAGES = ['catalog', 'detail', 'compare', 'dashboard', 'activity'];
+  const TRAY_PAGES = ['catalog', 'detail', 'compare'];
+
+  function navStateFor(page){
+    if (page === 'admin') return 'admin';
+    if (BUILDER_PAGES.includes(page)) return 'builder';
+    return 'none'; // auth, admin-auth — logged-out screens get no app chrome
+  }
 
   function go(page){
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.getElementById('page-' + page).classList.add('active');
-    document.querySelector(`.tab[data-page="${page}"]`).classList.add('active');
+
+    const state = navStateFor(page);
+    const nav = document.getElementById('app-nav');
+    nav.dataset.state = state;
+    document.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.dataset.page === page));
+
+    document.getElementById('tray').classList.toggle('show', TRAY_PAGES.includes(page));
     window.scrollTo({top:0, behavior:'instant'});
   }
-  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => go(t.dataset.page)));
+
+  function logout(){
+    const wasAdmin = document.getElementById('app-nav').dataset.state === 'admin';
+    document.getElementById('persona-pill').textContent = 'not signed in';
+    go(wasAdmin ? 'admin-auth' : 'auth');
+  }
+
   document.querySelectorAll('#modality-filters .chip').forEach(c => c.addEventListener('click', () => c.classList.toggle('active')));
 
-  setTimeout(() => document.getElementById('tray').classList.add('show'), 500);
-
-  // ---- auth (user) ----
+  // ---- auth (AI engineer) ----
   document.querySelectorAll('#auth-toggle .opt').forEach(o => o.addEventListener('click', () => {
     document.querySelectorAll('#auth-toggle .opt').forEach(x => x.classList.remove('active'));
     o.classList.add('active');
@@ -757,7 +992,7 @@
 
   function submitAuth(){
     document.getElementById('auth-error').classList.remove('show');
-    document.getElementById('persona-pill').textContent = 'signed in as: builder';
+    document.getElementById('persona-pill').textContent = 'signed in as: AI engineer';
     go('catalog');
   }
 

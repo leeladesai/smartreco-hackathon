@@ -41,7 +41,7 @@ Deliver a working, demonstrable product that:
 | Hackathon organizers (Krish Naik / KrishAI) | Rubric compliance, valid Mesh API usage, code quality |
 | Automated CI screener | Repo structure, dependency manifest, no syntax errors, secrets hygiene |
 | Human judges (finalist round) | Depth of agentic reasoning, UX polish, demo quality |
-| End users (simulated) | Two personas: **Builder** (browses/compares AI models) and **Curator** (manages the model catalog) |
+| End users (simulated) | Two personas: **AI engineer** (browses/compares AI models) and **Curator** (manages the model catalog) |
 | Team | Shippable, well-architected codebase within the 2-week window |
 
 ## 4. Scope

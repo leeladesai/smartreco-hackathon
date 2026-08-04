@@ -86,7 +86,7 @@ Concrete shape:
 - **Entity:** `model` (replaces the generic `product`) — provider, modality (LLM / voice / image /
   video / embedding / multimodal), price (cost per unit), latency, context window, use-case tags,
   source URL.
-- **Personas:** **Builder** (primary user, replaces "Learner") evaluates and compares models to
+- **Personas:** **AI engineer** (primary user, replaces "Learner") evaluates and compares models to
   decide what to integrate; **Curator** (replaces "Admin") manages the model catalog.
 - **Behavior events:** `model_view`, `model_compare`, `search`, `click`, `dwell`.
 - **Recommendation narrative:** comparison-driven, e.g. *"You've been comparing low-latency voice
