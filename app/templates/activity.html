@@ -1,1 +1,53 @@
 {% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-activity">
+  <div class="flow-link" onclick="go('dashboard')">← Back to dashboard</div>
+  <div class="page-head">
+    <p class="eyebrow">Your activity</p>
+    <h1 class="page-title">Everything tracked, and where it went</h1>
+    <p class="page-sub">Nothing here is hidden from you. This is the same event stream the agent reads — batched client-side, never one network call per click.</p>
+  </div>
+  <div class="activity-wrap">
+    <div class="panel">
+      <div id="activity-log">
+      <div class="log-row">
+        <div class="log-time">14:02:11</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 41s</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:02:58</div>
+        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
+        <div class="log-detail">query: <span>"real-time voice"</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:04:20</div>
+        <div class="log-type" style="background:var(--cyan)33; color:var(--cyan);">model_compare</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>vs</span> PlayHT Play 3.0</div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:05:03</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">PlayHT Play 3.0 <span>· dwell 18s</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:06:47</div>
+        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
+        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 22s (2nd visit)</span></div>
+      </div>
+      <div class="log-row">
+        <div class="log-time">14:09:15</div>
+        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
+        <div class="log-detail">query: <span>"lowest latency tts"</span></div>
+      </div>
+      </div>
+      <p class="note" id="activity-note">Sign in and browse the catalog to see your persisted activity here.</p>
+    </div>
+    <div class="panel">
+      <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 16px;">How this became your recommendation</h4>
+      <div id="activity-pipeline" class="pipeline-flow"><span class="k">status</span> → <span class="v">waiting for activity</span></div>
+      <p class="note" id="activity-pipeline-note" style="margin-top:20px;">Your persisted event stream will appear here once the recommendation pipeline is connected.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

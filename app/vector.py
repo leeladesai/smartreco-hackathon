@@ -58,20 +58,28 @@ class ModelVectorStore:
     def delete(self, model_id: int) -> None:
         self.collection.delete(ids=[str(model_id)])
 
-    def query(self, text: str, limit: int = 5) -> list[int]:
-        if not text.strip() or self.collection.count() == 0:
-            return []
-        results = self.collection.query(query_texts=[text], n_results=limit)
-        ids = results.get("ids", [[]])[0]
-        return [int(model_id) for model_id in ids]
-
-    def query_scored(self, text: str, limit: int = 5) -> list[tuple[int, float]]:
-        """Like `query`, but also returns each result's distance (lower = more similar) —
-        used by the grade/refine node to detect weak retrieval."""
+    def query(
+        self, text: str, limit: int = 5, where: dict | None = None
+    ) -> list[int]:
         if not text.strip() or self.collection.count() == 0:
             return []
         results = self.collection.query(
-            query_texts=[text], n_results=limit, include=["distances"]
+            query_texts=[text], n_results=limit, where=where
+        )
+        ids = results.get("ids", [[]])[0]
+        return [int(model_id) for model_id in ids]
+
+    def query_scored(
+        self, text: str, limit: int = 5, where: dict | None = None
+    ) -> list[tuple[int, float]]:
+        """Like `query`, but also returns each result's distance (lower = more similar) —
+        used by the grade/refine node to detect weak retrieval. `where` applies Chroma
+        metadata filtering (e.g. `{"modality": "Voice"}`) before the ANN search runs, not
+        as a post-hoc re-rank filter."""
+        if not text.strip() or self.collection.count() == 0:
+            return []
+        results = self.collection.query(
+            query_texts=[text], n_results=limit, where=where, include=["distances"]
         )
         ids = results.get("ids", [[]])[0]
         distances = results.get("distances", [[]])[0]

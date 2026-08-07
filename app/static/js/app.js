@@ -22,6 +22,14 @@
   const EVENT_FLUSH_MS = 4000;
   let eventFlushTimer = null;
 
+  function togglePasswordVisibility(button){
+    const input = button.closest('.password-field').querySelector('input');
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    button.classList.toggle('showing', !showing);
+    button.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  }
+
   function escapeHtml(value){
     return String(value ?? '').replace(/[&<>'"]/g, character => ({
       '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;'
@@ -56,7 +64,8 @@
       v1:isVoice && model.latency_ms ? `~${model.latency_ms}ms` : (model.context_window || 'n/a'),
       s2:'Price', v2:model.price, sync:model.vector_synced ? 'synced' : 'indexing', api:true,
       latency:model.latency_ms || '', context:model.context_window || '',
-      tags:(model.use_case_tags || []).join(', '), description:model.description || '', source:model.source_url || ''
+      tags:(model.use_case_tags || []).join(', '), description:model.description || '', source:model.source_url || '',
+      whyThis:model.why_this || ''
     };
   }
 
@@ -76,6 +85,7 @@
   }
 
   function renderCatalog(){
+    if (!grid) return; // catalog grid only exists on the catalog page now
     grid.innerHTML = MODELS.map(m => `
       <div class="card" onclick="openModel('${m.id}')">
         <div class="stripe" style="background:${modelColor(m)}"></div>
@@ -98,6 +108,7 @@
   }
 
   function renderAdminTable(){
+    if (!adminTable) return; // admin table only exists on the admin page now
     adminTable.innerHTML = MODELS.map(m => `
       <tr>
         <td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.provider)}</td><td>${escapeHtml(m.mod)}</td><td>${escapeHtml(m.v2)}</td>
@@ -159,10 +170,15 @@
   }
 
   function openModel(modelId){
+    // selectedModelId must be set before go() so routeFor('detail') builds the right URL —
+    // rendering doesn't happen here since this page is about to fully unload.
     selectedModelId = String(modelId);
-    renderDetail(selectedModelId);
     go('detail');
   }
+
+  let dashboardRecId = null;
+  let dashboardPollTimer = null;
+  const DASHBOARD_POLL_MS = 15000;
 
   async function loadDashboard(){
     if (!userSession) return;
@@ -170,6 +186,7 @@
       const response = await fetch(`${API_BASE}/api/recommendations/me`);
       if (!response.ok) return;
       const recommendation = await response.json();
+      dashboardRecId = recommendation.id ?? null;
       if (recommendation.status === 'pending' || !recommendation.models?.length) {
         document.getElementById('dashboard-tags').innerHTML = '<span class="badge reason">status: learning</span><span class="badge conf">recommendation pending</span>';
         document.getElementById('dashboard-narrative').textContent = 'Your activity is being collected. Once enough signal is available, your grounded recommendation will appear here.';
@@ -186,19 +203,46 @@
           ? `Generated from ${candidates.length} grounded catalog candidate${candidates.length === 1 ? '' : 's'}.`
           : `${candidates.length} catalog candidate${candidates.length === 1 ? '' : 's'} retrieved from your activity.`;
         document.getElementById('recommendation-grid').innerHTML = candidates.map(model => `
-          <div class="card" onclick="openModel('${model.id}')">
-            <div class="stripe" style="background:${modelColor(model)}"></div>
-            <div class="card-body">
-              <div class="card-top"><span class="part-id">${escapeHtml(model.id)}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
-              <h3>${escapeHtml(model.name)}</h3><p class="provider">${escapeHtml(model.provider)}</p>
-              <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
-              <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
+          <div class="rec-item">
+            ${model.whyThis ? `<div class="evidence-line"></div><div class="evidence-note">${escapeHtml(model.whyThis)}</div>` : ''}
+            <div class="card" onclick="openModel('${model.id}')">
+              <div class="stripe" style="background:${modelColor(model)}"></div>
+              <div class="card-body">
+                <div class="card-top"><span class="part-id">${escapeHtml(model.id)}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
+                <h3>${escapeHtml(model.name)}</h3><p class="provider">${escapeHtml(model.provider)}</p>
+                <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
+                <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
+              </div>
             </div>
           </div>`).join('');
       }
     } catch (error) {
       // Keep the honest pending state when the recommendation API is unavailable.
     }
+  }
+
+  // DLV-2: while the dashboard is open, periodically check whether a newer agent run has
+  // landed (e.g. from events flushed in another tab) and re-render so it's never stale.
+  async function pollDashboard(){
+    if (!userSession) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/recommendations/me`);
+      if (!response.ok) return;
+      const recommendation = await response.json();
+      if ((recommendation.id ?? null) !== dashboardRecId) loadDashboard();
+    } catch (error) {
+      // Silently skip this tick; the next poll (or a manual re-nav) will retry.
+    }
+  }
+
+  function startDashboardPolling(){
+    stopDashboardPolling();
+    dashboardPollTimer = setInterval(pollDashboard, DASHBOARD_POLL_MS);
+  }
+
+  function stopDashboardPolling(){
+    if (dashboardPollTimer) clearInterval(dashboardPollTimer);
+    dashboardPollTimer = null;
   }
 
   async function loadActivity(){
@@ -589,7 +633,7 @@
   }
 
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && modelModal.classList.contains('show')) closeModelModal();
+    if (modelModal && event.key === 'Escape' && modelModal.classList.contains('show')) closeModelModal();
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -633,66 +677,61 @@
     return '/catalog';
   }
 
-  function go(page, push=true){
-    finalizeDwell();
-    const route = routeFor(page);
-    if (push && `${window.location.pathname}${window.location.search}` !== route) {
-      window.history.pushState({page}, '', route);
-    }
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.getElementById('page-' + page).classList.add('active');
+  // Each route now serves only its own screen's markup (per-template split), so cross-page
+  // navigation is a real browser navigation, not a client-side DOM toggle — the browser's
+  // native history/back-forward handles what a manual popstate listener used to. `pagehide`
+  // (registered further down) already finalizes dwell tracking and flushes queued events on
+  // any real navigation, so go() doesn't need to do that itself.
+  function go(page){
+    window.location.href = routeFor(page);
+  }
 
+  // Runs once per real page load (called from the inline script at the bottom of base.html)
+  // to wire up the single screen that was actually server-rendered — this replaces the part
+  // of the old go() that used to also handle in-DOM page switching.
+  async function initPage(page){
+    await loadModels(); // ensures MODELS is populated before any page that reads it below —
+                         // needed now that a direct load of e.g. /models/42 can't rely on the
+                         // catalog page having already warmed MODELS earlier in the session
     const state = navStateFor(page);
-    const nav = document.getElementById('app-nav');
-    nav.dataset.state = state;
+    document.getElementById('app-nav').dataset.state = state;
     document.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.dataset.page === page));
-
     updateTrayVisibility();
     if (page === 'detail') {
-      const modelId = selectedModelId || MODELS[0]?.id;
+      const modelId = window.INITIAL_MODEL_ID != null ? String(window.INITIAL_MODEL_ID) : selectedModelId;
+      selectedModelId = modelId;
       renderDetail(modelId);
       startDwell(modelId);
     }
-    if (page === 'compare') renderCompare();
-    if (page === 'dashboard') loadDashboard();
+    if (page === 'compare') restoreCompareFromUrl();
+    if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
     if (page === 'activity') loadActivity();
     window.scrollTo({top:0, behavior:'instant'});
   }
 
-  window.addEventListener('popstate', () => {
-    const path = window.location.pathname;
-    if (path === '/login') return go('auth', false);
-    if (path === '/admin/login') return go('admin-auth', false);
-    if (path === '/catalog' || path === '/') return go('catalog', false);
-    if (path === '/compare') {
-      restoreCompareFromUrl();
-      return go('compare', false);
-    }
-    if (path === '/dashboard') return go('dashboard', false);
-    if (path === '/activity') return go('activity', false);
-    if (path === '/admin') return go('admin', false);
-    if (path.startsWith('/models/')) return go('detail', false);
-    go('catalog', false);
-  });
-
-  function logout(){
+  async function logout(){
     const wasAdmin = document.getElementById('app-nav').dataset.state === 'admin';
-    document.getElementById('persona-pill').textContent = 'not signed in';
+    try { await fetch(`${API_BASE}/api/auth/logout`, {method:'POST'}); } catch (error) {
+      // Navigate away regardless — worst case the cookie outlives this tab, not a hang.
+    }
     go(wasAdmin ? 'admin-auth' : 'auth');
   }
 
   renderTray();
 
   document.querySelectorAll('#modality-filters .chip').forEach(c => c.addEventListener('click', () => c.classList.toggle('active')));
-  let searchTimer;
-  document.querySelector('.searchbar input').addEventListener('input', event => {
-    const query = event.target.value.trim();
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      searchModels(query);
-      trackEvent('search', null, {query});
-    }, 220);
-  });
+  const searchInput = document.querySelector('.searchbar input'); // catalog page only
+  if (searchInput) {
+    let searchTimer;
+    searchInput.addEventListener('input', event => {
+      const query = event.target.value.trim();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        searchModels(query);
+        trackEvent('search', null, {query});
+      }, 220);
+    });
+  }
 
   // ---- auth (AI engineer) ----
   const AUTH_BUTTON_LABEL = {login: 'Sign in →', register: 'Create account →'};
@@ -713,11 +752,14 @@
     document.getElementById('auth-forgot').tabIndex = registering ? -1 : 0;
   }
 
-  document.getElementById('auth-forgot').addEventListener('click', () => {
-    const note = document.getElementById('auth-error');
-    note.textContent = "Password reset isn't available in this build yet — contact your curator to have your account reset.";
-    note.classList.add('show');
-  });
+  const authForgot = document.getElementById('auth-forgot'); // login page only
+  if (authForgot) {
+    authForgot.addEventListener('click', () => {
+      const note = document.getElementById('auth-error');
+      note.textContent = "Password reset isn't available in this build yet — contact your curator to have your account reset.";
+      note.classList.add('show');
+    });
+  }
 
   document.querySelectorAll('#auth-toggle .opt').forEach(o => o.addEventListener('click', () => setAuthMode(o.dataset.mode)));
 
@@ -737,13 +779,13 @@
         });
       }
       if (!response.ok) throw new Error('login failed');
-      userSession = true;
-      await loadModels();
     } catch (error) {
       document.getElementById('auth-error').classList.add('show');
       return;
     }
-    document.getElementById('persona-pill').textContent = 'signed in as: AI engineer';
+    // The session cookie is now set — go('catalog') is a real navigation, so the next page
+    // load picks up the authenticated session_role server-side rather than relying on any
+    // client-side state set here (which would be discarded on unload anyway).
     go('catalog');
   }
 
@@ -758,12 +800,9 @@
         body:JSON.stringify({email:fields[0].value, password:fields[1].value})
       });
       if (!response.ok) throw new Error('login failed');
-      adminSession = true;
-      await loadModels();
     } catch (error) {
       document.getElementById('admin-auth-error').classList.add('show');
       return;
     }
-    document.getElementById('persona-pill').textContent = 'signed in as: curator (admin)';
     go('admin');
   }

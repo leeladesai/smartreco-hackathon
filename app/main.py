@@ -1,7 +1,18 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -30,9 +41,11 @@ from app.services.catalog import (
     delete_model as delete_model_service,
     update_model as update_model_service,
 )
-from app.services.agent_graph import prepare_retrieval_recommendation
+from app.services.agent_graph import prepare_retrieval_recommendation, retrieval_reason
+from app.services.digest import build_notifier, run_digest
 from app.services.recommendation import activity_summary, should_trigger
 from app.services.mesh import MeshNarrativeGenerator
+from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore
 
 
@@ -50,17 +63,36 @@ def model_response(model: Model) -> ModelResponse:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings()
+    configure_langsmith(app_settings)
     session_factory = build_session_factory(app_settings)
     vector_store = ModelVectorStore(app_settings.chroma_db_path)
     mesh_generator = MeshNarrativeGenerator(app_settings)
+    notifier = build_notifier(app_settings)
     current_user = make_role_dependency(session_factory, app_settings)
     current_admin = make_role_dependency(
         session_factory, app_settings, required_role="admin"
     )
 
+    # DLV-3: a real cron scheduler, not a manual trigger — `/api/admin/digest/run` below
+    # exists only so the sprint-review demo doesn't have to wait for the next cron fire.
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        run_digest,
+        trigger=CronTrigger(
+            hour=app_settings.digest_cron_hour, minute=app_settings.digest_cron_minute
+        ),
+        args=[session_factory, vector_store, mesh_generator, notifier],
+        id="scheduled_digest",
+        replace_existing=True,
+    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        yield
+        scheduler.start()
+        try:
+            yield
+        finally:
+            scheduler.shutdown(wait=False)
 
     app = FastAPI(
         title="SmartReco",
@@ -72,11 +104,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.vector_store = vector_store
     app.state.mesh_generator = mesh_generator
+    app.state.notifier = notifier
+    app.state.scheduler = scheduler
     app.mount(
         "/static",
         StaticFiles(directory=PROJECT_ROOT / "app" / "static"),
         name="static",
     )
+
+    def asset_version(relative_path: str) -> int:
+        """Cache-busts static CSS/JS by mtime, not just server restart — otherwise a
+        browser can keep serving a stale cached copy after an edit even on a normal reload."""
+        return int((PROJECT_ROOT / "app" / "static" / relative_path).stat().st_mtime)
 
     def render_page(
         request: Request,
@@ -92,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "initial_page": page,
                 "model_id": model_id,
                 "session_role": session_role,
+                "css_version": asset_version("css/app.css"),
+                "js_version": asset_version("js/app.js"),
             },
         )
 
@@ -211,6 +252,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> UserResponse:
         return login_response(credentials, admin_only=True, response=response)
 
+    @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+    async def logout(response: Response) -> None:
+        # Same endpoint for both AI-engineer and admin sessions — there's only ever one
+        # session cookie, and clearing a cookie that's already absent is a harmless no-op.
+        response.delete_cookie(app_settings.session_cookie_name)
+
     @app.get("/api/models", response_model=list[ModelResponse])
     async def list_models(
         q: str | None = Query(default=None),
@@ -268,9 +315,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Model not found")
             delete_model_service(session, vector_store, model)
 
+    @app.post("/api/admin/digest/run")
+    async def trigger_digest(_: User = Depends(current_admin)) -> dict[str, int]:
+        """Manual override for demos only — the real delivery path is the cron job
+        registered above via APScheduler (DLV-3)."""
+        return run_digest(session_factory, vector_store, mesh_generator, notifier)
+
+    def run_pipeline_in_background(user_id: int) -> None:
+        """NFR-1: the pipeline's Mesh call is a real network round trip (hundreds of ms to
+        seconds) — running it inline on `/api/events/batch` would blow the <150ms p95
+        ingestion budget every time a trigger fires. It runs here, after the response is
+        already sent, in its own session (the request's session is closed by then). The
+        dashboard's polling (DLV-2) is what surfaces the result once this finishes."""
+        with session_factory() as session:
+            prepare_retrieval_recommendation(
+                session, vector_store, user_id, app.state.mesh_generator
+            )
+
     @app.post("/api/events/batch")
     async def ingest_events(
-        batch: EventBatch, user: User = Depends(current_user)
+        batch: EventBatch,
+        background_tasks: BackgroundTasks,
+        user: User = Depends(current_user),
     ) -> dict[str, object]:
         with session_factory() as session:
             events = [
@@ -284,15 +350,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
             session.add_all(events)
             session.commit()
-            recommendation = None
-            if should_trigger(session, user.id):
-                recommendation = prepare_retrieval_recommendation(
-                    session, vector_store, user.id, app.state.mesh_generator
-                )
-            return {
-                "accepted": len(events),
-                "recommendation_triggered": recommendation is not None,
-            }
+            triggered = should_trigger(session, user.id)
+        if triggered:
+            background_tasks.add_task(run_pipeline_in_background, user.id)
+        return {
+            "accepted": len(events),
+            "recommendation_triggered": triggered,
+        }
 
     @app.get("/api/recommendations/me")
     async def latest_recommendation(
@@ -309,11 +373,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     select(Model).where(Model.id.in_(latest.model_ids))
                 ).all()
                 models_by_id = {model.id: model for model in models}
+                reason_by_id = {
+                    entry["model_id"]: entry["reason"]
+                    for entry in latest.retrieval_meta or []
+                }
                 return {
+                    "id": latest.id,
                     "status": "ready" if latest.narrative else "retrieval_ready",
                     "narrative": latest.narrative,
                     "models": [
-                        model_response(models_by_id[model_id])
+                        {
+                            **model_response(models_by_id[model_id]).model_dump(mode="json"),
+                            "why_this": reason_by_id.get(model_id),
+                        }
                         for model_id in latest.model_ids
                         if model_id in models_by_id
                     ],
@@ -332,14 +404,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return {"status": "pending", "narrative": None, "models": []}
 
             summary = activity_summary(session, events)
-            candidate_ids = app.state.vector_store.query(summary)
-            if not candidate_ids:
+            scored = app.state.vector_store.query_scored(summary)
+            if not scored:
                 return {
                     "status": "pending",
                     "narrative": None,
                     "models": [],
                     "trigger_reason": "no_retrieval_candidates",
                 }
+            candidate_ids = [model_id for model_id, _ in scored]
             models_by_id = {
                 model.id: model
                 for model in session.scalars(
@@ -347,8 +420,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ).all()
             }
             candidates = [
-                model_response(models_by_id[model_id])
-                for model_id in candidate_ids
+                {
+                    **model_response(models_by_id[model_id]).model_dump(mode="json"),
+                    "why_this": retrieval_reason(distance, False),
+                }
+                for model_id, distance in scored
                 if model_id in models_by_id
             ]
             return {

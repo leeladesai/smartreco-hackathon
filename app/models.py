@@ -63,6 +63,7 @@ class Recommendation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    retrieval_meta: Mapped[list[dict]] = mapped_column(JSON, default=list)
     behavior_summary: Mapped[str] = mapped_column(Text, default="")
     activity_hash: Mapped[str] = mapped_column(String(64), index=True)
     trigger_reason: Mapped[str] = mapped_column(String(120))

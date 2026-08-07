@@ -1,1 +1,75 @@
 {% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-dashboard">
+  <div class="page-head">
+    <p class="eyebrow">Dashboard</p>
+    <h1 class="page-title">Your recommendation</h1>
+  </div>
+
+  <div class="stepper">
+    <div class="step done"><div class="n">✓</div><div class="label">Analyze</div></div><div class="step-line"></div>
+    <div class="step done"><div class="n">✓</div><div class="label">Retrieve</div></div><div class="step-line"></div>
+    <div class="step done"><div class="n">✓</div><div class="label">Grade / Refine</div></div><div class="step-line"></div>
+    <div class="step now"><div class="n">4</div><div class="label">Generate</div></div><div class="step-line"></div>
+    <div class="step"><div class="n">5</div><div class="label">Deliver</div></div>
+  </div>
+
+  <div class="narrative-card">
+    <div class="tag-row" id="dashboard-tags">
+      <span class="badge reason">status: learning</span>
+      <span class="badge conf">recommendation pending</span>
+    </div>
+    <p class="narrative-text" id="dashboard-narrative">Browse a few models and we’ll show the recommendation generated from your actual activity here.</p>
+    <span class="delta-chip" id="dashboard-delta">No recommendation stored yet.</span>
+  </div>
+
+  <div class="evidence-wrap">
+    <h4>Recommended — because you did this ↓</h4>
+    <div class="rec-grid" id="recommendation-grid">
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">3 views · ElevenLabs Turbo</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0198</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>Cartesia Sonic</h3>
+            <p class="provider">Cartesia</p>
+            <div class="spec-row"><span>Latency</span><b>~135ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.00015/char</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">matched search</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0176</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>Deepgram Aura</h3>
+            <p class="provider">Deepgram</p>
+            <div class="spec-row"><span>Latency</span><b>~200ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.0135/1K char</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="rec-item">
+        <div class="evidence-line"></div>
+        <div class="evidence-note">1 comparison · PlayHT vs 11L</div>
+        <div class="card" style="cursor:default;">
+          <div class="stripe" style="background:var(--amber);"></div>
+          <div class="card-body">
+            <div class="card-top"><span class="part-id">MDL-0142</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+            <h3>ElevenLabs Turbo v2.5</h3>
+            <p class="provider">ElevenLabs</p>
+            <div class="spec-row"><span>Latency</span><b>~275ms</b></div>
+            <div class="spec-row"><span>Price</span><b>$0.0002/char</b></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="note">Curious how this was built? <span class="flow-link" style="margin:0; display:inline;" onclick="go('activity')">See your activity →</span></p>
+  </div>
+</div>
+{% endblock %}

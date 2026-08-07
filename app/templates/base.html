@@ -5,17 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SmartReco — Model Catalog</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312151c'/%3E%3Crect x='1' y='1' width='30' height='30' rx='6' fill='none' stroke='%232b3240'/%3E%3Crect x='6' y='18' width='5' height='9' rx='1.5' fill='%235ec8d8'/%3E%3Crect x='13.5' y='12' width='5' height='15' rx='1.5' fill='%23e8a33d'/%3E%3Crect x='21' y='6' width='5' height='21' rx='1.5' fill='%23a78bfa'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ css_version }}">
 </head>
 <body>
 <!--
-  This file models real application flow, not a design-review tab switcher: each screen only
-  links to screens a user could actually reach from it. There is exactly ONE nav bar element
-  (#app-nav below) and it changes shape by auth state — "none" (logged out), "engineer", or
-  "admin" — instead of exposing every screen as an equal, always-clickable tab. Admin login is
-  reached by URL only; nothing in the AI engineer flow links to it, mirroring the real product.
-  The floating control in the bottom-right corner is a reviewer aid for clicking through this
-  spec quickly — it is explicitly NOT part of the product UI and should not be implemented.
+  Each route now renders only its own screen's markup (app/templates/*.html, each extending
+  this shell and filling in the content block below) — base.html itself holds only what's genuinely shared
+  across every screen: the head, the single nav bar, and the compare tray (used across
+  catalog/detail/compare, so kept here rather than duplicated in three files). There is
+  exactly ONE nav bar element (#app-nav below) and it changes shape by auth state — "none"
+  (logged out), "engineer", or "admin" — instead of exposing every screen as an equal,
+  always-clickable tab. Admin login is reached by URL only; nothing in the AI engineer flow
+  links to it, mirroring the real product.
 -->
 <header class="app-nav" id="app-nav" data-state="none">
   <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>SMARTRECO <small id="brand-sub">/ model catalog</small></div>
@@ -32,386 +33,23 @@
   <div class="logout-link" onclick="logout()">Log out</div>
 </header>
 
-<!-- ================= AUTH (user) ================= -->
-<div class="page active" id="page-auth">
-  <div class="auth-wrap">
-    <div class="auth-pitch">
-      <div>
-        <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>SMARTRECO <small>/ model catalog</small></div>
-        <h2>Compare AI models the way you'd compare lab equipment — by spec, not by hype.</h2>
-        <p>Pricing, context windows, and latency, side by side — not marketing pages.</p>
-      </div>
+{% block content %}{% endblock %}
 
-      <div class="live-compare" id="live-compare">
-        <div class="live-compare-head">
-          <span class="live-compare-label">Live comparison</span>
-          <span class="live-compare-pair" id="live-compare-pair">Loading…</span>
-        </div>
-        <div class="live-compare-rows" id="live-compare-rows"></div>
-      </div>
-
-      <div class="category-pills" id="category-pills"></div>
-
-      <p class="catalog-footnote" id="catalog-footnote"></p>
-    </div>
-
-    <div class="auth-form-side">
-      <div class="auth-toggle" id="auth-toggle">
-        <div class="opt active" data-mode="login">Sign in</div>
-        <div class="opt" data-mode="register">Register</div>
-      </div>
-
-      <div class="auth-form-heading">
-        <div class="auth-copy active" data-copy="login">
-          <h1>Welcome back</h1>
-          <p>Sign in to pick up where you left off — your comparisons are waiting.</p>
-        </div>
-        <div class="auth-copy" data-copy="register">
-          <h1>Create your account</h1>
-          <p>Free during the beta — takes about 30 seconds, no credit card.</p>
-        </div>
-      </div>
-
-      <div class="auth-error" id="auth-error">Wrong email or password. Try again, or check you're on the right tab above.</div>
-
-      <form class="auth-form" id="auth-form" onsubmit="submitAuth(event); return false;">
-        <div class="auth-field">
-          <label>Email</label>
-          <input type="email" placeholder="you@company.com" value="engineer@smartreco.dev">
-        </div>
-        <div class="auth-field">
-          <label>Password</label>
-          <input type="password" placeholder="••••••••" value="••••••••">
-        </div>
-        <div class="auth-field only-register">
-          <label>Confirm password</label>
-          <input type="password" placeholder="••••••••" tabindex="-1">
-        </div>
-        <p class="auth-forgot only-login" id="auth-forgot" tabindex="0">Forgot password?</p>
-
-        <div class="auth-submit">
-          <button class="btn-cta" type="submit" id="auth-submit-btn">Sign in →</button>
-        </div>
-      </form>
-
-      <p class="auth-switch" id="auth-switch">New here? <span onclick="setAuthMode('register')">Create an account</span></p>
-    </div>
-  </div>
-</div>
-
-<!-- ================= AUTH (admin) ================= -->
-<div class="page" id="page-admin-auth">
-  <div class="page-head">
-    <p class="eyebrow">Admin sign in</p>
-    <h1 class="page-title">Curator console access</h1>
-    <p class="page-sub">A distinct module from the AI engineer login — different route, different form, no self-registration. Admin accounts are provisioned ahead of time, not created here.</p>
-  </div>
-
-  <div class="auth-wrap">
-    <div class="auth-pitch admin-auth-side">
-      <div>
-        <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--rose)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--amber)"/></svg>SMARTRECO <small>/ admin console</small></div>
-        <div class="lock-row" style="margin-top:22px;">
-          <div class="glyph">⛊</div>
-          <div class="txt">Restricted area.<br><b>Curator</b> role required — checked server-side on every admin route, never by hiding a nav item.</div>
-        </div>
-        <p>Manage the model catalog: create, edit, delete, and watch each write dual-write into the vector store with a visible sync status.</p>
-      </div>
-      <div class="mini-ticket" style="border-left-color:var(--rose);">
-        <div class="tag-row"><span class="badge" style="background:color-mix(in srgb, var(--rose) 18%, transparent); color:var(--rose);">no self-registration</span></div>
-        <p>Lost access? Ask another curator to re-provision your account — there's no "forgot password" self-serve flow in scope for this build.</p>
-      </div>
-    </div>
-
-    <div class="auth-form-side">
-      <div class="lock-row">
-        <div class="glyph">⛊</div>
-        <div class="txt">Signing in here always resolves to the <b>Admin</b> app, never the AI engineer catalog.</div>
-      </div>
-
-      <div class="auth-error" id="admin-auth-error">Wrong email or password. Admin accounts are not self-service — contact another curator if you're locked out.</div>
-
-      <form class="auth-form" id="admin-auth-form" onsubmit="submitAdminAuth(event); return false;">
-        <div class="auth-field">
-          <label>Admin email</label>
-          <input type="email" placeholder="curator@smartreco.dev" value="curator@smartreco.dev">
-        </div>
-        <div class="auth-field">
-          <label>Password</label>
-          <input type="password" placeholder="••••••••" value="admin@123">
-        </div>
-
-        <div class="auth-submit">
-          <button class="btn primary" type="submit" style="padding:12px; font-size:11.5px; background:var(--rose); border-color:var(--rose);">Sign in to admin →</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- ================= CATALOG ================= -->
-<div class="page" id="page-catalog">
-  <div class="page-head">
-    <p class="eyebrow">Catalog</p>
-    <h1 class="page-title">Find the model that fits, not just the one you've heard of</h1>
-    <p class="page-sub">Every view, search and comparison here quietly trains your dashboard — nothing is sent anywhere until you batch-flush, and you can see exactly what's tracked on the Your Activity screen.</p>
-  </div>
-
-  <div class="searchbar">
-    <span style="color:var(--muted-2)">⌕</span>
-    <input placeholder="Search by task — &quot;real-time voice&quot;, &quot;long context summarization&quot;…" value="real-time voice">
-    <span class="kbd">/</span>
-  </div>
-
-  <div class="filter-row" id="modality-filters">
-    <div class="chip active" data-dot="var(--cyan)"><span class="dot" style="background:var(--cyan)"></span>LLM</div>
-    <div class="chip" data-dot="var(--amber)"><span class="dot" style="background:var(--amber)"></span>Voice</div>
-    <div class="chip" data-dot="var(--violet)"><span class="dot" style="background:var(--violet)"></span>Image</div>
-    <div class="chip" data-dot="var(--rose)"><span class="dot" style="background:var(--rose)"></span>Video</div>
-    <div class="chip" data-dot="var(--teal)"><span class="dot" style="background:var(--teal)"></span>Embedding</div>
-    <div class="chip" style="margin-left:10px; border-style:dashed;">Provider ▾</div>
-    <div class="chip" style="border-style:dashed;">Latency &lt; 300ms</div>
-  </div>
-
-  <div class="grid" id="catalog-grid"></div>
-</div>
-
-<!-- compare tray — starts empty; populated only by clicking "+ Compare" on a card -->
+<!-- compare tray — starts empty; populated only by clicking "+ Compare" on a card. Shared
+     across catalog/detail/compare (three separate routes), so it lives here rather than
+     being duplicated into each of those three templates. -->
 <div class="tray" id="tray">
   <span class="tray-note">Comparing <b id="tray-count">0</b> models — evaluation events like this drive your dashboard narrative</span>
   <div class="tray-slots" id="tray-slots"></div>
   <div class="btn" id="tray-compare-btn" onclick="if(compareSelection.length>=2) go('compare')" style="flex:none;">Compare →</div>
 </div>
 
-<!-- ================= MODEL DETAIL ================= -->
-<div class="page" id="page-detail">
-  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
-  <div class="page-head">
-    <p class="eyebrow">Model detail</p>
-  </div>
-  <div class="detail-wrap">
-    <div class="panel">
-      <div class="detail-head">
-        <div>
-          <span class="modality-tag" id="detail-modality" style="background:var(--amber-dim); color:var(--amber);">Voice</span>
-          <h2 id="detail-title">Select a model</h2>
-          <p class="provider" id="detail-provider">Choose a model from the catalog.</p>
-        </div>
-        <div class="btn" id="detail-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
-      </div>
-      <p class="desc" id="detail-description">Model details will appear here.</p>
-      <table class="spec-table" id="detail-specs"></table>
-      <div class="use-tags" id="detail-tags"></div>
-    </div>
-    <div class="panel related">
-      <h4>You might also be looking at</h4>
-      <div id="detail-related"></div>
-      <p class="note" id="detail-note" style="margin-top:20px;">Select a model to see related options.</p>
-    </div>
-  </div>
-</div>
-
-<!-- ================= COMPARE ================= -->
-<div class="page" id="page-compare">
-  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
-  <div class="page-head">
-    <p class="eyebrow">Compare</p>
-    <h1 class="page-title" id="compare-title">Models, side by side</h1>
-    <p class="page-sub">Only what you added to the tray appears here — nothing pre-selected.</p>
-  </div>
-  <div class="compare-table-wrap">
-    <table class="compare" id="compare-table"></table>
-  </div>
-  <p class="note">This comparison is itself a tracked signal — adding these models to the compare tray logs a <span style="color:var(--text)">model_compare</span> event each; simply viewing them in one session does not.</p>
-</div>
-
-<!-- ================= DASHBOARD ================= -->
-<div class="page" id="page-dashboard">
-  <div class="page-head">
-    <p class="eyebrow">Dashboard</p>
-    <h1 class="page-title">Your recommendation</h1>
-  </div>
-
-  <div class="stepper">
-    <div class="step done"><div class="n">✓</div><div class="label">Analyze</div></div><div class="step-line"></div>
-    <div class="step done"><div class="n">✓</div><div class="label">Retrieve</div></div><div class="step-line"></div>
-    <div class="step done"><div class="n">✓</div><div class="label">Grade / Refine</div></div><div class="step-line"></div>
-    <div class="step now"><div class="n">4</div><div class="label">Generate</div></div><div class="step-line"></div>
-    <div class="step"><div class="n">5</div><div class="label">Deliver</div></div>
-  </div>
-
-  <div class="narrative-card">
-    <div class="tag-row" id="dashboard-tags">
-      <span class="badge reason">status: learning</span>
-      <span class="badge conf">recommendation pending</span>
-    </div>
-    <p class="narrative-text" id="dashboard-narrative">Browse a few models and we’ll show the recommendation generated from your actual activity here.</p>
-    <span class="delta-chip" id="dashboard-delta">No recommendation stored yet.</span>
-  </div>
-
-  <div class="evidence-wrap">
-    <h4>Recommended — because you did this ↓</h4>
-    <div class="rec-grid" id="recommendation-grid">
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">3 views · ElevenLabs Turbo</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0198</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>Cartesia Sonic</h3>
-            <p class="provider">Cartesia</p>
-            <div class="spec-row"><span>Latency</span><b>~135ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.00015/char</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">matched search</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0176</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>Deepgram Aura</h3>
-            <p class="provider">Deepgram</p>
-            <div class="spec-row"><span>Latency</span><b>~200ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.0135/1K char</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">1 comparison · PlayHT vs 11L</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0142</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>ElevenLabs Turbo v2.5</h3>
-            <p class="provider">ElevenLabs</p>
-            <div class="spec-row"><span>Latency</span><b>~275ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.0002/char</b></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <p class="note">Curious how this was built? <span class="flow-link" style="margin:0; display:inline;" onclick="go('activity')">See your activity →</span></p>
-  </div>
-</div>
-
-<!-- ================= ACTIVITY LOG ================= -->
-<div class="page" id="page-activity">
-  <div class="flow-link" onclick="go('dashboard')">← Back to dashboard</div>
-  <div class="page-head">
-    <p class="eyebrow">Your activity</p>
-    <h1 class="page-title">Everything tracked, and where it went</h1>
-    <p class="page-sub">Nothing here is hidden from you. This is the same event stream the agent reads — batched client-side, never one network call per click.</p>
-  </div>
-  <div class="activity-wrap">
-    <div class="panel">
-      <div id="activity-log">
-      <div class="log-row">
-        <div class="log-time">14:02:11</div>
-        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
-        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 41s</span></div>
-      </div>
-      <div class="log-row">
-        <div class="log-time">14:02:58</div>
-        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
-        <div class="log-detail">query: <span>"real-time voice"</span></div>
-      </div>
-      <div class="log-row">
-        <div class="log-time">14:04:20</div>
-        <div class="log-type" style="background:var(--cyan)33; color:var(--cyan);">model_compare</div>
-        <div class="log-detail">ElevenLabs Turbo v2.5 <span>vs</span> PlayHT Play 3.0</div>
-      </div>
-      <div class="log-row">
-        <div class="log-time">14:05:03</div>
-        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
-        <div class="log-detail">PlayHT Play 3.0 <span>· dwell 18s</span></div>
-      </div>
-      <div class="log-row">
-        <div class="log-time">14:06:47</div>
-        <div class="log-type" style="background:var(--amber-dim); color:var(--amber);">model_view</div>
-        <div class="log-detail">ElevenLabs Turbo v2.5 <span>· dwell 22s (2nd visit)</span></div>
-      </div>
-      <div class="log-row">
-        <div class="log-time">14:09:15</div>
-        <div class="log-type" style="background:var(--violet)33; color:var(--violet);">search</div>
-        <div class="log-detail">query: <span>"lowest latency tts"</span></div>
-      </div>
-      </div>
-      <p class="note" id="activity-note">Sign in and browse the catalog to see your persisted activity here.</p>
-    </div>
-    <div class="panel">
-      <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 16px;">How this became your recommendation</h4>
-      <div id="activity-pipeline" class="pipeline-flow"><span class="k">status</span> → <span class="v">waiting for activity</span></div>
-      <p class="note" id="activity-pipeline-note" style="margin-top:20px;">Your persisted event stream will appear here once the recommendation pipeline is connected.</p>
-    </div>
-  </div>
-</div>
-
-<!-- ================= ADMIN ================= -->
-<div class="page" id="page-admin">
-  <div class="page-head admin-head-row">
-    <div>
-      <p class="eyebrow">Curator console</p>
-      <h1 class="page-title">Model catalog</h1>
-      <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
-    </div>
-    <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
-  </div>
-  <table class="admin-table">
-    <thead><tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr></thead>
-    <tbody id="admin-model-table"></tbody>
-  </table>
-</div>
-
-<div class="modal-backdrop" id="model-modal" role="presentation" onclick="closeModelModal(event)">
-  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title" onclick="event.stopPropagation()">
-    <div class="modal-head">
-      <div>
-        <h3 id="model-form-title">Add model</h3>
-        <p>Capture the model's specs, plus the story that helps an AI engineer choose it over alternatives.</p>
-      </div>
-      <button class="modal-close" type="button" aria-label="Close" onclick="closeModelModal()">×</button>
-    </div>
-    <form class="form-grid" id="model-form" onsubmit="saveModel(event)">
-      <div class="field"><label for="model-title">Title</label><input id="model-title" required placeholder="e.g. Cartesia Sonic"></div>
-      <div class="field"><label for="model-provider">Provider</label><input id="model-provider" required placeholder="e.g. Cartesia"></div>
-      <div class="field"><label for="model-modality">Modality</label><select id="model-modality"><option>LLM</option><option selected>Voice</option><option>Image</option><option>Video</option><option>Embedding</option></select></div>
-      <div class="field"><label for="model-price">Price / unit</label><input id="model-price" required placeholder="$0.00015/char"></div>
-      <div class="field"><label for="model-latency">Latency (ms)</label><input id="model-latency" placeholder="135"></div>
-      <div class="field"><label for="model-context">Context window</label><input id="model-context" placeholder="n/a for voice"></div>
-      <div class="field full"><label for="model-tags">Use-case tags</label><input id="model-tags" placeholder="real-time voice, customer support"></div>
-      <div class="field full"><label for="model-description">Description</label><textarea id="model-description" placeholder="What this model does, in plain technical terms."></textarea></div>
-      <div class="field full"><label for="model-story">Story — why this model</label><textarea id="model-story" placeholder="Who should reach for it, what trade-off it makes, and when it beats the alternatives."></textarea></div>
-      <div class="field full"><label for="model-source">Source URL</label><input id="model-source" type="url" placeholder="https://…"></div>
-      <input id="model-edit-id" type="hidden">
-      <div class="full" id="model-form-status" role="status" aria-live="polite"></div>
-    </form>
-    <div class="modal-actions">
-      <button class="btn primary" type="submit" form="model-form" style="flex:none; padding:10px 22px;">Save model</button>
-      <button class="btn" type="button" onclick="closeModelModal()" style="flex:none; padding:10px 22px;">Cancel</button>
-    </div>
-  </section>
-</div>
-
-
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v={{ js_version }}"></script>
 <script>
   window.INITIAL_PAGE = {{ initial_page|tojson }};
   window.INITIAL_MODEL_ID = {{ model_id|tojson }};
   if (typeof setSessionRole === 'function') setSessionRole({{ session_role|tojson }});
-  if (typeof go === 'function') {
-    go(window.INITIAL_PAGE, false);
-    if (window.INITIAL_MODEL_ID && typeof renderDetail === 'function') {
-      renderDetail(window.INITIAL_MODEL_ID);
-    }
-    if (window.INITIAL_PAGE === 'compare' && typeof restoreCompareFromUrl === 'function') {
-      restoreCompareFromUrl();
-    }
-  }
+  if (typeof initPage === 'function') initPage(window.INITIAL_PAGE);
 </script>
 </body>
 </html>

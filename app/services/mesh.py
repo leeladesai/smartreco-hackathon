@@ -2,6 +2,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from langsmith import traceable
 from openai import OpenAI
 
 from app.config import Settings
@@ -24,6 +25,7 @@ class MeshNarrativeGenerator:
             base_url=settings.mesh_base_url,
         )
 
+    @traceable(run_type="llm", name="mesh_generate_narrative")
     def generate(
         self, behavior_summary: str, candidates: Sequence[dict]
     ) -> NarrativeResult:

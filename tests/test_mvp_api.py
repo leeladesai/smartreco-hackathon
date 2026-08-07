@@ -1,34 +1,4 @@
-from collections.abc import Iterator
-
-import pytest
 from fastapi.testclient import TestClient
-
-from app.config import Settings
-from app.main import create_app
-from app.models import User
-from app.security import hash_password
-
-
-@pytest.fixture()
-def client(tmp_path) -> Iterator[TestClient]:
-    settings = Settings(
-        database_url=f"sqlite:///{tmp_path / 'test.db'}",
-        chroma_db_path=str(tmp_path / "chroma"),
-        secret_key="test-secret",
-        mesh_api_key=None,
-    )
-    test_app = create_app(settings)
-    with test_app.state.session_factory() as session:
-        session.add(
-            User(
-                email="curator@test.dev",
-                password_hash=hash_password("password123"),
-                role="admin",
-            )
-        )
-        session.commit()
-    with TestClient(test_app) as test_client:
-        yield test_client
 
 
 def test_register_login_and_batch_events(client: TestClient) -> None:
@@ -102,6 +72,24 @@ def test_non_admin_cannot_manage_models(client: TestClient) -> None:
     assert response.status_code == 403
 
 
+def test_admin_can_manually_trigger_digest_but_non_admin_cannot(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register", json={"email": "digest-user@test.dev", "password": "password123"}
+    )
+    client.post(
+        "/api/auth/login", json={"email": "digest-user@test.dev", "password": "password123"}
+    )
+    blocked = client.post("/api/admin/digest/run")
+    assert blocked.status_code == 403
+
+    client.post(
+        "/api/admin/login", json={"email": "curator@test.dev", "password": "password123"}
+    )
+    allowed = client.post("/api/admin/digest/run")
+    assert allowed.status_code == 200
+    assert set(allowed.json().keys()) == {"sent", "skipped"}
+
+
 def test_recommendation_retrieves_only_indexed_catalog_candidates(
     client: TestClient,
 ) -> None:
@@ -148,7 +136,13 @@ def test_recommendation_retrieves_only_indexed_catalog_candidates(
     assert recommendation.json()["activity_hash"]
     assert recommendation.json()["models"][0]["id"] == created.json()["id"]
 
-    repeat = client.post(
+    # `recommendation_triggered` on the response only reflects the cheap AGT-1 event-count
+    # check (NFR-1: the expensive pipeline now runs in the background, off the request path,
+    # so the response can't wait to know whether AGT-6 will end up deduping it). AGT-6's
+    # actual no-duplicate-work guarantee is verified directly below: the stored recommendation
+    # itself must be unchanged, not just this field.
+    first_created_at = recommendation.json()["created_at"]
+    client.post(
         "/api/events/batch",
         json={
             "events": [
@@ -158,7 +152,10 @@ def test_recommendation_retrieves_only_indexed_catalog_candidates(
             ]
         },
     )
-    assert repeat.json()["recommendation_triggered"] is False
+    unchanged = client.get("/api/recommendations/me").json()
+    assert unchanged["created_at"] == first_created_at, (
+        "AGT-6 should dedupe unchanged activity — no new recommendation should be stored"
+    )
 
 
 def test_mesh_narrative_is_persisted_and_model_ids_are_grounded(

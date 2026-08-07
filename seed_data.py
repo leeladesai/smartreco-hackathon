@@ -140,6 +140,8 @@ def main() -> None:
     vector_store = ModelVectorStore(settings.chroma_db_path)
     admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@smartreco.dev").lower()
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
+    engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@smartreco.dev").lower()
+    engineer_password = os.getenv("SEED_ENGINEER_PASSWORD", "engineer@123")
 
     with session_factory() as session:
         admin = session.scalar(select(User).where(User.email == admin_email))
@@ -155,6 +157,19 @@ def main() -> None:
             admin.role = "admin"
             admin.password_hash = hash_password(admin_password)
 
+        engineer = session.scalar(select(User).where(User.email == engineer_email))
+        if not engineer:
+            session.add(
+                User(
+                    email=engineer_email,
+                    password_hash=hash_password(engineer_password),
+                    role="user",
+                )
+            )
+        else:
+            engineer.role = "user"
+            engineer.password_hash = hash_password(engineer_password)
+
         for values in SEED_MODELS:
             model = session.scalar(select(Model).where(Model.title == values["title"]))
             if not model:
@@ -169,6 +184,7 @@ def main() -> None:
         session.commit()
 
     print(f"Seeded Curator account: {admin_email}")
+    print(f"Seeded AI-engineer account: {engineer_email}")
     print(f"Seeded {len(SEED_MODELS)} models into SQL and Chroma")
 
 

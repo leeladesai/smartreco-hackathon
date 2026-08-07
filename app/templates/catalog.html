@@ -1,1 +1,28 @@
 {% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-catalog">
+  <div class="page-head">
+    <p class="eyebrow">Catalog</p>
+    <h1 class="page-title">Find the model that fits, not just the one you've heard of</h1>
+    <p class="page-sub">Every view, search and comparison here quietly trains your dashboard — nothing is sent anywhere until you batch-flush, and you can see exactly what's tracked on the Your Activity screen.</p>
+  </div>
+
+  <div class="searchbar">
+    <span style="color:var(--muted-2)">⌕</span>
+    <input placeholder="Search by task — &quot;real-time voice&quot;, &quot;long context summarization&quot;…" value="real-time voice">
+    <span class="kbd">/</span>
+  </div>
+
+  <div class="filter-row" id="modality-filters">
+    <div class="chip active" data-dot="var(--cyan)"><span class="dot" style="background:var(--cyan)"></span>LLM</div>
+    <div class="chip" data-dot="var(--amber)"><span class="dot" style="background:var(--amber)"></span>Voice</div>
+    <div class="chip" data-dot="var(--violet)"><span class="dot" style="background:var(--violet)"></span>Image</div>
+    <div class="chip" data-dot="var(--rose)"><span class="dot" style="background:var(--rose)"></span>Video</div>
+    <div class="chip" data-dot="var(--teal)"><span class="dot" style="background:var(--teal)"></span>Embedding</div>
+    <div class="chip" style="margin-left:10px; border-style:dashed;">Provider ▾</div>
+    <div class="chip" style="border-style:dashed;">Latency &lt; 300ms</div>
+  </div>
+
+  <div class="grid" id="catalog-grid"></div>
+</div>
+{% endblock %}

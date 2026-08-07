@@ -11,12 +11,18 @@ from datetime import datetime, timedelta
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
+from langsmith import traceable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Model, Recommendation
 from app.services.mesh import NarrativeResult
-from app.services.recommendation import activity_hash, activity_summary, recent_events
+from app.services.recommendation import (
+    activity_hash,
+    activity_summary,
+    dominant_modality,
+    recent_events,
+)
 from app.vector import ModelVectorStore
 
 
@@ -30,6 +36,7 @@ COOLDOWN = timedelta(minutes=15)
 # genuinely relevant matches score well under 1.0 on this collection, off-topic/generic queries
 # score 1.5+. Not a universal constant — specific to this embedding function.
 WEAK_RETRIEVAL_DISTANCE = 1.5
+STRONG_RETRIEVAL_DISTANCE = 0.9
 
 
 class AgentState(TypedDict, total=False):
@@ -39,15 +46,31 @@ class AgentState(TypedDict, total=False):
     refined_query: str
     activity_hash: str
     retry_count: int
+    modality_filter: str | None
     candidates_scored: list[tuple[int, float]]
+    query_refined: bool
     grade_action: str
     narrative: str | None
     model_ids: list[int]
+    retrieval_meta: list[dict]
     short_circuit: bool
     recommendation: Recommendation | None
 
 
+def retrieval_reason(distance: float, query_refined: bool) -> str:
+    """AGT-4 grounding, surfaced to the user: a plain-language "why this" tag derived
+    from the Chroma distance (lower = more similar) rather than a canned string."""
+    if query_refined:
+        return "Matched after broadening your activity signal"
+    if distance <= STRONG_RETRIEVAL_DISTANCE:
+        return "Strong match to your recent activity"
+    if distance <= WEAK_RETRIEVAL_DISTANCE:
+        return "Related to your recent activity"
+    return "Broader catalog match"
+
+
 def _analyze_activity(session: Session):
+    @traceable(run_type="chain", name="analyze_activity")
     def node(state: AgentState) -> AgentState:
         events = recent_events(session, state["user_id"])
         summary = activity_summary(session, events)
@@ -68,6 +91,7 @@ def _analyze_activity(session: Session):
             "behavior_summary": summary,
             "activity_hash": event_hash,
             "retry_count": 0,
+            "modality_filter": dominant_modality(session, events),
             "short_circuit": False,
         }
 
@@ -75,14 +99,20 @@ def _analyze_activity(session: Session):
 
 
 def _retrieve_models(vector_store: ModelVectorStore):
+    @traceable(run_type="retriever", name="retrieve_models")
     def node(state: AgentState) -> AgentState:
         query = state.get("refined_query") or state["behavior_summary"]
-        scored = vector_store.query_scored(query, limit=RETRIEVAL_TOP_K)
+        # Only pre-filter on the first pass — a retry already broadens the query text
+        # because the narrower search came back weak, so keep the candidate pool wide too.
+        modality_filter = state.get("modality_filter") if state.get("retry_count") == 0 else None
+        where = {"modality": modality_filter} if modality_filter else None
+        scored = vector_store.query_scored(query, limit=RETRIEVAL_TOP_K, where=where)
         return {**state, "candidates_scored": scored}
 
     return node
 
 
+@traceable(run_type="chain", name="grade_refine")
 def _grade_refine(state: AgentState) -> AgentState:
     """AGT-4: bounded retry (max 2) when retrieval quality is weak."""
     scored = state.get("candidates_scored", [])
@@ -110,12 +140,14 @@ def _grade_refine(state: AgentState) -> AgentState:
             **state,
             "retry_count": retry_count + 1,
             "refined_query": broadened,
+            "query_refined": True,
             "grade_action": "retry",
         }
     return {**state, "grade_action": "proceed"}
 
 
 def _generate_narrative(session: Session, mesh_generator):
+    @traceable(run_type="chain", name="generate_narrative")
     def node(state: AgentState) -> AgentState:
         model_ids = [model_id for model_id, _ in state.get("candidates_scored", [])]
         models_by_id = (
@@ -168,16 +200,34 @@ def _generate_narrative(session: Session, mesh_generator):
                 ]
                 final_ids = filtered or ordered_ids
 
-        return {**state, "model_ids": final_ids, "narrative": narrative}
+        distances = dict(state.get("candidates_scored", []))
+        query_refined = state.get("query_refined", False)
+        retrieval_meta = [
+            {
+                "model_id": model_id,
+                "distance": distances.get(model_id),
+                "reason": retrieval_reason(distances.get(model_id, WEAK_RETRIEVAL_DISTANCE), query_refined),
+            }
+            for model_id in final_ids
+        ]
+
+        return {
+            **state,
+            "model_ids": final_ids,
+            "narrative": narrative,
+            "retrieval_meta": retrieval_meta,
+        }
 
     return node
 
 
 def _store_and_deliver(session: Session):
+    @traceable(run_type="chain", name="store_and_deliver")
     def node(state: AgentState) -> AgentState:
         recommendation = Recommendation(
             user_id=state["user_id"],
             model_ids=state.get("model_ids") or [],
+            retrieval_meta=state.get("retrieval_meta") or [],
             narrative=state.get("narrative"),
             behavior_summary=state["behavior_summary"],
             activity_hash=state["activity_hash"],
@@ -222,14 +272,14 @@ def build_agent_graph(
     return graph.compile()
 
 
+@traceable(run_type="chain", name="agent_pipeline")
 def prepare_retrieval_recommendation(
     session: Session,
     vector_store: ModelVectorStore,
     user_id: int,
     mesh_generator=None,
+    trigger_reason: str = "event_threshold",
 ) -> Recommendation | None:
     graph = build_agent_graph(session, vector_store, mesh_generator)
-    result = graph.invoke(
-        {"user_id": user_id, "trigger_reason": "event_threshold"}
-    )
+    result = graph.invoke({"user_id": user_id, "trigger_reason": trigger_reason})
     return result.get("recommendation")

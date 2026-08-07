@@ -10,6 +10,7 @@ openai==1.10.0
 langchain==0.1.0
 langchain-openai==0.0.5
 langgraph==0.0.20
+langsmith==0.0.87
 
 # Vector Database
 chromadb==0.4.24

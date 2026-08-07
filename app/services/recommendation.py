@@ -83,6 +83,35 @@ def activity_summary(session: Session, events: list[Event]) -> str:
     return " ".join(parts)
 
 
+def dominant_modality(session: Session, events: list[Event]) -> str | None:
+    """Retrieval polish (Iteration 3): the same same-modality clustering signal that
+    `activity_summary` uses for its "browsing multiple X" clause — reused here to build a
+    Chroma metadata `where` filter, so retrieval is pre-filtered to the modality the user is
+    actually evaluating rather than just re-ranked afterward. Returns None (no filter) unless
+    2+ distinct models of one modality were viewed or compared, mirroring the AGT-2 threshold.
+    """
+    model_ids = {event.model_id for event in events if event.model_id}
+    if not model_ids:
+        return None
+    models_by_id = {
+        model.id: model
+        for model in session.scalars(select(Model).where(Model.id.in_(model_ids))).all()
+    }
+    signal_events = [
+        event
+        for event in events
+        if event.event_type in ("model_view", "model_compare")
+        and event.model_id in models_by_id
+    ]
+    by_modality: dict[str, set[int]] = defaultdict(set)
+    for event in signal_events:
+        by_modality[models_by_id[event.model_id].modality].add(event.model_id)
+    candidates = [modality for modality, ids in by_modality.items() if len(ids) >= 2]
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
+
+
 def activity_hash(events: list[Event]) -> str:
     payload = [
         {

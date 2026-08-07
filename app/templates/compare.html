@@ -1,1 +1,15 @@
 {% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-compare">
+  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
+  <div class="page-head">
+    <p class="eyebrow">Compare</p>
+    <h1 class="page-title" id="compare-title">Models, side by side</h1>
+    <p class="page-sub">Only what you added to the tray appears here — nothing pre-selected.</p>
+  </div>
+  <div class="compare-table-wrap">
+    <table class="compare" id="compare-table"></table>
+  </div>
+  <p class="note">This comparison is itself a tracked signal — adding these models to the compare tray logs a <span style="color:var(--text)">model_compare</span> event each; simply viewing them in one session does not.</p>
+</div>
+{% endblock %}

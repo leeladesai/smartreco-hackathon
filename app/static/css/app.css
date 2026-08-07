@@ -290,25 +290,41 @@
   @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
 
   /* ---- auth ---- */
+  /* The app nav is hidden (display:none) on both auth pages, so the page owns the full
+     viewport. `height:100vh` + `overflow:hidden` here is a hard structural cap: this page
+     can never push the document taller than the viewport, so an outer scrollbar is
+     impossible by construction rather than by estimating content height. Everything below
+     — the fluid clamp() sizing, and the per-column overflow:auto as a last-resort safety
+     net — exists to make what fits *inside* that fixed box look right, not to prevent
+     scrolling (the hard cap already guarantees that part). */
+  #page-auth, #page-admin-auth{padding-bottom:0; padding-top:0;}
   #page-auth.active{
     display:flex; align-items:center; justify-content:center;
-    min-height:calc(100vh - 64px); padding-bottom:28px;
+    height:100vh; max-height:100vh; overflow:hidden; padding:clamp(12px, 3vh, 28px) 20px;
   }
   #page-admin-auth.active{
     display:flex; flex-direction:column; justify-content:center;
-    min-height:calc(100vh - 64px); padding-bottom:28px;
+    height:100vh; max-height:100vh; overflow:hidden; padding:clamp(12px, 3vh, 28px) 20px;
   }
   #page-auth .auth-wrap, #page-admin-auth .auth-wrap{width:100%;}
-  .auth-wrap{display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:460px;}
-  @media (max-width:840px){.auth-wrap{grid-template-columns:1fr; min-height:0;}}
+  .auth-wrap{
+    display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line); border-radius:8px;
+    overflow:hidden; max-height:100%;
+  }
+  @media (max-width:840px){.auth-wrap{grid-template-columns:1fr;}}
+  /* Each column scrolls independently, only if it still doesn't fit after shrinking —
+     the outer page (capped above) never does. */
+  .auth-pitch, .auth-form-side{max-height:100%; overflow-y:auto;}
   .auth-pitch{
-    background:var(--panel); padding:36px 32px; display:flex; flex-direction:column; justify-content:center; gap:28px;
+    background:var(--panel); padding:clamp(16px, 4vh, 36px) clamp(20px, 3vw, 32px);
+    display:flex; flex-direction:column; justify-content:center; gap:clamp(10px, 2.5vh, 28px);
     border-right:1px solid var(--line); position:relative;
   }
+  @media (max-height:640px){.live-compare{display:none;}}
   @media (max-width:840px){.auth-pitch{border-right:none; border-bottom:1px solid var(--line);}}
-  .auth-pitch .brand{margin:0 0 28px; display:inline-block;}
-  .auth-pitch h2{font-size:38px; font-weight:800; line-height:1.15; letter-spacing:-.015em; margin:0 0 14px; max-width:440px;}
-  .auth-pitch p{color:var(--muted); font-size:14.5px; line-height:1.6; max-width:400px;}
+  .auth-pitch .brand{margin:0 0 clamp(8px, 2vh, 28px); display:inline-block;}
+  .auth-pitch h2{font-size:clamp(20px, 3.2vh, 38px); font-weight:800; line-height:1.15; letter-spacing:-.015em; margin:0 0 clamp(4px, 1vh, 14px); max-width:440px;}
+  .auth-pitch p{color:var(--muted); font-size:clamp(12.5px, 1.8vh, 14.5px); line-height:1.6; max-width:400px;}
   .mini-ticket{
     margin-top:24px; background:var(--panel-2); border:1px solid var(--line); border-left:3px solid var(--amber);
     border-radius:0 6px 6px 0; padding:14px 16px; max-width:320px;
@@ -316,8 +332,8 @@
   .mini-ticket .tag-row{display:flex; gap:6px; margin-bottom:8px;}
   .mini-ticket p{margin:0; font-size:11.5px; color:var(--text); line-height:1.6;}
   .mini-ticket p b{color:var(--amber);}
-  .auth-form-side{padding:40px 44px; display:flex; flex-direction:column;}
-  .auth-toggle{display:flex; gap:2px; border:1px solid var(--line); border-radius:6px; padding:3px; margin-bottom:28px; width:fit-content;}
+  .auth-form-side{padding:clamp(16px, 4vh, 40px) clamp(20px, 3vw, 44px); display:flex; flex-direction:column;}
+  .auth-toggle{display:flex; gap:2px; border:1px solid var(--line); border-radius:6px; padding:3px; margin-bottom:clamp(10px, 2.5vh, 28px); width:fit-content;}
   .auth-toggle .opt{
     font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding:8px 18px;
     border-radius:4px; cursor:pointer; color:var(--muted);
@@ -325,18 +341,31 @@
   .auth-toggle .opt.active{background:var(--amber); color:#171208; font-weight:700;}
   /* Both copy variants occupy the same grid cell so the card reserves space for whichever
      is longer — switching modes can never resize or flicker the layout. */
-  .auth-form-heading{display:grid; margin-bottom:28px; max-width:460px;}
+  .auth-form-heading{display:grid; margin-bottom:clamp(10px, 2.5vh, 28px); max-width:460px;}
   .auth-copy{grid-area:1/1; visibility:hidden;}
   .auth-copy.active{visibility:visible;}
-  .auth-form-heading h1{font-size:32px; font-weight:800; line-height:1.15; letter-spacing:-.015em; margin:0 0 10px;}
-  .auth-form-heading p{color:var(--muted); font-size:14.5px; line-height:1.5; margin:0;}
-  .auth-field{margin-bottom:18px;}
+  .auth-form-heading h1{font-size:clamp(20px, 2.8vh, 32px); font-weight:800; line-height:1.15; letter-spacing:-.015em; margin:0 0 10px;}
+  .auth-form-heading p{color:var(--muted); font-size:clamp(12.5px, 1.8vh, 14.5px); line-height:1.5; margin:0;}
+  .auth-field{margin-bottom:clamp(8px, 2vh, 18px);}
   .auth-field label{display:block; font-family:var(--mono); font-size:10.5px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:7px;}
   .auth-field input{
     width:100%; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:13px 14px;
     color:var(--text); font-family:var(--sans); font-size:14px; outline:none;
   }
   .auth-field input:focus{border-color:var(--amber);}
+  .password-field{position:relative;}
+  .password-field input{padding-right:42px;}
+  .password-toggle{
+    position:absolute; right:4px; top:50%; transform:translateY(-50%);
+    display:flex; align-items:center; justify-content:center;
+    width:32px; height:32px; padding:0; background:none; border:none; border-radius:5px;
+    color:var(--muted); cursor:pointer;
+  }
+  .password-toggle:hover{color:var(--text); background:var(--panel);}
+  .password-toggle svg{width:20px; height:20px;}
+  .password-toggle .icon-eye-off{display:none;}
+  .password-toggle.showing .icon-eye{display:none;}
+  .password-toggle.showing .icon-eye-off{display:block;}
   .auth-field.only-register, .only-login{visibility:hidden;}
   .auth-form.register-mode .only-register{visibility:visible;}
   .auth-form:not(.register-mode) .only-login{visibility:visible;}
@@ -357,12 +386,13 @@
 
   /* ---- live comparison widget (auth pitch) — always real data, never hardcoded ---- */
   .live-compare{
-    background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:18px 20px; max-width:440px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
+    padding:clamp(10px, 2vh, 18px) clamp(12px, 2vw, 20px); max-width:440px;
   }
-  .live-compare-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap;}
+  .live-compare-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:clamp(6px, 1.4vh, 14px); flex-wrap:wrap;}
   .live-compare-label{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--amber);}
   .live-compare-pair{font-family:var(--mono); font-size:12px; color:var(--muted);}
-  .compare-row + .compare-row{margin-top:14px;}
+  .compare-row + .compare-row{margin-top:clamp(6px, 1.4vh, 14px);}
   .compare-label{font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px;}
   .compare-cols{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
   .compare-value{display:block; font-size:13.5px; color:var(--text); margin-bottom:5px;}
