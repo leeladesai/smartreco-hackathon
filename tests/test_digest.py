@@ -27,15 +27,35 @@ class NullVectorStore:
 
 
 def test_build_notifier_prefers_email_then_telegram_then_logging() -> None:
+    # Settings() reads the developer's real .env by default — explicitly nulling the
+    # fields each case isn't testing keeps this robust regardless of what's actually
+    # configured locally (same isolation rationale as conftest.py's client fixture).
     assert isinstance(
         build_notifier(Settings(smtp_host="smtp.test", smtp_from_email="a@test.dev")),
         EmailNotifier,
     )
     assert isinstance(
-        build_notifier(Settings(telegram_bot_token="token", telegram_chat_id="chat")),
+        build_notifier(
+            Settings(
+                smtp_host=None,
+                smtp_from_email=None,
+                telegram_bot_token="token",
+                telegram_chat_id="chat",
+            )
+        ),
         TelegramNotifier,
     )
-    assert isinstance(build_notifier(Settings()), LoggingNotifier)
+    assert isinstance(
+        build_notifier(
+            Settings(
+                smtp_host=None,
+                smtp_from_email=None,
+                telegram_bot_token=None,
+                telegram_chat_id=None,
+            )
+        ),
+        LoggingNotifier,
+    )
 
 
 def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:

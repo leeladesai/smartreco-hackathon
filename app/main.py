@@ -28,6 +28,7 @@ from app.config import Settings
 from app.db import build_session_factory
 from app.models import DemoModeSetting, Event, Model, Recommendation, User
 from app.schemas import (
+    AdminUserResponse,
     AuthCredentials,
     BulkImportResponse,
     DemoModeResponse,
@@ -269,6 +270,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin/observability", include_in_schema=False)
     async def admin_observability_page(request: Request):
         return render_admin_page(request, "observability", "observability.html")
+
+    @app.get("/admin/users", include_in_schema=False)
+    async def admin_users_page(request: Request):
+        return render_admin_page(request, "admin-users", "users.html")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -586,6 +591,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ],
             },
         }
+
+    @app.get("/api/admin/users", response_model=list[AdminUserResponse])
+    async def list_users(_: User = Depends(current_admin)) -> list[AdminUserResponse]:
+        with session_factory() as session:
+            users = session.scalars(select(User).order_by(User.created_at.desc())).all()
+            return [AdminUserResponse.model_validate(user) for user in users]
 
     @app.get("/api/admin/observability/costs")
     async def observability_costs(

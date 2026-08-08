@@ -17,6 +17,10 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AdminUserResponse(UserResponse):
+    created_at: datetime
+
+
 class TelegramChatIdUpdate(BaseModel):
     # None/empty clears it (falls back to the shared TELEGRAM_CHAT_ID, if any, or
     # digest delivery for this user just gets skipped and logged).

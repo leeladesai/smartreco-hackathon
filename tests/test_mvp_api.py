@@ -203,6 +203,42 @@ def test_non_admin_cannot_bulk_upload_catalog(client: TestClient) -> None:
     assert response.status_code == 403
 
 
+def test_admin_can_list_users(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "listed-user@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+
+    response = client.get("/api/admin/users")
+    assert response.status_code == 200
+    emails = {user["email"] for user in response.json()}
+    assert "listed-user@test.dev" in emails
+    assert "curator@test.dev" in emails
+    listed = next(u for u in response.json() if u["email"] == "listed-user@test.dev")
+    assert listed["role"] == "user"
+    assert listed["telegram_chat_id"] is None
+    assert "created_at" in listed
+
+
+def test_non_admin_and_anonymous_cannot_list_users(client: TestClient) -> None:
+    anonymous = TestClient(client.app).get("/api/admin/users")
+    assert anonymous.status_code == 401
+
+    client.post(
+        "/api/auth/register",
+        json={"email": "nosee@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login", json={"email": "nosee@test.dev", "password": "password123"}
+    )
+    response = client.get("/api/admin/users")
+    assert response.status_code == 403
+
+
 def test_non_admin_cannot_manage_models(client: TestClient) -> None:
     client.post(
         "/api/auth/register", json={"email": "user@test.dev", "password": "password123"}

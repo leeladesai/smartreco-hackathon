@@ -293,6 +293,38 @@
     `).join('');
   }
 
+  // Admin users list: read-only view of who's actually registered (app/main.py
+  // GET /api/admin/users) — accounts themselves are created via self-registration
+  // (submitAuth) or the seed script, never from this page.
+  async function loadUsers(){
+    if (!adminSession) return;
+    const tbody = document.getElementById('admin-users-table');
+    const empty = document.getElementById('admin-users-empty');
+    if (!tbody) return; // only present on the admin users page
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/users`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const users = await response.json();
+      empty.style.display = users.length ? 'none' : 'block';
+      tbody.innerHTML = users.map(user => {
+        const joined = new Date(user.created_at).toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'});
+        const roleClass = user.role === 'admin' ? 'sync-ok' : '';
+        return `
+          <tr>
+            <td>${escapeHtml(user.email)}</td>
+            <td class="${roleClass}">${escapeHtml(user.role)}</td>
+            <td>${joined}</td>
+            <td>${user.telegram_chat_id ? '✓ connected' : '—'}</td>
+          </tr>
+        `;
+      }).join('');
+    } catch (error) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      empty.textContent = 'Could not load users. Try refreshing.';
+    }
+  }
+
   // Cost/latency rollup (bonus, efficiency polish): aggregated straight from our own
   // DB (Recommendation.mesh_* columns, captured in app/services/mesh.py at generation
   // time) — deliberately not another LangSmith call, so this works even without
@@ -1386,7 +1418,7 @@
   const TRAY_PAGES = ['catalog', 'detail', 'compare'];
 
   function navStateFor(page){
-    if (page === 'admin' || page === 'observability') return 'admin';
+    if (page === 'admin' || page === 'observability' || page === 'admin-users') return 'admin';
     if (BUILDER_PAGES.includes(page)) return 'engineer';
     return 'none'; // auth, admin-auth — logged-out screens get no app chrome
   }
@@ -1401,6 +1433,7 @@
     if (page === 'activity') return '/activity';
     if (page === 'admin') return '/admin';
     if (page === 'observability') return '/admin/observability';
+    if (page === 'admin-users') return '/admin/users';
     return '/catalog';
   }
 
@@ -1436,6 +1469,7 @@
     if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); loadTelegramChatId(); }
     if (page === 'activity') loadActivity();
     if (page === 'observability') { loadObservability(); loadCostRollup(); }
+    if (page === 'admin-users') loadUsers();
     window.scrollTo({top:0, behavior:'instant'});
   }
 
