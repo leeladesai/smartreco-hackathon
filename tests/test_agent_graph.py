@@ -11,6 +11,7 @@ from app.services.agent_graph import (
     prepare_retrieval_recommendation,
     rerank_by_lexical_overlap,
 )
+from app.services.recommendation import FeedbackRecord
 
 
 class FakeVectorStore:
@@ -423,16 +424,23 @@ def test_rerank_bonus_is_capped_at_configured_weight() -> None:
 
 def test_feedback_downvote_penalizes_and_reorders() -> None:
     # Candidate 1 starts ahead on raw distance, but was previously downvoted — the
-    # penalty should push it behind candidate 2.
+    # penalty should push it behind candidate 2. No context_query recorded, so it
+    # applies regardless of the current query (fail-open for legacy feedback).
     scored = [(1, 0.5), (2, 0.6)]
-    reranked = apply_feedback_adjustment(scored, {1: "down"})
+    reranked = apply_feedback_adjustment(
+        scored, {1: FeedbackRecord(rating="down", context_query="")}
+    )
     assert [model_id for model_id, _ in reranked] == [2, 1]
 
 
 def test_feedback_upvote_gives_a_smaller_bonus_than_downvote_penalty() -> None:
     scored = [(1, 0.5)]
-    up = apply_feedback_adjustment(scored, {1: "up"})
-    down = apply_feedback_adjustment(scored, {1: "down"})
+    up = apply_feedback_adjustment(
+        scored, {1: FeedbackRecord(rating="up", context_query="")}
+    )
+    down = apply_feedback_adjustment(
+        scored, {1: FeedbackRecord(rating="down", context_query="")}
+    )
     assert up == [(1, 0.5 - 0.4)]
     assert down == [(1, 0.5 + 1.0)]
     # Asymmetric on purpose: a downvote is meant to weigh more than an upvote.
@@ -442,7 +450,32 @@ def test_feedback_upvote_gives_a_smaller_bonus_than_downvote_penalty() -> None:
 def test_feedback_adjustment_ignores_unrated_candidates() -> None:
     scored = [(1, 0.5), (2, 0.6)]
     assert apply_feedback_adjustment(scored, {}) == scored
-    assert apply_feedback_adjustment(scored, {99: "down"}) == scored
+    assert (
+        apply_feedback_adjustment(
+            scored, {99: FeedbackRecord(rating="down", context_query="")}
+        )
+        == scored
+    )
+
+
+def test_feedback_does_not_carry_over_to_a_dissimilar_query() -> None:
+    # A downvote given while searching for a "rack based server model" should not
+    # suppress the same model when the user later genuinely searches for "voice".
+    scored = [(1, 0.5)]
+    feedback = {
+        1: FeedbackRecord(rating="down", context_query="rack based server model")
+    }
+    assert (
+        apply_feedback_adjustment(scored, feedback, "voice assistant realtime")
+        == scored
+    )
+
+
+def test_feedback_carries_over_to_a_similar_query() -> None:
+    scored = [(1, 0.5)]
+    feedback = {1: FeedbackRecord(rating="down", context_query="voice assistant model")}
+    reranked = apply_feedback_adjustment(scored, feedback, "looking for a voice model")
+    assert reranked == [(1, 0.5 + 1.0)]
 
 
 def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() -> None:

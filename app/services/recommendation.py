@@ -2,11 +2,21 @@ import hashlib
 import json
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Event, Model, Recommendation
+
+
+class FeedbackRecord(NamedTuple):
+    rating: str
+    # The behavior_summary of the recommendation the feedback was given on, so the
+    # rerank node can tell whether *this* query is the same kind of ask the user was
+    # rating, rather than applying the opinion everywhere. Empty for feedback events
+    # recorded before a recommendation link was tracked.
+    context_query: str
 
 
 SESSION_GAP = timedelta(minutes=30)
@@ -315,13 +325,22 @@ def recent_events(session: Session, user_id: int) -> list[Event]:
     ).all()
 
 
-def recent_feedback_by_model(session: Session, user_id: int) -> dict[int, str]:
+def recent_feedback_by_model(
+    session: Session, user_id: int
+) -> dict[int, FeedbackRecord]:
     """Most recent explicit up/down feedback per model within FEEDBACK_LOOKBACK_DAYS —
     newest rating wins if the user changed their mind. No new table: feedback is just
-    another `Event` (event_type="recommendation_feedback", metadata={"rating": ...}),
-    tracked through the same batched /api/events/batch path as every other behavioral
-    signal. Feeds the rerank_candidates node (app/services/agent_graph.py) so a
-    downvote actually suppresses that model from reappearing, not just logs a rating.
+    another `Event` (event_type="recommendation_feedback", metadata={"rating": ...,
+    "recommendation_id": ...}), tracked through the same batched /api/events/batch path
+    as every other behavioral signal. Feeds the rerank_candidates node
+    (app/services/agent_graph.py) so a downvote actually suppresses that model from
+    reappearing, not just logs a rating.
+
+    Each record carries the behavior_summary of the recommendation it was given on
+    (via the linked Recommendation row) so the caller can scope the adjustment to a
+    similar query rather than applying it globally — a downvote on a voice model shown
+    for a "rack-based" search shouldn't also suppress that same model the next time the
+    user is genuinely looking for voice models.
     """
     cutoff = datetime.utcnow() - FEEDBACK_LOOKBACK_DAYS
     events = session.scalars(
@@ -333,14 +352,36 @@ def recent_feedback_by_model(session: Session, user_id: int) -> dict[int, str]:
         )
         .order_by(Event.created_at.desc())
     ).all()
-    feedback: dict[int, str] = {}
+    if not events:
+        return {}
+    recommendation_ids = {
+        (event.metadata_json or {}).get("recommendation_id") for event in events
+    }
+    recommendation_ids.discard(None)
+    context_by_recommendation_id = (
+        {
+            rec.id: rec.behavior_summary
+            for rec in session.scalars(
+                select(Recommendation).where(Recommendation.id.in_(recommendation_ids))
+            ).all()
+        }
+        if recommendation_ids
+        else {}
+    )
+    feedback: dict[int, FeedbackRecord] = {}
     for event in events:
         if event.model_id is None:
             continue
-        rating = (event.metadata_json or {}).get("rating")
+        metadata = event.metadata_json or {}
+        rating = metadata.get("rating")
         if rating not in ("up", "down"):
             continue
-        feedback.setdefault(event.model_id, rating)
+        context_query = context_by_recommendation_id.get(
+            metadata.get("recommendation_id"), ""
+        )
+        feedback.setdefault(
+            event.model_id, FeedbackRecord(rating=rating, context_query=context_query)
+        )
     return feedback
 
 

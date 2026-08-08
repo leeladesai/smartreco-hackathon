@@ -9,6 +9,7 @@ from app.security import hash_password
 from app.services.recommendation import (
     SESSION_COOLDOWN,
     SESSION_GAP,
+    FeedbackRecord,
     activity_hash,
     is_recommendation_stale,
     mesh_cost_rollup,
@@ -312,7 +313,49 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
         session.commit()
 
         feedback = recent_feedback_by_model(session, user.id)
-        assert feedback == {1: "down", 2: "up"}
+        assert feedback == {
+            1: FeedbackRecord(rating="down", context_query=""),
+            2: FeedbackRecord(rating="up", context_query=""),
+        }
+
+
+def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendation(
+    tmp_path,
+) -> None:
+    session_factory = _make_session_factory(tmp_path)
+    with session_factory() as session:
+        user = User(
+            email="context@test.dev", password_hash=hash_password("x"), role="user"
+        )
+        session.add(user)
+        session.commit()
+        recommendation = Recommendation(
+            user_id=user.id,
+            model_ids=[1],
+            behavior_summary="rack based server model",
+            activity_hash="hash-1",
+            trigger_reason="event_threshold",
+        )
+        session.add(recommendation)
+        session.commit()
+        session.add(
+            Event(
+                user_id=user.id,
+                event_type="recommendation_feedback",
+                model_id=1,
+                metadata_json={
+                    "rating": "down",
+                    "recommendation_id": recommendation.id,
+                },
+                created_at=datetime.utcnow(),
+            )
+        )
+        session.commit()
+
+        feedback = recent_feedback_by_model(session, user.id)
+        assert feedback == {
+            1: FeedbackRecord(rating="down", context_query="rack based server model")
+        }
 
 
 def test_recent_feedback_by_model_ignores_stale_feedback(tmp_path) -> None:

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.models import Model, Recommendation
 from app.services.mesh import NarrativeResult
 from app.services.recommendation import (
+    FeedbackRecord,
     _summarize_bucket,
     activity_hash,
     activity_summary,
@@ -56,6 +57,14 @@ RERANK_LEXICAL_BONUS = 0.3
 # the lexical rerank above.
 FEEDBACK_DOWN_PENALTY = 1.0
 FEEDBACK_UP_BONUS = 0.4
+
+# A rating only carries forward to a future query if that query shares at least this
+# fraction of its terms with the query the feedback was originally given on (see
+# `_feedback_context_matches`) — e.g. a downvote on a voice model shown for a
+# "rack-based" search shouldn't suppress that same model when the user later
+# genuinely searches for voice models. Deliberately low: this is a floor to catch
+# genuinely unrelated scenarios, not a strict topic match.
+FEEDBACK_CONTEXT_OVERLAP_THRESHOLD = 0.2
 
 
 class AgentState(TypedDict, total=False):
@@ -269,9 +278,28 @@ def rerank_by_lexical_overlap(
     return reranked
 
 
+def _feedback_context_matches(
+    current_query_terms: set[str], context_query: str
+) -> bool:
+    """Whether a past rating's context is close enough to the current query to carry
+    forward. Fails open (applies the rating) when there's nothing to compare — a
+    feedback event recorded before recommendations were linked (no context_query), or
+    a current query with no extractable terms — so old behavior is preserved rather
+    than silently going inert.
+    """
+    if not context_query or not current_query_terms:
+        return True
+    context_terms = _tokenize(context_query)
+    if not context_terms:
+        return True
+    overlap = len(current_query_terms & context_terms) / len(current_query_terms)
+    return overlap >= FEEDBACK_CONTEXT_OVERLAP_THRESHOLD
+
+
 def apply_feedback_adjustment(
     scored: list[tuple[int, float]],
-    feedback_by_model_id: dict[int, str],
+    feedback_by_model_id: dict[int, FeedbackRecord],
+    current_query: str = "",
 ) -> list[tuple[int, float]]:
     """Closes the recommendation loop: an explicit thumbs up/down on a past
     recommendation card (recorded as an `Event`, see
@@ -281,16 +309,25 @@ def apply_feedback_adjustment(
     the next time it's retrieved. Additive, same distance units as the lexical rerank
     above; asymmetric (down penalizes more than up rewards) — see the constants'
     docstring for why.
+
+    Scoped to context: a rating only applies if `current_query` is similar enough to
+    the query it was originally given under (see `_feedback_context_matches`) — a
+    rating is an opinion about "this model for that kind of ask", not a verdict on the
+    model in general.
     """
     if not feedback_by_model_id:
         return scored
+    current_query_terms = _tokenize(current_query)
     adjusted = []
     for model_id, distance in scored:
-        rating = feedback_by_model_id.get(model_id)
-        if rating == "down":
-            distance += FEEDBACK_DOWN_PENALTY
-        elif rating == "up":
-            distance -= FEEDBACK_UP_BONUS
+        record = feedback_by_model_id.get(model_id)
+        if record is not None and _feedback_context_matches(
+            current_query_terms, record.context_query
+        ):
+            if record.rating == "down":
+                distance += FEEDBACK_DOWN_PENALTY
+            elif record.rating == "up":
+                distance -= FEEDBACK_UP_BONUS
         adjusted.append((model_id, distance))
     adjusted.sort(key=lambda pair: pair[1])
     return adjusted
@@ -316,7 +353,7 @@ def _rerank_candidates(session: Session):
         )
         reranked = rerank_by_lexical_overlap(scored, query, documents_by_id)
         feedback_by_model_id = recent_feedback_by_model(session, state["user_id"])
-        reranked = apply_feedback_adjustment(reranked, feedback_by_model_id)
+        reranked = apply_feedback_adjustment(reranked, feedback_by_model_id, query)
         return {**state, "candidates_scored": reranked}
 
     return node
