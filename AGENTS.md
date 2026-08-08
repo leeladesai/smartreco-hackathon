@@ -14,7 +14,7 @@ the code — it must never drift into a second, stale plan.
 TrailMind is a FastAPI application for an AI model/tool catalog recommendation agent. It tracks an
 AI engineer's browsing/comparison behavior, retrieves candidate models via Chroma semantic search,
 and generates grounded, comparison-driven recommendations through the Mesh API using a 6-node
-LangGraph pipeline (analyze → retrieve → grade/refine → generate → store). See
+LangGraph pipeline (analyze → retrieve → rerank → grade/refine → generate → store). See
 `docs/00-Domain-Decision.md` for why this domain (over alternatives like a grocery/quick-commerce
 catalog) was chosen.
 

@@ -27,7 +27,7 @@ system satisfy both "track everything" and "don't call the LLM on every action."
 | Tracking client | Batches behavioral events, flushes via beacon/timer | JS module, no dependencies |
 | API layer | Auth, catalog CRUD, event ingestion, recommendation read | FastAPI |
 | Trigger evaluator | Decides if/when to run the agent for a user | Runs inline after event batch insert, cheap SQL check (no LLM) |
-| Agent worker | LangGraph pipeline: analyze → retrieve → grade/refine → generate → store | LangGraph + Mesh API (OpenAI-compatible client) |
+| Agent worker | LangGraph pipeline: analyze → retrieve → rerank → grade/refine → generate → store | LangGraph + Mesh API (OpenAI-compatible client) |
 | SQL database | Source of truth: users, models, events, recommendations | SQLite (dev) / Postgres (prod-shaped) via SQLAlchemy |
 | Vector database | Semantic index of AI models (provider, modality, price, latency, use-case) | Chroma (local, zero external deps — good fit for a graded repo) |
 | Scheduler (bonus) | Daily digest trigger | APScheduler, in-process |

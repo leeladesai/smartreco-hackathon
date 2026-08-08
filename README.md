@@ -218,6 +218,24 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
   shows a live queued→sent event-tracking overlay in the model drawer/detail page for every
   AI-engineer session. Off by default so it never surfaces during normal use; meant only for live
   pipeline demonstrations.
+- **Bulk catalog upload** — `POST /api/admin/models/bulk-upload` accepts a CSV or JSON file (up
+  to 500 rows) instead of requiring one-at-a-time entry. Each row validates and writes through
+  the exact same dual-write (DB + Chroma) path as the single-model admin API, dedupes
+  case-insensitively by title (skipped, not overwritten), and reports back per-row
+  inserted/skipped/invalid so one bad row never aborts the batch.
+- **Admin Users list** — a read-only `/admin/users` screen (`GET /api/admin/users`) showing every
+  registered account: email, role, join date, and whether they've connected Telegram — closing
+  the gap where accounts existed and worked but were invisible from the admin portal.
+- **Registration flow hardening** — confirm-password is now actually validated client-side
+  (previously present in the form but never read), switching between Sign-in/Register clears
+  stale field values instead of carrying the demo login email into a signup, and failures surface
+  the real reason (duplicate email, weak password) instead of one generic message.
+- **Product rebrand: SmartReco → TrailMind** — renamed throughout the app to stand apart from
+  other hackathon submissions in the same domain, while keeping the "smart recommendation"
+  framing explicit (see the intro above).
+- **Verified live email digest delivery** — real Gmail SMTP configured and the full scheduled-
+  digest path (`run_digest` → `prepare_retrieval_recommendation` → stored `Recommendation` →
+  `EmailNotifier`) confirmed to deliver an actual email end-to-end, not just a mocked test.
 - A real per-user `asyncio.Lock` fixing a genuine race condition that could produce duplicate
   `Recommendation` rows from two near-simultaneous qualifying event batches.
 - **Admin observability dashboard** (`OBS-2`) — an admin-only `/admin/observability` screen pulls
@@ -262,6 +280,10 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
   accordingly: a downvote is a stronger, more deliberate signal than an upvote, so its penalty
   is larger than the upvote bonus (asymmetric on purpose). Verified live: downvoting a model
   that had been ranked #1 dropped it to last place in the very next generated recommendation.
+  Scoped to context, not global: a rating only carries forward to a future query if it's similar
+  enough (lexical overlap against the query the rating was originally given under) — a downvote
+  on an irrelevant recommendation doesn't suppress that same model the next time it's genuinely
+  the right answer.
 - **Cost/latency rollup** in the admin observability screen: `Recommendation` now persists
   `mesh_latency_ms`/`mesh_prompt_tokens`/`mesh_completion_tokens`/`mesh_cost_usd`, captured
   directly from the Mesh response at generation time (`app/services/mesh.py`) — cost is priced
@@ -282,8 +304,10 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
 
 ---
 
-**Status:** ✅ Planning phase complete. MVP-0 through Iteration 3 implemented and verified live
-against the real Mesh API. CI's critical checks all pass (compiles, requirements, Mesh usage, Mesh
-key valid) — the job only fails at the organizer's result-recording step until the hackathon
-dashboard submission form is filled in. Remaining: submit that form, and optionally a deployed URL
-+ demo video.
+**Status:** ✅ Planning phase complete. MVP-0 through Iteration 3, all bonus scope, and every
+post-roadmap enhancement listed above are implemented and verified live against the real Mesh API
+— including a real end-to-end email digest send (Gmail SMTP → `run_digest` → a genuine generated
+recommendation → delivered inbox). CI's critical checks all pass (compiles, requirements, Mesh
+usage, Mesh key valid) — the job only fails at the organizer's result-recording step until the
+hackathon dashboard submission form is filled in. Remaining: submit that form, and optionally a
+deployed URL + demo video.
