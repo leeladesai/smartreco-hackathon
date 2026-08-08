@@ -1,5 +1,5 @@
 # MVP Definition & Agile Iteration Roadmap
-## SmartReco — 2-week Scrum plan (4 sprints of ~2.5 days, or 2 sprints of ~1 week — pick per team availability)
+## TrailMind — 2-week Scrum plan (4 sprints of ~2.5 days, or 2 sprints of ~1 week — pick per team availability)
 
 Framework: Scrum-lite. Daily 10-min standup, sprint review = working demo, sprint retro = 10 min.
 Definition of Done (DoD) for every ticket: code merged to `main`, CI green, README updated if setup

@@ -1,1 +1,1 @@
-"""SmartReco test package."""
+"""TrailMind test package."""

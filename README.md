@@ -1,7 +1,8 @@
-# SmartReco — Behavioral AI Recommendation Agent
+# TrailMind — Behavioral AI Recommendation Agent
 ## Krish Naik Hackathon 2026 Submission
 
-An agentic AI system that observes AI-engineer behavior (searches, model views, comparisons),
+TrailMind is a smart recommendation ("smart reco") agent: it watches the trail an AI engineer
+leaves — searches, model views, comparisons — and reasons about where they're headed next. It
 retrieves relevant models from a catalog via RAG + vector search, and generates grounded,
 persuasive, comparison-driven recommendations that refresh as behavior evolves — with a
 cron-scheduled digest and full pipeline tracing on top.
@@ -95,8 +96,8 @@ uv run uvicorn app.asgi:app --reload --port 8001
 Open http://localhost:8001
 
 Seeded demo logins:
-- AI engineer: `engineer@smartreco.dev` / `engineer@123`
-- Curator/admin: `curator@smartreco.dev` / `admin@123`
+- AI engineer: `engineer@trailmind.dev` / `engineer@123`
+- Curator/admin: `curator@trailmind.dev` / `admin@123`
 
 Without a `MESH_API_KEY`, the app still runs end to end — the dashboard honestly stays in
 retrieval-ready mode (real Chroma retrieval, no fabricated narrative) instead of faking output.
@@ -113,7 +114,7 @@ retrieval-ready mode (real Chroma retrieval, no fabricated narrative) instead of
 
 Uses port `8001` by default. Override with `PORT=8002 ./scripts/start_dev.sh`. The server runs
 detached — Ctrl-C only stops the log tail, not the server itself; use `stop` (or `restart`) for
-that. SmartReco is one FastAPI process serving both the API and the server-rendered frontend, so
+that. TrailMind is one FastAPI process serving both the API and the server-rendered frontend, so
 there's a single log stream, not separate frontend/backend logs.
 
 ### Running tests

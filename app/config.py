@@ -15,16 +15,16 @@ class Settings(BaseSettings):
     # embedding-capable model on Mesh as of this writing ($0.002/1M tokens) — see
     # the "real embedding model" bonus item this was added for.
     mesh_embedding_model: str = "google/embeddinggemma-300m"
-    database_url: str = f"sqlite:///{PROJECT_ROOT / 'smartreco.db'}"
+    database_url: str = f"sqlite:///{PROJECT_ROOT / 'trailmind.db'}"
     secret_key: str = "change-me-to-a-random-secret"
     chroma_db_path: str = str(PROJECT_ROOT / "chroma_data")
     chroma_collection_name: str = "models"
     embedding_dimension: int = 64
-    session_cookie_name: str = "smartreco_session"
+    session_cookie_name: str = "trailmind_session"
 
     # OBS-1: LangSmith tracing (bonus, optional — off unless an API key is set)
     langsmith_api_key: str | None = None
-    langsmith_project: str = "smartreco"
+    langsmith_project: str = "trailmind"
 
     # DLV-3: scheduled digest (bonus). Email delivers per-user via `User.email`; Telegram
     # is a single broadcast chat (no per-user chat-id mapping exists yet). Neither configured

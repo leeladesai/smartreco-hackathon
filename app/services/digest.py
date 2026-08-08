@@ -62,7 +62,7 @@ class EmailNotifier:
 
     def send(self, user: User, recommendation: Recommendation) -> None:
         message = EmailMessage()
-        message["Subject"] = "Your SmartReco recommendation digest"
+        message["Subject"] = "Your TrailMind recommendation digest"
         message["From"] = self.from_email
         message["To"] = user.email
         message.set_content(
@@ -95,7 +95,7 @@ class TelegramNotifier:
         body = narrative_as_plain_text(
             recommendation.narrative, recommendation.behavior_summary
         )
-        text = f"SmartReco digest for {user.email}:\n{body}"
+        text = f"TrailMind digest for {user.email}:\n{body}"
         response = httpx.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={"chat_id": chat_id, "text": text},

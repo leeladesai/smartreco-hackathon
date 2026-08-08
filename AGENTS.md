@@ -11,7 +11,7 @@ the code — it must never drift into a second, stale plan.
 
 ## Project overview
 
-SmartReco is a FastAPI application for an AI model/tool catalog recommendation agent. It tracks an
+TrailMind is a FastAPI application for an AI model/tool catalog recommendation agent. It tracks an
 AI engineer's browsing/comparison behavior, retrieves candidate models via Chroma semantic search,
 and generates grounded, comparison-driven recommendations through the Mesh API using a 6-node
 LangGraph pipeline (analyze → retrieve → grade/refine → generate → store). See

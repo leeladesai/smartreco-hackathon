@@ -1,5 +1,5 @@
 # Low-Level Design (LLD)
-## SmartReco
+## TrailMind
 
 ## 1. Database schema (SQLAlchemy / DDL-equivalent)
 

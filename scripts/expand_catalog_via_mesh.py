@@ -41,7 +41,7 @@ EXISTING_TITLES = {
 
 SYSTEM_PROMPT = (
     "You are a data-generation assistant helping populate a demo catalog for a "
-    "hackathon project called SmartReco. Generate clearly FICTIONAL, SYNTHETIC AI "
+    "hackathon project called TrailMind. Generate clearly FICTIONAL, SYNTHETIC AI "
     "model catalog entries. These must NOT be real products — invent fictional "
     "provider/company names and fictional product names. Do not reuse or lightly "
     "rename any real AI company (e.g. OpenAI, Anthropic, Google, Meta, ElevenLabs, "

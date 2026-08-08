@@ -1,1 +1,1 @@
-"""SmartReco application package."""
+"""TrailMind application package."""

@@ -151,7 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             scheduler.shutdown(wait=False)
 
     app = FastAPI(
-        title="SmartReco",
+        title="TrailMind",
         description="Behavioral AI model catalog MVP",
         version="0.1.0",
         lifespan=lifespan,
@@ -272,7 +272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, str]:
-        return {"status": "ok", "service": "smartreco"}
+        return {"status": "ok", "service": "trailmind"}
 
     @app.post(
         "/api/auth/register",

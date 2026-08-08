@@ -182,9 +182,9 @@ def main() -> None:
         collection_name=settings.chroma_collection_name,
         embedding_function=build_embedding_function(settings),
     )
-    admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@smartreco.dev").lower()
+    admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@trailmind.dev").lower()
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
-    engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@smartreco.dev").lower()
+    engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@trailmind.dev").lower()
     engineer_password = os.getenv("SEED_ENGINEER_PASSWORD", "engineer@123")
 
     with session_factory() as session:

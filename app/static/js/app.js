@@ -16,9 +16,9 @@
   let adminSession = false;
   let selectedModelId = null;
   let compareSelection = []; // model ids the user has explicitly added to compare — never pre-filled
-  const COMPARE_STORAGE_KEY = 'smartreco.compareSelection';
+  const COMPARE_STORAGE_KEY = 'trailmind.compareSelection';
   let watchlist = []; // model ids the user has starred — client-side only, no backend list
-  const WATCHLIST_STORAGE_KEY = 'smartreco.watchlist';
+  const WATCHLIST_STORAGE_KEY = 'trailmind.watchlist';
   try { watchlist = JSON.parse(localStorage.getItem(WATCHLIST_STORAGE_KEY) || '[]'); } catch (error) { watchlist = []; }
   const eventQueue = [];
   const EVENT_BATCH_SIZE = 8;

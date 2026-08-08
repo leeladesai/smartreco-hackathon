@@ -1,5 +1,5 @@
 # Functional Requirements Document (FRD)
-## SmartReco — Behavioral AI Recommendation Agent
+## TrailMind — Behavioral AI Recommendation Agent
 
 Traces to BRD v1.0. Each requirement has an ID used in the MVP roadmap, LLD, and test strategy for
 end-to-end traceability.

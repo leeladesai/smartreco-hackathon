@@ -1,5 +1,5 @@
 # High-Level Design (HLD)
-## SmartReco
+## TrailMind
 
 A component-level architecture diagram — deployment boundary, both loops, the 6-node agent
 pipeline, SQL/vector databases, and the single external LLM call — is at

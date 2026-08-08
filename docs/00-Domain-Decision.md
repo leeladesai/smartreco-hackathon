@@ -1,6 +1,6 @@
 # Domain Decision Record
 
-## SmartReco — Behavioral AI Recommendation Agent
+## TrailMind — Behavioral AI Recommendation Agent
 
 | | |
 |---|---|

@@ -1,5 +1,5 @@
 # Test Strategy (TDD-driven)
-## SmartReco
+## TrailMind
 
 Approach: write the failing test for a node/endpoint before implementing it, per FRD ID. This also
 directly de-risks the rubric's "faked or stubbed features score poorly" line — a test suite that

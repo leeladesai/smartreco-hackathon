@@ -1,5 +1,5 @@
 # UX Design — Personas, Flows & Wireframes
-## SmartReco
+## TrailMind
 
 High-fidelity, click-through mockups are provided separately as `03-mockups.html` (open in a
 browser or view as an artifact). This document covers personas and flows; the mockups cover visual

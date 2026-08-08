@@ -13,7 +13,7 @@ def test_health_endpoint() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "smartreco"}
+    assert response.json() == {"status": "ok", "service": "trailmind"}
 
 
 def test_handshake_serves_updated_model_catalog_ui() -> None:
@@ -21,7 +21,7 @@ def test_handshake_serves_updated_model_catalog_ui() -> None:
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "SMARTRECO" in response.text
+    assert "TRAILMIND" in response.text
     assert "model catalog" in response.text
     assert "Your activity" in response.text
     assert 'id="catalog-grid"' in response.text

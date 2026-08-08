@@ -1,4 +1,4 @@
-# SmartReco — Technical Architecture Diagram
+# TrailMind — Technical Architecture Diagram
 
 Component-level view: where each piece runs, which database/vector store it talks to, and how
 requests flow end to end — client, through the deployment boundary, to the external LLM call, and

@@ -1,5 +1,5 @@
 # Business Requirements Document (BRD)
-## SmartReco — Behavioral AI Recommendation Agent
+## TrailMind — Behavioral AI Recommendation Agent
 
 | | |
 |---|---|

@@ -1,4 +1,4 @@
-<title>SmartReco — Product Mockups</title>
+<title>TrailMind — Product Mockups</title>
 <style>
   :root{
     --bg:#12151c;
@@ -361,7 +361,7 @@
   spec quickly — it is explicitly NOT part of the product UI and should not be implemented.
 -->
 <header class="app-nav" id="app-nav" data-state="none">
-  <div class="brand">SMARTRECO <small id="brand-sub">/ model catalog</small></div>
+  <div class="brand">TRAILMIND <small id="brand-sub">/ model catalog</small></div>
   <nav class="nav-links engineer-links">
     <div class="nav-link" data-page="catalog" onclick="go('catalog')">Catalog</div>
     <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Dashboard</div>
@@ -386,7 +386,7 @@
   <div class="auth-wrap">
     <div class="auth-pitch">
       <div>
-        <div class="brand">SMARTRECO <small>/ model catalog</small></div>
+        <div class="brand">TRAILMIND <small>/ model catalog</small></div>
         <h2>Compare AI models the way you'd compare lab equipment — by spec, not by hype.</h2>
         <p>Every session you spend browsing quietly builds a picture of what you're actually trying to build — see it explained, never hidden, on the Your Activity screen.</p>
       </div>
@@ -407,7 +407,7 @@
       <form class="auth-form" id="auth-form" onsubmit="submitAuth(event); return false;">
         <div class="auth-field">
           <label>Email</label>
-          <input type="email" placeholder="you@company.com" value="engineer@smartreco.dev">
+          <input type="email" placeholder="you@company.com" value="engineer@trailmind.dev">
         </div>
         <div class="auth-field">
           <label>Password</label>
@@ -437,7 +437,7 @@
   <div class="auth-wrap">
     <div class="auth-pitch admin-auth-side">
       <div>
-        <div class="brand">SMARTRECO <small>/ admin console</small></div>
+        <div class="brand">TRAILMIND <small>/ admin console</small></div>
         <div class="lock-row" style="margin-top:22px;">
           <div class="glyph">⛊</div>
           <div class="txt">Restricted area.<br><b>Curator</b> role required — checked server-side on every admin route, never by hiding a nav item.</div>
@@ -461,7 +461,7 @@
       <form class="auth-form" id="admin-auth-form" onsubmit="submitAdminAuth(event); return false;">
         <div class="auth-field">
           <label>Admin email</label>
-          <input type="email" placeholder="curator@smartreco.dev" value="curator@smartreco.dev">
+          <input type="email" placeholder="curator@trailmind.dev" value="curator@trailmind.dev">
         </div>
         <div class="auth-field">
           <label>Password</label>
@@ -743,7 +743,7 @@
   let adminSession = false;
   let selectedModelId = null;
   let compareSelection = []; // model ids the user has explicitly added to compare — never pre-filled
-  const COMPARE_STORAGE_KEY = 'smartreco.compareSelection';
+  const COMPARE_STORAGE_KEY = 'trailmind.compareSelection';
   const eventQueue = [];
   const EVENT_BATCH_SIZE = 8;
   const EVENT_FLUSH_MS = 4000;
