@@ -1186,6 +1186,63 @@
     document.getElementById('tray').classList.toggle('show', TRAY_PAGES.includes(pageId) && compareSelection.length > 0);
   }
 
+  // Bulk catalog upload: admin-only, CSV/JSON -> POST /api/admin/models/bulk-upload
+  // (app/services/catalog_import.py). No mock-mode fallback here, unlike saveModel —
+  // there is nothing meaningful to fake for a multi-row import against the in-memory
+  // demo catalog, so it's real-admin-only.
+  function openBulkUploadModal(){
+    document.getElementById('bulk-upload-form').reset();
+    document.getElementById('bulk-upload-status').textContent = '';
+    document.getElementById('bulk-upload-results').innerHTML = '';
+    document.getElementById('bulk-upload-modal').classList.add('show');
+  }
+
+  function closeBulkUploadModal(event){
+    const modal = document.getElementById('bulk-upload-modal');
+    if (event && event.target !== modal) return;
+    modal.classList.remove('show');
+  }
+
+  async function submitBulkUpload(event){
+    event.preventDefault();
+    const statusEl = document.getElementById('bulk-upload-status');
+    const resultsEl = document.getElementById('bulk-upload-results');
+    resultsEl.innerHTML = '';
+    if (!adminSession) {
+      statusEl.textContent = 'Sign in as admin to upload a catalog file.';
+      return;
+    }
+    const fileInput = document.getElementById('bulk-upload-file');
+    const file = fileInput.files[0];
+    if (!file) {
+      statusEl.textContent = 'Choose a CSV or JSON file first.';
+      return;
+    }
+    statusEl.textContent = 'Uploading and processing…';
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/models/bulk-upload`, {method:'POST', body:formData});
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        statusEl.textContent = (data && data.detail) || 'Upload failed. Check the file and try again.';
+        return;
+      }
+      statusEl.textContent = `${data.inserted} added, ${data.skipped_duplicate} duplicate${data.skipped_duplicate === 1 ? '' : 's'} skipped, ${data.invalid} invalid.`;
+      const problems = data.rows.filter(row => row.status !== 'inserted');
+      if (problems.length) {
+        resultsEl.innerHTML = '<ul class="bulk-upload-issues">' + problems.map(row => {
+          const label = `Row ${row.row}${row.title ? ` (${escapeHtml(row.title)})` : ''}`;
+          const detail = row.status === 'skipped_duplicate' ? 'already in catalog' : escapeHtml(row.errors.join('; '));
+          return `<li><strong>${label}:</strong> ${detail}</li>`;
+        }).join('') + '</ul>';
+      }
+      if (data.inserted > 0) await loadModels();
+    } catch (error) {
+      statusEl.textContent = 'Upload failed. Check your connection and try again.';
+    }
+  }
+
   function openModelModal(){
     resetModelForm();
     modelModal.classList.add('show');
@@ -1502,6 +1559,19 @@
     document.getElementById('auth-error').classList.remove('show');
     document.querySelector('#auth-form .only-register input').tabIndex = registering ? 0 : -1;
     document.getElementById('auth-forgot').tabIndex = registering ? -1 : 0;
+    // Fresh credentials per mode: never let the pre-filled demo login email leak into
+    // a real signup, and never leave a typed password sitting in the DOM after a switch.
+    const fields = document.querySelectorAll('#auth-form input');
+    fields[1].value = '';
+    if (fields[2]) fields[2].value = '';
+    if (registering) fields[0].value = '';
+  }
+
+  function authErrorMessage(body, fallback){
+    const detail = body && body.detail;
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail) && detail[0] && typeof detail[0].msg === 'string') return detail[0].msg;
+    return fallback;
   }
 
   const authForgot = document.getElementById('auth-forgot'); // login page only
@@ -1517,22 +1587,58 @@
 
   async function submitAuth(event){
     if (event) event.preventDefault();
-    document.getElementById('auth-error').classList.remove('show');
+    const errorEl = document.getElementById('auth-error');
+    errorEl.classList.remove('show');
     const fields = document.querySelectorAll('#auth-form input');
     const registering = document.getElementById('auth-form').classList.contains('register-mode');
-    const credentials = {email:fields[0].value, password:fields[1].value};
+    const email = fields[0].value.trim();
+    const password = fields[1].value;
+
+    if (registering) {
+      // Client-side checks catch the common mistakes (typo'd confirm, too-short
+      // password) before a round-trip — the backend (app/schemas.py AuthCredentials,
+      // min_length=8) still enforces the real rule, this is purely a faster no.
+      if (password.length < 8) {
+        errorEl.textContent = 'Password must be at least 8 characters.';
+        errorEl.classList.add('show');
+        return;
+      }
+      const confirmPassword = fields[2] ? fields[2].value : password;
+      if (password !== confirmPassword) {
+        errorEl.textContent = "Passwords don't match.";
+        errorEl.classList.add('show');
+        return;
+      }
+    }
+
+    const credentials = {email, password};
     try {
       let response = await fetch(`${API_BASE}/api/auth/${registering ? 'register' : 'login'}`, {
         method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(credentials)
       });
-      if (registering && response.ok) {
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const fallback = registering
+          ? 'Could not create your account. Try again.'
+          : "Wrong email or password. Try again, or check you're on the right tab above.";
+        errorEl.textContent = authErrorMessage(body, fallback);
+        errorEl.classList.add('show');
+        return;
+      }
+      if (registering) {
         response = await fetch(`${API_BASE}/api/auth/login`, {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(credentials)
         });
+        if (!response.ok) {
+          setAuthMode('login');
+          errorEl.textContent = 'Account created — sign in below to continue.';
+          errorEl.classList.add('show');
+          return;
+        }
       }
-      if (!response.ok) throw new Error('login failed');
     } catch (error) {
-      document.getElementById('auth-error').classList.add('show');
+      errorEl.textContent = 'Something went wrong. Check your connection and try again.';
+      errorEl.classList.add('show');
       return;
     }
     // The session cookie is now set — go('catalog') is a real navigation, so the next page

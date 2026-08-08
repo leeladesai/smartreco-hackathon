@@ -62,6 +62,20 @@ class EventBatch(BaseModel):
     events: list[EventInput] = Field(min_length=1, max_length=100)
 
 
+class BulkImportRowResult(BaseModel):
+    row: int
+    title: str | None = None
+    status: str
+    errors: list[str] = Field(default_factory=list)
+
+
+class BulkImportResponse(BaseModel):
+    inserted: int
+    skipped_duplicate: int
+    invalid: int
+    rows: list[BulkImportRowResult]
+
+
 class DemoModeResponse(BaseModel):
     enabled: bool
 

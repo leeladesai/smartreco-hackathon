@@ -503,9 +503,10 @@
   .password-toggle .icon-eye-off{display:none;}
   .password-toggle.showing .icon-eye{display:none;}
   .password-toggle.showing .icon-eye-off{display:block;}
-  .auth-field.only-register, .only-login{visibility:hidden;}
+  .only-register, .only-login{visibility:hidden;}
   .auth-form.register-mode .only-register{visibility:visible;}
   .auth-form:not(.register-mode) .only-login{visibility:visible;}
+  .auth-hint{font-family:var(--sans); font-size:12px; color:var(--muted); margin:7px 0 0;}
   .auth-forgot{
     font-family:var(--sans); font-size:13px; color:var(--muted); text-align:right; margin:-10px 0 20px;
     cursor:pointer;

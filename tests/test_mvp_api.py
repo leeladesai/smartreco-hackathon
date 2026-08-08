@@ -150,6 +150,59 @@ def test_admin_can_create_model_and_dual_write(client: TestClient) -> None:
     assert client.get("/api/models?modality=Voice").json()[0]["title"] == "Test Voice"
 
 
+def test_admin_can_bulk_upload_csv_catalog(client: TestClient) -> None:
+    login = client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    assert login.status_code == 200
+
+    csv_content = (
+        "title,provider,modality,price,description,use_case_tags\n"
+        "Bulk Voice,Test Labs,Voice,$0.001/char,A voice model.,real-time;support\n"
+        "Bulk Voice,Test Labs,Voice,$0.001/char,Duplicate of the row above.,\n"
+        ",Test Labs,LLM,$1,Missing a title so this row is invalid.,\n"
+    )
+    response = client.post(
+        "/api/admin/models/bulk-upload",
+        files={"file": ("catalog.csv", csv_content, "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["inserted"] == 1
+    assert body["skipped_duplicate"] == 1
+    assert body["invalid"] == 1
+    assert client.get("/api/models?q=Bulk Voice").json()[0]["title"] == "Bulk Voice"
+
+
+def test_bulk_upload_rejects_malformed_file(client: TestClient) -> None:
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    response = client.post(
+        "/api/admin/models/bulk-upload",
+        files={"file": ("catalog.json", "{not json", "application/json")},
+    )
+    assert response.status_code == 400
+
+
+def test_non_admin_cannot_bulk_upload_catalog(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "bulk-user@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "bulk-user@test.dev", "password": "password123"},
+    )
+    response = client.post(
+        "/api/admin/models/bulk-upload",
+        files={"file": ("catalog.csv", "title\n", "text/csv")},
+    )
+    assert response.status_code == 403
+
+
 def test_non_admin_cannot_manage_models(client: TestClient) -> None:
     client.post(
         "/api/auth/register", json={"email": "user@test.dev", "password": "password123"}

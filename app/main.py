@@ -9,10 +9,12 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     FastAPI,
+    File,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
 from fastapi.responses import RedirectResponse
@@ -27,6 +29,7 @@ from app.db import build_session_factory
 from app.models import DemoModeSetting, Event, Model, Recommendation, User
 from app.schemas import (
     AuthCredentials,
+    BulkImportResponse,
     DemoModeResponse,
     DemoModeUpdate,
     EventBatch,
@@ -45,6 +48,11 @@ from app.services.catalog import (
     create_model as create_model_service,
     delete_model as delete_model_service,
     update_model as update_model_service,
+)
+from app.services.catalog_import import (
+    CatalogParseError,
+    import_catalog_rows,
+    parse_catalog_file,
 )
 from app.services.agent_graph import (
     STRONG_RETRIEVAL_DISTANCE,
@@ -72,6 +80,7 @@ from app.vector import ModelVectorStore, build_embedding_function
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_ROOT = PROJECT_ROOT / "app" / "templates"
+BULK_UPLOAD_MAX_BYTES = 2 * 1024 * 1024  # plenty for a few hundred catalog rows
 TEMPLATES = Jinja2Templates(directory=TEMPLATE_ROOT)
 TEMPLATES.env.loader = ChoiceLoader(
     [FileSystemLoader(TEMPLATE_ROOT), FileSystemLoader(PROJECT_ROOT)]
@@ -474,6 +483,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not model:
                 raise HTTPException(status_code=404, detail="Model not found")
             delete_model_service(session, vector_store, model)
+
+    @app.post("/api/admin/models/bulk-upload", response_model=BulkImportResponse)
+    async def bulk_upload_models(
+        file: UploadFile = File(...), _: User = Depends(current_admin)
+    ) -> BulkImportResponse:
+        content = await file.read()
+        if len(content) > BULK_UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File too large (max 2MB).")
+        try:
+            raw_rows = parse_catalog_file(file.filename or "", content)
+        except CatalogParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        with session_factory() as session:
+            rows = import_catalog_rows(session, vector_store, raw_rows)
+        return BulkImportResponse(
+            inserted=sum(1 for row in rows if row["status"] == "inserted"),
+            skipped_duplicate=sum(
+                1 for row in rows if row["status"] == "skipped_duplicate"
+            ),
+            invalid=sum(1 for row in rows if row["status"] == "invalid"),
+            rows=rows,
+        )
 
     @app.post("/api/admin/digest/run")
     async def trigger_digest(_: User = Depends(current_admin)) -> dict[str, int]:

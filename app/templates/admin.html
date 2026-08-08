@@ -11,6 +11,7 @@
       <div class="chip" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Shows a live event-tracking overlay in the model drawer for every AI-engineer session — turn on only while demoing, not for normal use.">
         <span class="dot" id="demo-mode-dot" style="background:var(--muted-2);"></span>Judge demo mode
       </div>
+      <button class="btn" type="button" onclick="openBulkUploadModal()">Upload catalog file</button>
       <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
     </div>
   </div>
@@ -46,6 +47,27 @@
     <div class="modal-actions">
       <button class="btn primary" type="submit" form="model-form" style="flex:none; padding:10px 22px;">Save model</button>
       <button class="btn" type="button" onclick="closeModelModal()" style="flex:none; padding:10px 22px;">Cancel</button>
+    </div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="bulk-upload-modal" role="presentation" onclick="closeBulkUploadModal(event)">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-upload-title" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h3 id="bulk-upload-title">Upload catalog file</h3>
+        <p>CSV or JSON, up to 500 rows. Required columns: <code>title</code>, <code>provider</code>, <code>modality</code>, <code>price</code>, <code>description</code>. Optional: <code>story</code>, <code>latency_ms</code>, <code>context_window</code>, <code>use_case_tags</code> (semicolon-separated), <code>source_url</code>. Rows with a title already in the catalog are skipped, not overwritten.</p>
+      </div>
+      <button class="modal-close" type="button" aria-label="Close" onclick="closeBulkUploadModal()">×</button>
+    </div>
+    <form class="form-grid" id="bulk-upload-form" onsubmit="submitBulkUpload(event)">
+      <div class="field full"><label for="bulk-upload-file">Catalog file</label><input id="bulk-upload-file" type="file" accept=".csv,.json" required></div>
+      <div class="full" id="bulk-upload-status" role="status" aria-live="polite"></div>
+      <div class="full" id="bulk-upload-results"></div>
+    </form>
+    <div class="modal-actions">
+      <button class="btn primary" type="submit" form="bulk-upload-form" style="flex:none; padding:10px 22px;">Upload</button>
+      <button class="btn" type="button" onclick="closeBulkUploadModal()" style="flex:none; padding:10px 22px;">Close</button>
     </div>
   </section>
 </div>
