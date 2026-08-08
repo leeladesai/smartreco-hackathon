@@ -148,6 +148,8 @@
   .btn.primary{background:var(--amber); color:#171208; border-color:var(--amber); font-weight:700;}
   .btn.on{background:var(--amber-dim); border-color:var(--amber); color:var(--amber);}
   .btn.icon{flex:none; width:32px; padding:7px 0; font-size:13px; line-height:1.3;}
+  .feedback-btn.up.active{background:color-mix(in srgb, var(--good) 18%, transparent); border-color:var(--good);}
+  .feedback-btn.down.active{background:color-mix(in srgb, var(--rose) 18%, transparent); border-color:var(--rose);}
 
   .slug-row{
     display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10px;
@@ -336,6 +338,13 @@
   .empty-state{margin-top:16px; padding:14px 16px; border:1px solid var(--line); border-radius:6px; color:var(--muted); font-size:13px;}
   .admin-table tr.clickable{cursor:pointer;}
   .admin-table tr.clickable:hover{background:var(--panel-2, rgba(255,255,255,.03));}
+
+  /* ---- cost/latency stat tiles ---- */
+  .stat-row{display:flex; flex-wrap:wrap; gap:12px; margin-top:16px;}
+  .stat-tile{flex:1; min-width:140px; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px;}
+  .stat-tile .k{display:block; font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin-bottom:6px;}
+  .stat-tile .v{display:block; font-family:var(--mono); font-size:20px; font-weight:600; color:var(--text);}
+  .stat-tile .v small{font-size:12px; font-weight:500; color:var(--muted);}
 
   /* ---- trace detail modal ---- */
   .trace-step{border:1px solid var(--line-soft); border-radius:6px; margin-bottom:10px; overflow:hidden;}

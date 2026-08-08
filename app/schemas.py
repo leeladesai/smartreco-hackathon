@@ -12,8 +12,15 @@ class UserResponse(BaseModel):
     id: int
     email: str
     role: str
+    telegram_chat_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TelegramChatIdUpdate(BaseModel):
+    # None/empty clears it (falls back to the shared TELEGRAM_CHAT_ID, if any, or
+    # digest delivery for this user just gets skipped and logged).
+    telegram_chat_id: str | None = Field(default=None, max_length=120)
 
 
 class ModelCreate(BaseModel):
@@ -42,7 +49,8 @@ class ModelResponse(ModelCreate):
 
 class EventInput(BaseModel):
     event_type: str = Field(
-        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter|model_copy|model_watchlist)$"
+        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
+        "|model_copy|model_watchlist|recommendation_feedback)$"
     )
     model_id: int | None = None
     metadata: dict = Field(default_factory=dict)

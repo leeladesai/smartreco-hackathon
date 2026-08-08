@@ -1,7 +1,7 @@
 # High-Level Design (HLD)
 ## SmartReco
 
-A component-level architecture diagram — deployment boundary, both loops, the 5-node agent
+A component-level architecture diagram — deployment boundary, both loops, the 6-node agent
 pipeline, SQL/vector databases, and the single external LLM call — is at
 [`05-architecture-diagram.md`](05-architecture-diagram.md). This document is the prose/tabular
 companion; the diagram is the visual one.

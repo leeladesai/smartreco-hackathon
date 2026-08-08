@@ -10,9 +10,16 @@ class Settings(BaseSettings):
     mesh_api_key: str | None = None
     mesh_base_url: str = "https://api.meshapi.ai/v1"
     mesh_model: str = "tencent/hy3"
+    # Real semantic embeddings via Mesh, replacing the deterministic hashed
+    # bag-of-words fallback (app/vector.py) whenever mesh_api_key is set. Cheapest
+    # embedding-capable model on Mesh as of this writing ($0.002/1M tokens) — see
+    # the "real embedding model" bonus item this was added for.
+    mesh_embedding_model: str = "google/embeddinggemma-300m"
     database_url: str = f"sqlite:///{PROJECT_ROOT / 'smartreco.db'}"
     secret_key: str = "change-me-to-a-random-secret"
     chroma_db_path: str = str(PROJECT_ROOT / "chroma_data")
+    chroma_collection_name: str = "models"
+    embedding_dimension: int = 64
     session_cookie_name: str = "smartreco_session"
 
     # OBS-1: LangSmith tracing (bonus, optional — off unless an API key is set)

@@ -1,3 +1,5 @@
+import pytest
+
 from app.config import Settings
 from app.db import build_session_factory
 from app.models import Event, Model, Recommendation, User
@@ -34,6 +36,77 @@ def test_build_notifier_prefers_email_then_telegram_then_logging() -> None:
         TelegramNotifier,
     )
     assert isinstance(build_notifier(Settings()), LoggingNotifier)
+
+
+def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, json=None, timeout=None):
+        captured["chat_id"] = json["chat_id"]
+        return FakeResponse()
+
+    import app.services.digest as digest_module
+
+    monkeypatch.setattr(digest_module.httpx, "post", fake_post)
+    notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
+    user = User(id=1, email="x@test.dev", role="user", telegram_chat_id="personal-chat")
+    recommendation = Recommendation(
+        user_id=1,
+        model_ids=[],
+        behavior_summary="s",
+        activity_hash="h",
+        trigger_reason="event_threshold",
+        narrative="hi",
+    )
+    notifier.send(user, recommendation)
+    assert captured["chat_id"] == "personal-chat"
+
+
+def test_telegram_notifier_falls_back_to_shared_chat_id(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, json=None, timeout=None):
+        captured["chat_id"] = json["chat_id"]
+        return FakeResponse()
+
+    import app.services.digest as digest_module
+
+    monkeypatch.setattr(digest_module.httpx, "post", fake_post)
+    notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
+    user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
+    recommendation = Recommendation(
+        user_id=1,
+        model_ids=[],
+        behavior_summary="s",
+        activity_hash="h",
+        trigger_reason="event_threshold",
+        narrative="hi",
+    )
+    notifier.send(user, recommendation)
+    assert captured["chat_id"] == "shared-chat"
+
+
+def test_telegram_notifier_raises_without_any_chat_id() -> None:
+    notifier = TelegramNotifier(bot_token="token", fallback_chat_id=None)
+    user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
+    recommendation = Recommendation(
+        user_id=1,
+        model_ids=[],
+        behavior_summary="s",
+        activity_hash="h",
+        trigger_reason="event_threshold",
+        narrative="hi",
+    )
+    with pytest.raises(ValueError):
+        notifier.send(user, recommendation)
 
 
 class RecordingNotifier:

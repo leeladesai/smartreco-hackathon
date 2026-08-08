@@ -68,6 +68,64 @@ def test_register_login_and_batch_events(client: TestClient) -> None:
     assert events.json() == {"accepted": 1, "recommendation_triggered": False}
 
 
+def test_user_can_set_and_clear_own_telegram_chat_id(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "telegram-user@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "telegram-user@test.dev", "password": "password123"},
+    )
+    unauthenticated = TestClient(client.app).put(
+        "/api/auth/me/telegram-chat-id", json={"telegram_chat_id": "12345"}
+    )
+    assert unauthenticated.status_code == 401
+
+    set_response = client.put(
+        "/api/auth/me/telegram-chat-id", json={"telegram_chat_id": "12345"}
+    )
+    assert set_response.status_code == 200
+    assert set_response.json()["telegram_chat_id"] == "12345"
+
+    cleared_response = client.put(
+        "/api/auth/me/telegram-chat-id", json={"telegram_chat_id": "  "}
+    )
+    assert cleared_response.status_code == 200
+    assert cleared_response.json()["telegram_chat_id"] is None
+
+
+def test_events_batch_accepts_recommendation_feedback_event_type(
+    client: TestClient,
+) -> None:
+    """Regression test: recommendation_feedback was added as a real event_type (the
+    explicit feedback loop) but the schema's allowlist pattern (app/schemas.py) wasn't
+    updated at first — every feedback submission from the real UI would have silently
+    422'd before ever reaching the database."""
+    client.post(
+        "/api/auth/register",
+        json={"email": "feedback-schema@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "feedback-schema@test.dev", "password": "password123"},
+    )
+    response = client.post(
+        "/api/events/batch",
+        json={
+            "events": [
+                {
+                    "event_type": "recommendation_feedback",
+                    "model_id": 1,
+                    "metadata": {"rating": "down", "recommendation_id": 1},
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["accepted"] == 1
+
+
 def test_admin_can_create_model_and_dual_write(client: TestClient) -> None:
     login = client.post(
         "/api/admin/login",
@@ -134,6 +192,33 @@ def test_admin_can_manually_trigger_digest_but_non_admin_cannot(
     allowed = client.post("/api/admin/digest/run")
     assert allowed.status_code == 200
     assert set(allowed.json().keys()) == {"sent", "skipped"}
+
+
+def test_observability_costs_requires_admin_and_returns_empty_rollup(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "cost-user@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "cost-user@test.dev", "password": "password123"},
+    )
+    blocked = client.get("/api/admin/observability/costs")
+    assert blocked.status_code == 403
+
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    response = client.get("/api/admin/observability/costs")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["call_count"] == 0
+    assert body["avg_latency_ms"] is None
+    assert body["total_cost_usd"] is None
+    assert body["recent"] == []
 
 
 def test_recommendation_retrieves_only_indexed_catalog_candidates(

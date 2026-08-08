@@ -68,5 +68,18 @@
     </div>
     <p class="note">Curious how this was built? <span class="flow-link" style="margin:0; display:inline;" onclick="go('activity')">See your activity →</span></p>
   </div>
+
+  <div class="narrative-card">
+    <p class="eyebrow" style="margin-bottom:8px;">Proactive digest delivery</p>
+    <p class="note" style="margin:0 0 14px;">A daily cron job re-runs your recommendation and delivers it automatically — set your own Telegram chat ID to get it there instead of only checking this page.</p>
+    <div class="field" style="max-width:320px;">
+      <label for="telegram-chat-id-input">Telegram chat ID</label>
+      <input id="telegram-chat-id-input" placeholder="e.g. 123456789">
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; margin-top:12px;">
+      <button class="btn primary" type="button" onclick="saveTelegramChatId()" style="flex:none; padding:9px 18px;">Save</button>
+      <span class="note" id="telegram-chat-id-status" style="margin:0;"></span>
+    </div>
+  </div>
 </div>
 {% endblock %}

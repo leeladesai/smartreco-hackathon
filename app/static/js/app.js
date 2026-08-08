@@ -184,6 +184,35 @@
     return `<div class="btn icon ${on ? 'on' : ''}" onclick="toggleWatchlist(event, '${model.id}')" title="${label}" aria-label="${label}">${on ? '★' : '☆'}</div>`;
   }
 
+  // Explicit feedback loop: a thumbs up/down on a dashboard recommendation card is
+  // tracked as its own event (recommendation_feedback) — no new endpoint, it rides the
+  // same batched /api/events/batch path as everything else. The backend's rerank_
+  // candidates node (app/services/agent_graph.py) reads it back on the next pipeline
+  // run, so a downvote genuinely stops that model from reappearing rather than just
+  // recording an opinion nobody acts on. In-memory only (resets on reload) — good
+  // enough to show the click registered without a new API to fetch prior state.
+  const recommendationFeedback = {};
+
+  function recordRecommendationFeedback(event, modelId, rating){
+    event.stopPropagation();
+    recommendationFeedback[modelId] = rating;
+    trackEvent('recommendation_feedback', modelId, {rating, recommendation_id: dashboardRecId});
+    flushEvents(); // deliberate feedback should land promptly, not wait for the batch timer
+    const card = event.currentTarget.closest('.card');
+    if (card) {
+      card.querySelectorAll('.feedback-btn').forEach(btn => btn.classList.remove('active'));
+      event.currentTarget.classList.add('active');
+    }
+  }
+
+  function feedbackButtonsHtml(model){
+    const rating = recommendationFeedback[model.id];
+    return `
+      <div class="btn icon feedback-btn up ${rating === 'up' ? 'active' : ''}" onclick="recordRecommendationFeedback(event, '${model.id}', 'up')" title="Good recommendation" aria-label="Good recommendation">👍</div>
+      <div class="btn icon feedback-btn down ${rating === 'down' ? 'active' : ''}" onclick="recordRecommendationFeedback(event, '${model.id}', 'down')" title="Not relevant" aria-label="Not relevant">👎</div>
+    `;
+  }
+
   function fromApiModel(model){
     const isVoice = model.modality === 'Voice';
     return {
@@ -262,6 +291,32 @@
         </td>
       </tr>
     `).join('');
+  }
+
+  // Cost/latency rollup (bonus, efficiency polish): aggregated straight from our own
+  // DB (Recommendation.mesh_* columns, captured in app/services/mesh.py at generation
+  // time) — deliberately not another LangSmith call, so this works even without
+  // tracing configured and demonstrates the "efficiency" story with real numbers.
+  async function loadCostRollup(){
+    if (!adminSession) return;
+    const wrap = document.getElementById('cost-rollup');
+    if (!wrap) return; // only present on the observability page
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/observability/costs`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const latency = data.avg_latency_ms != null ? `${Math.round(data.avg_latency_ms)}<small>ms</small>` : '—';
+      const totalTokens = data.total_prompt_tokens + data.total_completion_tokens;
+      const cost = data.total_cost_usd != null ? `$${data.total_cost_usd.toFixed(4)}` : '<small>unknown</small>';
+      wrap.innerHTML = `
+        <div class="stat-tile"><span class="k">Mesh calls</span><span class="v">${data.call_count}</span></div>
+        <div class="stat-tile"><span class="k">Avg latency</span><span class="v">${latency}</span></div>
+        <div class="stat-tile"><span class="k">Total tokens</span><span class="v">${totalTokens.toLocaleString()}</span></div>
+        <div class="stat-tile"><span class="k">Total cost</span><span class="v">${cost}</span></div>
+      `;
+    } catch (error) {
+      wrap.innerHTML = '';
+    }
   }
 
   async function loadObservability(){
@@ -616,6 +671,44 @@
       : '<div class="evidence-chip"><p class="sub">Nothing tracked yet this session — browse a model to get started.</p></div>';
   }
 
+  // Self-serve per-user Telegram digest delivery (DLV-3 bonus follow-up) — replaces
+  // the old single shared broadcast chat with each user setting their own chat ID,
+  // read back by TelegramNotifier (app/services/digest.py) on the next cron run.
+  async function loadTelegramChatId(){
+    if (!userSession) return;
+    const input = document.getElementById('telegram-chat-id-input');
+    if (!input) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/me`);
+      if (!response.ok) return;
+      const data = await response.json();
+      input.value = data.telegram_chat_id || '';
+    } catch (error) {
+      // Leave the field blank if the profile can't be loaded — not fatal.
+    }
+  }
+
+  async function saveTelegramChatId(){
+    const input = document.getElementById('telegram-chat-id-input');
+    const status = document.getElementById('telegram-chat-id-status');
+    if (!input) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/auth/me/telegram-chat-id`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({telegram_chat_id: input.value.trim() || null}),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      input.value = data.telegram_chat_id || '';
+      if (status) {
+        status.textContent = data.telegram_chat_id ? 'Saved.' : 'Cleared — digest falls back to email/log.';
+      }
+    } catch (error) {
+      if (status) status.textContent = 'Could not save — try again.';
+    }
+  }
+
   async function loadDashboard(){
     if (!userSession) return;
     try {
@@ -646,7 +739,7 @@
               ${model.whyThis ? `<p class="why-tag">${escapeHtml(model.whyThis)}</p>` : ''}
               <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
               <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
-              <div class="card-actions">${watchlistButtonHtml(model)}</div>
+              <div class="card-actions">${watchlistButtonHtml(model)}${feedbackButtonsHtml(model)}</div>
             </div>
           </div>`).join('');
       }
@@ -1283,9 +1376,9 @@
       refreshTrackingPanels();
     }
     if (page === 'compare') restoreCompareFromUrl();
-    if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
+    if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); loadTelegramChatId(); }
     if (page === 'activity') loadActivity();
-    if (page === 'observability') loadObservability();
+    if (page === 'observability') { loadObservability(); loadCostRollup(); }
     window.scrollTo({top:0, behavior:'instant'});
   }
 

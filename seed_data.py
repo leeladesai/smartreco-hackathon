@@ -6,7 +6,7 @@ from app.config import Settings
 from app.db import build_session_factory
 from app.models import Model, User
 from app.security import hash_password
-from app.vector import ModelVectorStore
+from app.vector import ModelVectorStore, build_embedding_function
 
 
 SEED_MODELS = [
@@ -177,7 +177,11 @@ SEED_MODELS = [
 def main() -> None:
     settings = Settings()
     session_factory = build_session_factory(settings)
-    vector_store = ModelVectorStore(settings.chroma_db_path)
+    vector_store = ModelVectorStore(
+        settings.chroma_db_path,
+        collection_name=settings.chroma_collection_name,
+        embedding_function=build_embedding_function(settings),
+    )
     admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@smartreco.dev").lower()
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
     engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@smartreco.dev").lower()

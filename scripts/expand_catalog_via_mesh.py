@@ -24,7 +24,7 @@ from app.db import build_session_factory
 from app.models import Model
 from app.schemas import ModelCreate
 from app.services.catalog import create_model
-from app.vector import ModelVectorStore
+from app.vector import ModelVectorStore, build_embedding_function
 
 
 EXISTING_TITLES = {
@@ -49,29 +49,29 @@ SYSTEM_PROMPT = (
     "xAI, Amazon, Microsoft) or any real product name. The entries should still look "
     "like plausible, realistic catalog rows in terms of formatting (pricing units, "
     "latency, context window) even though the companies and products are made up. "
-    "Return ONLY valid JSON: an object with a single key \"models\" whose value is "
+    'Return ONLY valid JSON: an object with a single key "models" whose value is '
     "an array of entry objects. Do not include markdown fences or commentary."
 )
 
 USER_PROMPT = (
     "Generate 18 new, clearly fictional AI model catalog entries as a JSON array "
-    "under the \"models\" key. Each entry must be an object with exactly these "
+    'under the "models" key. Each entry must be an object with exactly these '
     "fields:\n"
     "- title (string): a fictional product name, must not collide with these "
     "existing catalog titles: " + ", ".join(sorted(EXISTING_TITLES)) + "\n"
     "- description (string): 1-2 sentences describing what it's good for\n"
     "- provider (string): a fictional company/vendor name\n"
-    "- modality (string): one of \"LLM\", \"Voice\", \"Image\", \"Video\", "
-    "\"Embedding\", or \"Multimodal\" (use \"Multimodal\" for at most 2 entries)\n"
-    "- price (string): formatted like \"$0.15 / 1M input tokens\", \"$0.05 / "
-    "image\", \"$0.10 / second\", \"$0.0002 / character\", or \"$0.02 / 1M "
-    "tokens\" depending on modality\n"
+    '- modality (string): one of "LLM", "Voice", "Image", "Video", '
+    '"Embedding", or "Multimodal" (use "Multimodal" for at most 2 entries)\n'
+    '- price (string): formatted like "$0.15 / 1M input tokens", "$0.05 / '
+    'image", "$0.10 / second", "$0.0002 / character", or "$0.02 / 1M '
+    'tokens" depending on modality\n'
     "- latency_ms (integer or null): typical latency in milliseconds, null if not "
     "applicable\n"
-    "- context_window (string or null): e.g. \"128K\", \"5,000 characters\", "
-    "\"2,048px\", \"10s max\", null if not applicable\n"
-    "- use_case_tags (array of 2-4 short strings): e.g. [\"structured output\", "
-    "\"classification\"]\n"
+    '- context_window (string or null): e.g. "128K", "5,000 characters", '
+    '"2,048px", "10s max", null if not applicable\n'
+    '- use_case_tags (array of 2-4 short strings): e.g. ["structured output", '
+    '"classification"]\n'
     "- source_url (string or null): a plausible-looking placeholder documentation "
     "URL on a fictional domain (does not need to resolve)\n\n"
     "Spread the entries across modalities: several LLM, several Voice, several "
@@ -98,7 +98,9 @@ def main() -> None:
 
     client = OpenAI(api_key=settings.mesh_api_key, base_url=settings.mesh_base_url)
 
-    print(f"Requesting synthetic catalog entries from Mesh model '{settings.mesh_model}'...")
+    print(
+        f"Requesting synthetic catalog entries from Mesh model '{settings.mesh_model}'..."
+    )
     response = client.chat.completions.create(
         model=settings.mesh_model,
         messages=[
@@ -128,7 +130,11 @@ def main() -> None:
 
     settings = Settings()
     session_factory = build_session_factory(settings)
-    vector_store = ModelVectorStore(settings.chroma_db_path)
+    vector_store = ModelVectorStore(
+        settings.chroma_db_path,
+        collection_name=settings.chroma_collection_name,
+        embedding_function=build_embedding_function(settings),
+    )
 
     inserted = 0
     skipped_duplicate = 0
@@ -156,7 +162,9 @@ def main() -> None:
             )
             if existing:
                 skipped_duplicate += 1
-                print(f"  [{index}] skipped (title already exists): '{payload_model.title}'")
+                print(
+                    f"  [{index}] skipped (title already exists): '{payload_model.title}'"
+                )
                 continue
 
             model = create_model(session, vector_store, payload_model)

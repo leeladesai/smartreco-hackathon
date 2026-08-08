@@ -32,6 +32,7 @@ from app.schemas import (
     EventBatch,
     ModelCreate,
     ModelResponse,
+    TelegramChatIdUpdate,
     UserResponse,
 )
 from app.security import (
@@ -54,6 +55,7 @@ from app.services.agent_graph import (
 from app.services.digest import build_notifier, run_digest
 from app.services.recommendation import (
     activity_summary,
+    mesh_cost_rollup,
     recent_events,
     session_evidence,
     should_trigger,
@@ -65,7 +67,7 @@ from app.services.observability import (
     fetch_run_detail,
 )
 from app.services.tracing import configure_langsmith
-from app.vector import ModelVectorStore
+from app.vector import ModelVectorStore, build_embedding_function
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -106,7 +108,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings()
     configure_langsmith(app_settings)
     session_factory = build_session_factory(app_settings)
-    vector_store = ModelVectorStore(app_settings.chroma_db_path)
+    vector_store = ModelVectorStore(
+        app_settings.chroma_db_path,
+        collection_name=app_settings.chroma_collection_name,
+        embedding_function=build_embedding_function(app_settings),
+    )
     mesh_generator = MeshNarrativeGenerator(app_settings)
     notifier = build_notifier(app_settings)
     current_user = make_role_dependency(session_factory, app_settings)
@@ -319,6 +325,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # session cookie, and clearing a cookie that's already absent is a harmless no-op.
         response.delete_cookie(app_settings.session_cookie_name)
 
+    @app.get("/api/auth/me", response_model=UserResponse)
+    async def current_user_profile(user: User = Depends(current_user)) -> UserResponse:
+        return UserResponse.model_validate(user)
+
+    @app.put("/api/auth/me/telegram-chat-id", response_model=UserResponse)
+    async def update_telegram_chat_id(
+        payload: TelegramChatIdUpdate, user: User = Depends(current_user)
+    ) -> UserResponse:
+        """Self-serve per-user Telegram digest delivery (DLV-3 bonus follow-up) — a
+        user sets their own chat_id here instead of everyone sharing one broadcast
+        chat (TelegramNotifier, app/services/digest.py)."""
+        with session_factory() as session:
+            db_user = session.get(User, user.id)
+            db_user.telegram_chat_id = (payload.telegram_chat_id or "").strip() or None
+            session.commit()
+            session.refresh(db_user)
+            return UserResponse.model_validate(db_user)
+
     @app.get("/api/models", response_model=list[ModelResponse])
     async def list_models(
         q: str | None = Query(default=None),
@@ -530,6 +554,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     for step in detail.steps
                 ],
             },
+        }
+
+    @app.get("/api/admin/observability/costs")
+    async def observability_costs(
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """Mesh cost/latency/token rollup, aggregated straight from our own DB
+        (`Recommendation.mesh_*` columns, captured in app/services/mesh.py at
+        generation time) — deliberately not another LangSmith query, so this stays
+        available even without tracing configured, and demonstrates the "efficiency"
+        story with real numbers rather than a trace count."""
+        with session_factory() as session:
+            rollup = mesh_cost_rollup(session)
+        return {
+            "call_count": rollup["call_count"],
+            "avg_latency_ms": rollup["avg_latency_ms"],
+            "total_prompt_tokens": rollup["total_prompt_tokens"],
+            "total_completion_tokens": rollup["total_completion_tokens"],
+            "total_cost_usd": rollup["total_cost_usd"],
+            "recent": [
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"].isoformat()
+                    if row["created_at"]
+                    else None,
+                    "latency_ms": row["latency_ms"],
+                    "prompt_tokens": row["prompt_tokens"],
+                    "completion_tokens": row["completion_tokens"],
+                    "cost_usd": row["cost_usd"],
+                }
+                for row in rollup["recent"]
+            ],
         }
 
     async def _get_user_lock(user_id: int) -> asyncio.Lock:

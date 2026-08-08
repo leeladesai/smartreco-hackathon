@@ -3,10 +3,13 @@ scheduler (the APScheduler wiring in `app/main.py`'s `create_app`) rather than a
 trigger.
 
 Delivery is provider-agnostic (`Notifier`): email addresses recipients per-user via
-`User.email`, which already exists on the schema. Telegram has no per-user chat-id mapping
-in this MVP, so it broadcasts to a single configured chat. If neither is configured, the
-digest still runs and is logged instead of silently dropped — same graceful-degradation
-pattern as `MeshNarrativeGenerator.enabled`.
+`User.email`, which already exists on the schema. Telegram now also delivers per-user,
+via the self-serve `User.telegram_chat_id` (`PUT /api/auth/me/telegram-chat-id`) —
+falling back to the single configured broadcast chat (`TELEGRAM_CHAT_ID`) only for a
+user who hasn't set their own, and raising (counted as a skipped delivery, not a crash)
+if neither exists. If nothing is configured at all, the digest still runs and is logged
+instead of silently dropped — same graceful-degradation pattern as
+`MeshNarrativeGenerator.enabled`.
 """
 
 import logging
@@ -78,16 +81,24 @@ class EmailNotifier:
 @dataclass
 class TelegramNotifier:
     bot_token: str
-    chat_id: str
+    # Single shared broadcast chat — only used as a fallback for a user who hasn't set
+    # their own User.telegram_chat_id (the per-user path this was added to support).
+    fallback_chat_id: str | None = None
 
     def send(self, user: User, recommendation: Recommendation) -> None:
+        chat_id = user.telegram_chat_id or self.fallback_chat_id
+        if not chat_id:
+            raise ValueError(
+                f"No Telegram chat_id configured for user_id={user.id} and no "
+                "TELEGRAM_CHAT_ID fallback set"
+            )
         body = narrative_as_plain_text(
             recommendation.narrative, recommendation.behavior_summary
         )
         text = f"SmartReco digest for {user.email}:\n{body}"
         response = httpx.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-            json={"chat_id": self.chat_id, "text": text},
+            json={"chat_id": chat_id, "text": text},
             timeout=10,
         )
         response.raise_for_status()
@@ -102,9 +113,10 @@ def build_notifier(settings: Settings) -> Notifier:
             smtp_password=settings.smtp_password,
             from_email=settings.smtp_from_email,
         )
-    if settings.telegram_bot_token and settings.telegram_chat_id:
+    if settings.telegram_bot_token:
         return TelegramNotifier(
-            bot_token=settings.telegram_bot_token, chat_id=settings.telegram_chat_id
+            bot_token=settings.telegram_bot_token,
+            fallback_chat_id=settings.telegram_chat_id,
         )
     return LoggingNotifier()
 

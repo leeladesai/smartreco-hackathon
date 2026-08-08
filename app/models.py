@@ -4,6 +4,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -22,6 +23,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="user")
+    # Per-user Telegram digest delivery (DLV-3 bonus follow-up): set via
+    # PUT /api/auth/me/telegram-chat-id, self-serve. Optional — TelegramNotifier
+    # (app/services/digest.py) falls back to the single configured broadcast chat
+    # (TELEGRAM_CHAT_ID) for any user who hasn't set their own.
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -68,6 +74,14 @@ class Recommendation(Base):
     behavior_summary: Mapped[str] = mapped_column(Text, default="")
     activity_hash: Mapped[str] = mapped_column(String(64), index=True)
     trigger_reason: Mapped[str] = mapped_column(String(120))
+    # Cost/latency rollup (bonus, retrieval/efficiency polish): captured directly from
+    # the Mesh response at generation time (app/services/mesh.py), not re-derived from
+    # LangSmith — the admin cost dashboard aggregates these straight out of our own DB.
+    # Null whenever generation was skipped (no Mesh configured, or retrieval-only).
+    mesh_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mesh_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mesh_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mesh_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

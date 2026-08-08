@@ -1,8 +1,11 @@
 import json
+import logging
 import re
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import httpx
 from langsmith import traceable
 from openai import OpenAI
 
@@ -10,11 +13,21 @@ from app.config import Settings
 from app.services.narrative import encode_narrative
 from app.services.prompts import NARRATIVE_SYSTEM_PROMPT, build_narrative_user_message
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class NarrativeResult:
     narrative: str
     model_ids: list[int]
+    # Cost/latency rollup (bonus, efficiency polish) — captured here, at the one place
+    # the real Mesh call happens, and persisted straight onto the Recommendation row
+    # (app/services/agent_graph.py) so the admin cost dashboard reads it back from our
+    # own DB rather than re-querying LangSmith for it.
+    latency_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 # Deterministic safety net, not just a prompt request: catalog primary keys are an
@@ -37,10 +50,60 @@ class MeshNarrativeGenerator:
     def __init__(self, settings: Settings) -> None:
         self.enabled = bool(settings.mesh_api_key)
         self.model = settings.mesh_model
+        self.base_url = settings.mesh_base_url
+        self.api_key = settings.mesh_api_key
         self.client = OpenAI(
             api_key=settings.mesh_api_key or "missing-mesh-key",
             base_url=settings.mesh_base_url,
         )
+        # Lazily fetched and cached on first use, not at startup — a pricing lookup
+        # failure must never block app boot, and most local/dev runs never need it.
+        self._pricing_cache: dict[str, tuple[float, float] | None] = {}
+
+    def _pricing_per_1m_tokens(self, model: str) -> tuple[float, float] | None:
+        """(prompt_usd_per_1m, completion_usd_per_1m) for `model`, or None if the
+        lookup fails or the model isn't listed — cost then just shows as unknown
+        rather than guessed. Best-effort only: token counts and latency (the more
+        load-bearing efficiency signals) never depend on this succeeding."""
+        if model in self._pricing_cache:
+            return self._pricing_cache[model]
+        pricing = None
+        try:
+            response = httpx.get(
+                f"{self.base_url}/models",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            for entry in response.json():
+                if entry.get("id") == model:
+                    prices = entry.get("pricing") or {}
+                    prompt_price = prices.get("prompt_usd_per_1m")
+                    completion_price = prices.get("completion_usd_per_1m")
+                    if prompt_price is not None and completion_price is not None:
+                        pricing = (float(prompt_price), float(completion_price))
+                    break
+        except Exception:
+            logger.warning(
+                "Could not fetch Mesh pricing for model=%s; cost will show as unknown",
+                model,
+                exc_info=True,
+            )
+        self._pricing_cache[model] = pricing
+        return pricing
+
+    def _estimate_cost_usd(
+        self, prompt_tokens: int | None, completion_tokens: int | None
+    ) -> float | None:
+        if prompt_tokens is None or completion_tokens is None:
+            return None
+        pricing = self._pricing_per_1m_tokens(self.model)
+        if pricing is None:
+            return None
+        prompt_price, completion_price = pricing
+        return (prompt_tokens / 1_000_000) * prompt_price + (
+            completion_tokens / 1_000_000
+        ) * completion_price
 
     @traceable(run_type="llm", name="mesh_generate_narrative")
     def generate(
@@ -77,6 +140,7 @@ class MeshNarrativeGenerator:
             )
             for candidate in candidates
         )
+        started_at = time.monotonic()
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
@@ -89,6 +153,12 @@ class MeshNarrativeGenerator:
                 },
             ],
         )
+        latency_ms = (time.monotonic() - started_at) * 1000
+        usage = getattr(response, "usage", None)
+        prompt_tokens = usage.prompt_tokens if usage else None
+        completion_tokens = usage.completion_tokens if usage else None
+        cost_usd = self._estimate_cost_usd(prompt_tokens, completion_tokens)
+
         content = response.choices[0].message.content or "{}"
         try:
             payload = json.loads(content)
@@ -111,4 +181,11 @@ class MeshNarrativeGenerator:
             _strip_id_mentions(str(point)) for point in raw_points if str(point).strip()
         ]
         narrative = encode_narrative(understanding, points)
-        return NarrativeResult(narrative=narrative, model_ids=model_ids)
+        return NarrativeResult(
+            narrative=narrative,
+            model_ids=model_ids,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )

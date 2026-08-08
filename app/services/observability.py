@@ -63,6 +63,7 @@ class TraceDetail:
 KNOWN_STEP_NAMES = {
     "analyze_activity",
     "retrieve_models",
+    "rerank_candidates",
     "grade_refine",
     "generate_narrative",
     "store_and_deliver",

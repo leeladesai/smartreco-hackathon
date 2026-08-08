@@ -6,8 +6,10 @@ from app.models import Event, Model, User
 from app.security import hash_password
 from app.services.agent_graph import (
     _story_snippet,
+    apply_feedback_adjustment,
     contextual_reason,
     prepare_retrieval_recommendation,
+    rerank_by_lexical_overlap,
 )
 
 
@@ -94,10 +96,13 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
         ), "grade_refine should retry once on a weak match"
         assert recommendation is not None
         assert recommendation.model_ids == [strong_model.id]
+        # 0.3 raw, minus the rerank_candidates lexical-overlap bonus against this
+        # model's own document text (title/provider/modality/description/tags) —
+        # retrieval_meta stores the final, re-ranked distance, not the raw one.
         assert recommendation.retrieval_meta == [
             {
                 "model_id": strong_model.id,
-                "distance": 0.3,
+                "distance": 0.23333333333333334,
                 "reason": "Matched after broadening your activity signal",
             }
         ]
@@ -138,10 +143,12 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
         )
 
         assert recommendation is not None
+        # 0.4 raw, minus the rerank_candidates lexical-overlap bonus (the search query
+        # "test" matches this model's provider "Test" in its document text).
         assert recommendation.retrieval_meta == [
             {
                 "model_id": model.id,
-                "distance": 0.4,
+                "distance": 0.30000000000000004,
                 "reason": "Strong match to your recent activity",
             }
         ]
@@ -374,6 +381,68 @@ def test_story_snippet_truncates_to_word_boundary() -> None:
 def test_story_snippet_returns_none_for_missing_or_blank_story() -> None:
     assert _story_snippet(None) is None
     assert _story_snippet("   ") is None
+
+
+def test_rerank_promotes_lexically_matching_candidate() -> None:
+    # candidate 2 starts behind candidate 1 on raw distance, but its document text
+    # exactly matches every query term — the lexical bonus should promote it ahead.
+    scored = [(1, 0.5), (2, 0.6)]
+    documents_by_id = {
+        1: "Generic Model. SomeCo. LLM. A general purpose assistant.",
+        2: "Voice Fast. Cartesia. Voice. Low-latency real-time voice synthesis.",
+    }
+    reranked = rerank_by_lexical_overlap(
+        scored, "real-time voice synthesis", documents_by_id
+    )
+    assert [model_id for model_id, _ in reranked] == [2, 1]
+
+
+def test_rerank_leaves_order_unchanged_with_no_lexical_overlap() -> None:
+    scored = [(1, 0.5), (2, 0.6)]
+    documents_by_id = {
+        1: "Alpha. Providerone. LLM. Something.",
+        2: "Beta. Providertwo. LLM. Something else.",
+    }
+    reranked = rerank_by_lexical_overlap(scored, "zzz nonexistent qqq", documents_by_id)
+    assert reranked == scored
+
+
+def test_rerank_returns_unchanged_for_blank_query() -> None:
+    scored = [(1, 0.5), (2, 0.6)]
+    assert rerank_by_lexical_overlap(scored, "   ", {}) == scored
+
+
+def test_rerank_bonus_is_capped_at_configured_weight() -> None:
+    scored = [(1, 1.0)]
+    documents_by_id = {1: "voice real time"}
+    reranked = rerank_by_lexical_overlap(
+        scored, "voice real time", documents_by_id, bonus_weight=0.3
+    )
+    assert reranked == [(1, 0.7)]
+
+
+def test_feedback_downvote_penalizes_and_reorders() -> None:
+    # Candidate 1 starts ahead on raw distance, but was previously downvoted — the
+    # penalty should push it behind candidate 2.
+    scored = [(1, 0.5), (2, 0.6)]
+    reranked = apply_feedback_adjustment(scored, {1: "down"})
+    assert [model_id for model_id, _ in reranked] == [2, 1]
+
+
+def test_feedback_upvote_gives_a_smaller_bonus_than_downvote_penalty() -> None:
+    scored = [(1, 0.5)]
+    up = apply_feedback_adjustment(scored, {1: "up"})
+    down = apply_feedback_adjustment(scored, {1: "down"})
+    assert up == [(1, 0.5 - 0.4)]
+    assert down == [(1, 0.5 + 1.0)]
+    # Asymmetric on purpose: a downvote is meant to weigh more than an upvote.
+    assert (down[0][1] - 0.5) > (0.5 - up[0][1])
+
+
+def test_feedback_adjustment_ignores_unrated_candidates() -> None:
+    scored = [(1, 0.5), (2, 0.6)]
+    assert apply_feedback_adjustment(scored, {}) == scored
+    assert apply_feedback_adjustment(scored, {99: "down"}) == scored
 
 
 def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() -> None:

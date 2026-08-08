@@ -24,8 +24,8 @@ separate frontend service.
   partial failure is visible, never silent.
 - **Behavioral tracking**: events batch client-side (size/timer/`sendBeacon`-on-unload), never one
   network call per click, and ingestion never blocks on the agent pipeline.
-- **Agent pipeline**: a 5-node LangGraph graph — `analyze → retrieve → grade/refine → generate →
-  store` — triggered by a cheap event-count/cooldown check (`AGT-1`), not per-event. Grading
+- **Agent pipeline**: a 6-node LangGraph graph — `analyze → retrieve → rerank → grade/refine →
+  generate → store` — triggered by a cheap event-count/cooldown check (`AGT-1`), not per-event. Grading
   bounds retries at 2 on weak retrieval; generation never runs more than once per trigger
   regardless of retries. The pipeline runs in a FastAPI background task, not inline on the
   ingestion request (see NFR-1 below).
@@ -134,7 +134,7 @@ smartreco-hackathon/
 │   ├── models.py          # SQLAlchemy schema
 │   ├── vector.py          # Chroma wrapper (dual-write, metadata filtering)
 │   ├── services/
-│   │   ├── agent_graph.py   # the 5-node LangGraph pipeline
+│   │   ├── agent_graph.py   # the 6-node LangGraph pipeline
 │   │   ├── recommendation.py# trigger check, behavior summary, activity hash
 │   │   ├── mesh.py          # Mesh API client (the only LLM call boundary)
 │   │   ├── digest.py        # scheduled digest + notifier abstraction
@@ -164,8 +164,8 @@ tracking (`sendBeacon` on unload, never per-click); a trigger engine (event coun
 instead of calling the LLM on every event; activity-hash caching so unchanged behavior never
 re-triggers generation.
 
-**Real agentic depth (Iteration 2, bonus scope):** the pipeline is a genuine 5-node LangGraph graph
-(`analyze → retrieve → grade/refine → generate → store`), not a single-shot prompt — with bounded
+**Real agentic depth (Iteration 2, bonus scope):** the pipeline is a genuine 6-node LangGraph graph
+(`analyze → retrieve → rerank → grade/refine → generate → store`), not a single-shot prompt — with bounded
 retry (max 2) on weak retrieval, and per-model "why this" tags on the dashboard computed
 deterministically from the user's actual session evidence (see below), not canned text. The
 dashboard polls for a fresher recommendation rather than ever showing a stale one after a
@@ -230,20 +230,45 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
 
 ## ⚠️ Known limitations
 
-- **Telegram digest delivery is a single broadcast chat**, not per-user — there's no per-user
-  Telegram chat-id field on the `User` model in this MVP. Email delivery *is* per-user (via the
-  existing `User.email`). Configure whichever fits your judge/demo setup, or leave both unset to
-  see the honest logging fallback.
-- **No re-ranking step** — retrieval polish (Iteration 3) stopped at metadata pre-filtering; the
-  catalog is small enough in this MVP that a re-ranking pass wasn't worth the added complexity.
-- **Retrieval embeddings are a deterministic hashed bag-of-words function (`app/vector.py`), not a
-  real embedding model** — a documented cost/scope tradeoff, not an oversight. It's stable
-  (identical text always maps to the same vector) and dependency-light, so grounding and
-  same-modality filtering work reliably, but it only captures exact/near-exact term overlap — a
-  paraphrased query like "fast realtime speech" won't score as well against catalog copy that
-  says "low-latency voice" as literal keyword overlap would. Swapping in a real embedding model
-  (Mesh likely exposes one) would fix this; not done here because the current catalog size and
-  demo scenarios don't yet expose the gap in practice.
+- **Telegram digest delivery** is per-user: each AI engineer sets their own chat ID from a
+  "Proactive digest delivery" panel on the Dashboard (`PUT /api/auth/me/telegram-chat-id`),
+  read back by `TelegramNotifier` (`app/services/digest.py`) on the next cron run. A user who
+  hasn't set one falls back to the single shared `TELEGRAM_CHAT_ID` broadcast chat if
+  configured, or is skipped (logged, not silently dropped) if neither exists. Email delivery
+  remains per-user via the existing `User.email`. Configure whichever fits your judge/demo
+  setup, or leave both unset to see the honest logging fallback.
+- **Retrieval embeddings**: real semantic embeddings via Mesh (`google/embeddinggemma-300m` by
+  default, `MESH_EMBEDDING_MODEL`) when `MESH_API_KEY` is set — this replaced the original
+  deterministic hashed bag-of-words fallback, which only captured exact/near-exact term overlap
+  (a paraphrased query like "fast realtime speech" scored poorly against catalog copy that says
+  "low-latency voice"). Verified live: that exact paraphrase now correctly surfaces 4 of 5 Voice
+  models as top matches. The hashed fallback (`DeterministicEmbeddingFunction`, `app/vector.py`)
+  still exists and is used automatically whenever Mesh isn't configured, so the app never hard-
+  depends on it — same graceful-degradation pattern as narrative generation. Retrieval failures
+  (e.g. a transient Mesh outage) degrade to "no candidates this round" rather than crashing the
+  background pipeline.
+- **Re-ranking**: a 6th LangGraph node, `rerank_candidates`, sits between retrieval and
+  grade/refine — a deterministic hybrid dense+sparse re-rank that nudges Chroma's embedding
+  distance using lexical term overlap against each candidate's own catalog text, so an exact,
+  specific term match isn't outranked by a candidate that's only broadly semantically similar.
+  Pure Python, no extra LLM/network call (`NFR-2` unaffected), and additive rather than a full
+  rescale so it stays compatible with the existing WEAK/STRONG distance thresholds.
+- **Explicit feedback loop**: a 👍/👎 on any dashboard recommendation card is tracked as its own
+  event (`recommendation_feedback`, no new endpoint — rides the same batched `/api/events/batch`
+  path as every other behavioral signal). `rerank_candidates` reads recent feedback back
+  (`recent_feedback_by_model`, 14-day lookback — longer than ordinary browsing recency, since
+  "don't show me this again" is a deliberate, longer-lived preference) and adjusts ranking
+  accordingly: a downvote is a stronger, more deliberate signal than an upvote, so its penalty
+  is larger than the upvote bonus (asymmetric on purpose). Verified live: downvoting a model
+  that had been ranked #1 dropped it to last place in the very next generated recommendation.
+- **Cost/latency rollup** in the admin observability screen: `Recommendation` now persists
+  `mesh_latency_ms`/`mesh_prompt_tokens`/`mesh_completion_tokens`/`mesh_cost_usd`, captured
+  directly from the Mesh response at generation time (`app/services/mesh.py`) — cost is priced
+  from Mesh's own `/models` catalog (fetched once, cached for the process's lifetime; a failed
+  lookup degrades to an unknown cost, never breaks latency/token capture). `GET
+  /api/admin/observability/costs` aggregates straight from our own DB, deliberately not another
+  LangSmith call, so it demonstrates the "efficiency" story with real numbers even without
+  tracing configured.
 - **No production deployment or demo video** — both were optional per the roadmap and weren't
   prioritized over completing functional/bonus scope.
 - **`recommendation_triggered` in the `/api/events/batch` response** reflects `should_trigger`

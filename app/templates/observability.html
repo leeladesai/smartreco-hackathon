@@ -7,8 +7,9 @@
       <h1 class="page-title">Pipeline observability</h1>
       <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
     </div>
-    <button class="btn" type="button" onclick="loadObservability()">Refresh</button>
+    <button class="btn" type="button" onclick="loadObservability(); loadCostRollup();">Refresh</button>
   </div>
+  <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
   <table class="admin-table" id="observability-table-wrap">
     <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>Latency</th><th>Error</th></tr></thead>

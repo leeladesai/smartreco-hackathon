@@ -28,10 +28,11 @@ flowchart TB
             direction LR
             analyze["① Analyze\nActivity"]
             retrieve["② Retrieve\nModels"]
-            grade["③ Grade /\nRefine"]
-            generate["④ Generate\nNarrative"]
-            store["⑤ Store &\nDeliver"]
-            analyze --> retrieve --> grade
+            rerank["③ Rerank\n(lexical + dense)"]
+            grade["④ Grade /\nRefine"]
+            generate["⑤ Generate\nNarrative"]
+            store["⑥ Store &\nDeliver"]
+            analyze --> retrieve --> rerank --> grade
             grade -. "weak score\nretry ≤ 2" .-> retrieve
             grade --> generate --> store
         end
@@ -79,7 +80,7 @@ flowchart TB
     classDef bonus stroke:#f0708a,stroke-width:2px,stroke-dasharray: 4 3;
 
     class ingest,dualwrite,browse,trigger sync
-    class analyze,retrieve,grade,generate,store async
+    class analyze,retrieve,rerank,grade,generate,store async
     class sql,vector data
     class mesh,langsmith external
     class scheduler,digest bonus
@@ -107,6 +108,7 @@ flowchart TB
 | Trigger evaluator | SQL `recommendations`, `events` | — |
 | `analyze_activity` | SQL `events`, `recommendations` (last hash) | — |
 | `retrieve_models` | Chroma `models` collection | — |
+| `rerank_candidates` | SQL `models` (document text for lexical scoring) | — |
 | `generate_narrative` | — | Mesh API (external call) |
 | `store_and_deliver` | — | SQL `recommendations` |
 | Dashboard / Activity read | SQL `recommendations`, `events` | — |

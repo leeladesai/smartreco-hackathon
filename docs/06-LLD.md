@@ -52,7 +52,13 @@ CREATE TABLE recommendations (
 CREATE INDEX idx_reco_user_time ON recommendations(user_id, created_at);
 ```
 
-Vector store (Chroma) — one collection `models`, document id = `models.id` (string), embedding
+Vector store (Chroma) — one collection `models` (configurable via `CHROMA_COLLECTION_NAME`).
+Embeddings are real Mesh embeddings (`MESH_EMBEDDING_MODEL`, default `google/embeddinggemma-300m`,
+768-dim) whenever `MESH_API_KEY` is set, falling back to a deterministic hashed bag-of-words
+embedding (`EMBEDDING_DIMENSION`, default 64) otherwise — see `app/vector.py:build_embedding_
+function`. Switching between them (or changing `EMBEDDING_DIMENSION`) invalidates already-indexed
+vectors; re-run `seed_data.py`/re-upsert existing catalog rows after. Document
+id = `models.id` (string), embedding
 input = `f"{title}. {provider}. {modality}. {description}. {story}"` (the story field is included
 because it carries use-case/trade-off language that closely matches how builders phrase what
 they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..., "latency_ms": ...}`.
@@ -66,6 +72,8 @@ they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..
 | POST | `/api/auth/register` | none | AUTH-1, AI engineer self-registration only — always creates role `user` |
 | POST | `/api/auth/login` | none | AUTH-2, AI engineer login, returns session/JWT |
 | POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, admin-only login, returns session/JWT with role `admin`; no `/api/admin/register` exists |
+| GET | `/api/auth/me` | user | Current session's own profile (includes `telegram_chat_id`) |
+| PUT | `/api/auth/me/telegram-chat-id` | user | DLV-3 bonus follow-up: self-serve per-user Telegram digest chat ID, read by `TelegramNotifier` |
 | GET | `/api/models` | none | CAT-5, list/search catalog (filter by modality/provider) |
 | GET | `/api/models/{id}` | none | model detail |
 | POST | `/api/admin/models` | admin | CAT-1 + dual-write |
@@ -182,7 +190,8 @@ X vs Y" claim, only a softer "you've been evaluating this modality" one.
 |---|---|---|---|
 | `analyze_activity` | `user_id` | `behavior_summary: str`, `activity_hash: str` | Pulls last N events, aggregates by modality/provider/query; reads explicit `model_compare` events for high-confidence "X vs Y" pairs, and separately applies same-modality view clustering (see §3) for a softer evaluation signal; if `activity_hash` matches last stored recommendation's hash, short-circuit the graph (AGT-6) |
 | `retrieve_models` | `behavior_summary` | `candidates: list[{id, title, score, metadata}]` | Embeds a retrieval query from the summary, queries Chroma top-k=8 |
-| `grade_refine` | `candidates`, retry count | `candidates` (possibly re-retrieved) or `refined_query` | If max(score) < threshold and retries < 2, rewrite query (broaden modality / drop over-specific term) and loop back to `retrieve_models` |
+| `rerank_candidates` | `candidates` (dense-ranked) | `candidates` (re-ordered) | Hybrid dense+sparse re-rank (bonus, retrieval polish): blends each candidate's Chroma distance with lexical term overlap against its own catalog document text (`app/vector.py:ModelVectorStore.document`); additive bonus capped at `RERANK_LEXICAL_BONUS`, no LLM/network call |
+| `grade_refine` | `candidates`, retry count | `candidates` (possibly re-retrieved) or `refined_query` | If max(score) < threshold and retries < 2, rewrite query (broaden modality / drop over-specific term) and loop back to `retrieve_models` (which re-runs `rerank_candidates` on the new results) |
 | `generate_narrative` | `behavior_summary`, `candidates` | `narrative: str`, `model_ids: list[str]` | Mesh API call; prompt instructs the model to produce a comparison-driven narrative referencing **only** provided candidate IDs (e.g. contrasting price/latency); response is validated post-hoc — any ID not in `candidates` is dropped before storage |
 | `store_and_deliver` | `narrative`, `model_ids`, `activity_hash`, `trigger_reason` | — | Writes `recommendations` row; (bonus) enqueues email/Telegram send |
 

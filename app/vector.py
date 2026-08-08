@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import chromadb
+from openai import OpenAI
 
 # This pinned chromadb version calls posthog's old positional capture(distinct_id, event,
 # properties) signature; the installed posthog major version rewrote that to capture(event,
@@ -15,11 +16,16 @@ import chromadb
 # (chromadb catches it internally either way).
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
+logger = logging.getLogger(__name__)
+
 
 class DeterministicEmbeddingFunction:
-    """Small offline embedding used for the MVP handshake and local tests."""
+    """Offline fallback embedding — used whenever Mesh isn't configured (no API key),
+    so the catalog/retrieval loop still works without any external dependency. Also
+    what tests use, since they deliberately run with mesh_api_key=None."""
 
-    dimension = 64
+    def __init__(self, dimension: int = 64) -> None:
+        self.dimension = dimension
 
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
         return [self._embed(text) for text in input]
@@ -34,8 +40,40 @@ class DeterministicEmbeddingFunction:
         return [value / norm for value in values]
 
 
+class MeshEmbeddingFunction:
+    """Real semantic embeddings via the Mesh API — same Chroma EmbeddingFunction
+    interface as DeterministicEmbeddingFunction, so it's a drop-in replacement. One
+    batched call regardless of how many texts Chroma passes in; the API preserves
+    input order, so results map back to documents by position."""
+
+    def __init__(self, client: OpenAI, model: str) -> None:
+        self.client = client
+        self.model = model
+
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        response = self.client.embeddings.create(model=self.model, input=list(input))
+        return [item.embedding for item in response.data]
+
+
+def build_embedding_function(settings):
+    """Mesh-backed embeddings when configured, the deterministic fallback otherwise —
+    mirrors MeshNarrativeGenerator's own enabled/disabled pattern (app/services/mesh.py)
+    so the app degrades the same way in both places rather than two different stories.
+    """
+    if settings.mesh_api_key:
+        client = OpenAI(api_key=settings.mesh_api_key, base_url=settings.mesh_base_url)
+        return MeshEmbeddingFunction(client, settings.mesh_embedding_model)
+    return DeterministicEmbeddingFunction(settings.embedding_dimension)
+
+
 class ModelVectorStore:
-    def __init__(self, path: str) -> None:
+    def __init__(
+        self,
+        path: str,
+        collection_name: str = "models",
+        embedding_function=None,
+        embedding_dimension: int = 64,
+    ) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
         # anonymized_telemetry=False: this pinned chromadb version calls posthog's old
         # positional capture() signature, which the installed posthog major version no longer
@@ -45,8 +83,9 @@ class ModelVectorStore:
             path=path, settings=chromadb.Settings(anonymized_telemetry=False)
         )
         self.collection = client.get_or_create_collection(
-            name="models",
-            embedding_function=DeterministicEmbeddingFunction(),
+            name=collection_name,
+            embedding_function=embedding_function
+            or DeterministicEmbeddingFunction(embedding_dimension),
         )
 
     @staticmethod
@@ -84,9 +123,17 @@ class ModelVectorStore:
         as a post-hoc re-rank filter."""
         if not text.strip() or self.collection.count() == 0:
             return []
-        results = self.collection.query(
-            query_texts=[text], n_results=limit, where=where, include=["distances"]
-        )
+        try:
+            results = self.collection.query(
+                query_texts=[text], n_results=limit, where=where, include=["distances"]
+            )
+        except Exception:
+            # A transient Mesh embedding failure here must degrade to "no candidates
+            # this round" (same as an empty collection), not crash the whole
+            # background pipeline run — retrieval is core to every recommendation,
+            # unlike narrative generation, which already fails this gracefully.
+            logger.exception("Vector store query failed; returning no candidates")
+            return []
         ids = results.get("ids", [[]])[0]
         distances = results.get("distances", [[]])[0]
         return [

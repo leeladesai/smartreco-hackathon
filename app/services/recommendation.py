@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Event, Model, Recommendation
@@ -16,6 +16,12 @@ SESSION_DECAY = 0.5
 SESSION_TRIGGER_COUNT = 2
 SESSION_COOLDOWN = timedelta(minutes=3)
 MODALITY_FILTER_RATIO = 1.5
+
+# Explicit feedback loop: a thumbs up/down on a past recommendation card should keep
+# influencing ranking longer than ordinary browsing activity (LOOKBACK_DAYS, 3 days) —
+# "don't show me this again" is a deliberate, longer-lived preference, not a passing
+# browse signal.
+FEEDBACK_LOOKBACK_DAYS = timedelta(days=14)
 
 # Still used by activity_summary's "browsing multiple X" clause within a session bucket.
 MODALITY_CLUSTER_WINDOW = timedelta(minutes=15)
@@ -309,6 +315,35 @@ def recent_events(session: Session, user_id: int) -> list[Event]:
     ).all()
 
 
+def recent_feedback_by_model(session: Session, user_id: int) -> dict[int, str]:
+    """Most recent explicit up/down feedback per model within FEEDBACK_LOOKBACK_DAYS —
+    newest rating wins if the user changed their mind. No new table: feedback is just
+    another `Event` (event_type="recommendation_feedback", metadata={"rating": ...}),
+    tracked through the same batched /api/events/batch path as every other behavioral
+    signal. Feeds the rerank_candidates node (app/services/agent_graph.py) so a
+    downvote actually suppresses that model from reappearing, not just logs a rating.
+    """
+    cutoff = datetime.utcnow() - FEEDBACK_LOOKBACK_DAYS
+    events = session.scalars(
+        select(Event)
+        .where(
+            Event.user_id == user_id,
+            Event.event_type == "recommendation_feedback",
+            Event.created_at >= cutoff,
+        )
+        .order_by(Event.created_at.desc())
+    ).all()
+    feedback: dict[int, str] = {}
+    for event in events:
+        if event.model_id is None:
+            continue
+        rating = (event.metadata_json or {}).get("rating")
+        if rating not in ("up", "down"):
+            continue
+        feedback.setdefault(event.model_id, rating)
+    return feedback
+
+
 def is_recommendation_stale(events: list[Event], latest: Recommendation | None) -> bool:
     """True if a new pipeline run could actually produce something different from
     `latest` — i.e. activity changed since it was generated and its cooldown window
@@ -359,3 +394,48 @@ def should_trigger(session: Session, user_id: int) -> bool:
         .order_by(Recommendation.created_at.desc())
     )
     return is_recommendation_stale(events, latest)
+
+
+def mesh_cost_rollup(session: Session, limit: int = 10) -> dict:
+    """Aggregates Mesh cost/latency/token usage straight out of our own DB (the
+    `mesh_*` columns on `Recommendation`, captured at generation time in
+    app/services/mesh.py) — no LangSmith call involved, so this stays cheap and
+    available even when tracing (OBS-1/OBS-2) isn't configured. Only rows where
+    generation actually ran (mesh_latency_ms is not null) count; retrieval-only runs
+    are excluded rather than silently averaged in as zeros.
+    """
+    has_generation = Recommendation.mesh_latency_ms.is_not(None)
+    totals = session.execute(
+        select(
+            func.count(),
+            func.avg(Recommendation.mesh_latency_ms),
+            func.sum(Recommendation.mesh_prompt_tokens),
+            func.sum(Recommendation.mesh_completion_tokens),
+            func.sum(Recommendation.mesh_cost_usd),
+        ).where(has_generation)
+    ).one()
+    call_count, avg_latency_ms, prompt_tokens, completion_tokens, cost_usd = totals
+    recent = session.scalars(
+        select(Recommendation)
+        .where(has_generation)
+        .order_by(Recommendation.created_at.desc())
+        .limit(limit)
+    ).all()
+    return {
+        "call_count": call_count or 0,
+        "avg_latency_ms": float(avg_latency_ms) if avg_latency_ms is not None else None,
+        "total_prompt_tokens": prompt_tokens or 0,
+        "total_completion_tokens": completion_tokens or 0,
+        "total_cost_usd": float(cost_usd) if cost_usd is not None else None,
+        "recent": [
+            {
+                "id": rec.id,
+                "created_at": rec.created_at,
+                "latency_ms": rec.mesh_latency_ms,
+                "prompt_tokens": rec.mesh_prompt_tokens,
+                "completion_tokens": rec.mesh_completion_tokens,
+                "cost_usd": rec.mesh_cost_usd,
+            }
+            for rec in recent
+        ],
+    }

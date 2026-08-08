@@ -1,4 +1,5 @@
-"""The 5-node recommendation pipeline: analyze -> retrieve -> grade/refine -> generate -> store.
+"""The 6-node recommendation pipeline:
+analyze -> retrieve -> rerank -> grade/refine -> generate -> store.
 
 Each stage is a plain function over a shared state dict, wired together with LangGraph so the
 pipeline is a named, testable graph (NFR-5) rather than one monolithic function. `should_trigger`
@@ -7,6 +8,7 @@ that decides whether to run the graph at all (AGT-1), so a per-event LLM call ne
 """
 
 import logging
+import re
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -23,6 +25,7 @@ from app.services.recommendation import (
     dominant_modality,
     is_recommendation_stale,
     recent_events,
+    recent_feedback_by_model,
     session_bucket_events,
     session_evidence,
 )
@@ -34,11 +37,25 @@ logger = logging.getLogger(__name__)
 RETRIEVAL_TOP_K = 8
 MAX_RETRIES = 2
 
-# Empirically calibrated against app/vector.py's deterministic hashed bag-of-words embedding:
-# genuinely relevant matches score well under 1.0 on this collection, off-topic/generic queries
-# score 1.5+. Not a universal constant — specific to this embedding function.
+# Empirically calibrated against the configured embedding function (app/vector.py) —
+# real Mesh embeddings when configured, the deterministic hashed bag-of-words fallback
+# otherwise. Checked live against both: exact-text matches score ~0.3, close
+# paraphrases ~0.8-0.9, genuinely unrelated queries 1.5+. Not a universal constant —
+# re-verify if the embedding model changes.
 WEAK_RETRIEVAL_DISTANCE = 1.5
 STRONG_RETRIEVAL_DISTANCE = 0.9
+
+# Retrieval polish: how much a perfect lexical term match can shave off a candidate's
+# embedding distance during re-ranking. Additive, not a rescale, so results stay in the
+# same distance units the WEAK/STRONG thresholds above are calibrated against.
+RERANK_LEXICAL_BONUS = 0.3
+
+# Explicit feedback loop: asymmetric on purpose — a downvote ("don't show me this
+# again") is a stronger, more deliberate signal than an upvote ("yes, more like
+# this"), so the penalty is larger than the bonus. Same additive distance units as
+# the lexical rerank above.
+FEEDBACK_DOWN_PENALTY = 1.0
+FEEDBACK_UP_BONUS = 0.4
 
 
 class AgentState(TypedDict, total=False):
@@ -57,6 +74,10 @@ class AgentState(TypedDict, total=False):
     narrative: str | None
     model_ids: list[int]
     retrieval_meta: list[dict]
+    mesh_latency_ms: float | None
+    mesh_prompt_tokens: int | None
+    mesh_completion_tokens: int | None
+    mesh_cost_usd: float | None
     short_circuit: bool
     recommendation: Recommendation | None
 
@@ -209,6 +230,98 @@ def _retrieve_models(vector_store: ModelVectorStore):
     return node
 
 
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def rerank_by_lexical_overlap(
+    scored: list[tuple[int, float]],
+    query: str,
+    documents_by_id: dict[int, str],
+    bonus_weight: float = RERANK_LEXICAL_BONUS,
+) -> list[tuple[int, float]]:
+    """Retrieval polish: hybrid dense+sparse re-ranking. Chroma's embedding distance
+    (dense) already ranks candidates by semantic similarity; this nudges that ranking
+    using lexical term overlap (sparse) against each candidate's own catalog text — a
+    candidate that shares an exact, specific term with the query (e.g. a search term
+    matching its use-case tags) isn't outranked by one that's only broadly semantically
+    similar. The bonus is additive and capped at `bonus_weight`, not a full rescale, so
+    the result stays in the same distance units grade_refine's WEAK/STRONG thresholds
+    are calibrated against — no separate recalibration needed. Pure and deterministic:
+    no LLM or network call, so NFR-2 (>=1 LLM call per trigger) is unaffected.
+    """
+    query_terms = _tokenize(query)
+    if not query_terms:
+        return scored
+    reranked = [
+        (
+            model_id,
+            distance
+            - bonus_weight
+            * (
+                len(query_terms & _tokenize(documents_by_id.get(model_id, "")))
+                / len(query_terms)
+            ),
+        )
+        for model_id, distance in scored
+    ]
+    reranked.sort(key=lambda pair: pair[1])
+    return reranked
+
+
+def apply_feedback_adjustment(
+    scored: list[tuple[int, float]],
+    feedback_by_model_id: dict[int, str],
+) -> list[tuple[int, float]]:
+    """Closes the recommendation loop: an explicit thumbs up/down on a past
+    recommendation card (recorded as an `Event`, see
+    `recommendation.recent_feedback_by_model`) adjusts this candidate's distance
+    before final selection — a downvoted model doesn't just get relabeled, it
+    genuinely ranks worse (and, past WEAK_RETRIEVAL_DISTANCE, effectively drops out)
+    the next time it's retrieved. Additive, same distance units as the lexical rerank
+    above; asymmetric (down penalizes more than up rewards) — see the constants'
+    docstring for why.
+    """
+    if not feedback_by_model_id:
+        return scored
+    adjusted = []
+    for model_id, distance in scored:
+        rating = feedback_by_model_id.get(model_id)
+        if rating == "down":
+            distance += FEEDBACK_DOWN_PENALTY
+        elif rating == "up":
+            distance -= FEEDBACK_UP_BONUS
+        adjusted.append((model_id, distance))
+    adjusted.sort(key=lambda pair: pair[1])
+    return adjusted
+
+
+def _rerank_candidates(session: Session):
+    @traceable(run_type="chain", name="rerank_candidates")
+    def node(state: AgentState) -> AgentState:
+        scored = state.get("candidates_scored", [])
+        if not scored:
+            return state
+        model_ids = [model_id for model_id, _ in scored]
+        documents_by_id = {
+            model.id: ModelVectorStore.document(model)
+            for model in session.scalars(
+                select(Model).where(Model.id.in_(model_ids))
+            ).all()
+        }
+        query = (
+            state.get("refined_query")
+            or state.get("retrieval_query")
+            or state["behavior_summary"]
+        )
+        reranked = rerank_by_lexical_overlap(scored, query, documents_by_id)
+        feedback_by_model_id = recent_feedback_by_model(session, state["user_id"])
+        reranked = apply_feedback_adjustment(reranked, feedback_by_model_id)
+        return {**state, "candidates_scored": reranked}
+
+    return node
+
+
 @traceable(run_type="chain", name="grade_refine")
 def _grade_refine(state: AgentState) -> AgentState:
     """AGT-4: bounded retry (max 2) when retrieval quality is weak."""
@@ -264,6 +377,10 @@ def _generate_narrative(session: Session, mesh_generator):
 
         narrative: str | None = None
         final_ids = ordered_ids
+        mesh_latency_ms: float | None = None
+        mesh_prompt_tokens: int | None = None
+        mesh_completion_tokens: int | None = None
+        mesh_cost_usd: float | None = None
         if mesh_generator is not None and mesh_generator.enabled and ordered_ids:
             candidates = [
                 {
@@ -291,6 +408,10 @@ def _generate_narrative(session: Session, mesh_generator):
             else:
                 if isinstance(result, NarrativeResult):
                     narrative, generated_ids = result.narrative, result.model_ids
+                    mesh_latency_ms = result.latency_ms
+                    mesh_prompt_tokens = result.prompt_tokens
+                    mesh_completion_tokens = result.completion_tokens
+                    mesh_cost_usd = result.cost_usd
                 elif isinstance(result, dict):
                     narrative = str(result.get("narrative", ""))
                     generated_ids = result.get("model_ids", [])
@@ -327,6 +448,10 @@ def _generate_narrative(session: Session, mesh_generator):
             "model_ids": final_ids,
             "narrative": narrative,
             "retrieval_meta": retrieval_meta,
+            "mesh_latency_ms": mesh_latency_ms,
+            "mesh_prompt_tokens": mesh_prompt_tokens,
+            "mesh_completion_tokens": mesh_completion_tokens,
+            "mesh_cost_usd": mesh_cost_usd,
         }
 
     return node
@@ -340,6 +465,10 @@ def _store_and_deliver(session: Session):
             model_ids=state.get("model_ids") or [],
             retrieval_meta=state.get("retrieval_meta") or [],
             narrative=state.get("narrative"),
+            mesh_latency_ms=state.get("mesh_latency_ms"),
+            mesh_prompt_tokens=state.get("mesh_prompt_tokens"),
+            mesh_completion_tokens=state.get("mesh_completion_tokens"),
+            mesh_cost_usd=state.get("mesh_cost_usd"),
             behavior_summary=state["behavior_summary"],
             activity_hash=state["activity_hash"],
             trigger_reason=state["trigger_reason"],
@@ -358,6 +487,7 @@ def build_agent_graph(
     graph = StateGraph(AgentState)
     graph.add_node("analyze", _analyze_activity(session))
     graph.add_node("retrieve", _retrieve_models(vector_store))
+    graph.add_node("rerank", _rerank_candidates(session))
     graph.add_node("grade_refine", _grade_refine)
     graph.add_node("generate", _generate_narrative(session, mesh_generator))
     graph.add_node("store", _store_and_deliver(session))
@@ -368,7 +498,8 @@ def build_agent_graph(
         lambda state: "short_circuit" if state.get("short_circuit") else "proceed",
         {"short_circuit": END, "proceed": "retrieve"},
     )
-    graph.add_edge("retrieve", "grade_refine")
+    graph.add_edge("retrieve", "rerank")
+    graph.add_edge("rerank", "grade_refine")
     graph.add_conditional_edges(
         "grade_refine",
         lambda state: (
@@ -392,5 +523,15 @@ def prepare_retrieval_recommendation(
     trigger_reason: str = "event_threshold",
 ) -> Recommendation | None:
     graph = build_agent_graph(session, vector_store, mesh_generator)
-    result = graph.invoke({"user_id": user_id, "trigger_reason": trigger_reason})
+    # LangGraph's internal step-counting consumes recursion budget faster than the
+    # visible node count suggests (each named node compiles to several internal
+    # supersteps) — the default limit of 25 was tight enough that adding the 6th node
+    # (rerank_candidates) into the bounded retry loop (MAX_RETRIES=2, so up to 3 full
+    # retrieve->rerank->grade_refine cycles) blew past it even with tracing off.
+    # Sized with real headroom rather than the exact minimum so a future node addition
+    # doesn't reintroduce this.
+    result = graph.invoke(
+        {"user_id": user_id, "trigger_reason": trigger_reason},
+        {"recursion_limit": 60},
+    )
     return result.get("recommendation")
