@@ -25,6 +25,71 @@
   const EVENT_FLUSH_MS = 4000;
   let eventFlushTimer = null;
 
+  // Judge demo mode: an admin-controlled, server-side global switch (GET/PUT
+  // /api/settings/demo-mode) that shows a live "what just got tracked" overlay in the model
+  // drawer/detail page. Off by default and meant only for live pipeline demos — see the
+  // conversation this was added from for why it's not a permanent end-user feature.
+  let demoModeEnabled = false;
+  const demoEventLog = []; // {ref, label, status:'queued'|'sent'} — ref lets flushEvents() find and update the matching entry
+  const DEMO_LOG_MAX = 6;
+
+  async function loadDemoMode(){
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/demo-mode`);
+      if (!response.ok) return;
+      const data = await response.json();
+      demoModeEnabled = !!data.enabled;
+      const toggle = document.getElementById('demo-mode-toggle');
+      if (toggle) toggle.classList.toggle('active', demoModeEnabled);
+      refreshTrackingPanels();
+    } catch (error) {
+      // Overlay just stays off if settings can't be reached.
+    }
+  }
+
+  async function toggleDemoMode(){
+    const next = !demoModeEnabled;
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/settings/demo-mode`, {
+        method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:next})
+      });
+      if (!response.ok) return;
+      demoModeEnabled = next;
+      const toggle = document.getElementById('demo-mode-toggle');
+      if (toggle) toggle.classList.toggle('active', demoModeEnabled);
+      refreshTrackingPanels();
+    } catch (error) {
+      // Leave state unchanged if the request failed.
+    }
+  }
+
+  function refreshTrackingPanels(){
+    renderTrackingPanel('drawer-');
+    renderTrackingPanel('detail-');
+  }
+
+  function renderTrackingPanel(prefix){
+    const wrap = document.getElementById(`${prefix}tracking`);
+    if (!wrap) return;
+    if (!demoModeEnabled) {
+      wrap.style.display = 'none';
+      wrap.innerHTML = '';
+      return;
+    }
+    wrap.style.display = '';
+    const rows = demoEventLog.slice(-5).reverse().map(entry => `
+      <div class="tracking-row">
+        <span class="dot" style="background:${entry.status === 'sent' ? 'var(--cyan)' : 'var(--amber)'};"></span>
+        <span class="tracking-label">${escapeHtml(entry.label)}</span>
+        <span class="tracking-status">${entry.status}</span>
+      </div>`).join('');
+    const dwellRow = dwellModelId && String(dwellModelId) === String(selectedModelId)
+      ? '<div class="tracking-row muted"><span class="dot hollow"></span><span class="tracking-label">dwell timer running…</span></div>'
+      : '';
+    wrap.innerHTML = `<p class="eyebrow" style="margin:0 0 8px;">Tracked just now</p>`
+      + (rows || dwellRow ? rows + dwellRow : '<p class="note">No events tracked yet for this view.</p>');
+  }
+
   function togglePasswordVisibility(button){
     const input = button.closest('.password-field').querySelector('input');
     const showing = input.type === 'text';
@@ -120,8 +185,8 @@
       v1:isVoice && model.latency_ms ? `~${model.latency_ms}ms` : (model.context_window || 'n/a'),
       s2:'Price', v2:model.price, sync:model.vector_synced ? 'synced' : 'indexing', api:true,
       latency:model.latency_ms || '', context:model.context_window || '',
-      tags:(model.use_case_tags || []).join(', '), description:model.description || '', source:model.source_url || '',
-      whyThis:model.why_this || ''
+      tags:(model.use_case_tags || []).join(', '), description:model.description || '', story:model.story || '',
+      source:model.source_url || '', whyThis:model.why_this || ''
     };
   }
 
@@ -297,6 +362,7 @@
     selectedModelId = String(modelId);
     renderDetail(selectedModelId, 'drawer-');
     startDwell(selectedModelId);
+    refreshTrackingPanels();
     backdrop.classList.add('show');
     document.addEventListener('keydown', drawerEscHandler);
     // Switching models while already open replaces the current history entry rather than
@@ -669,6 +735,16 @@
     }, EVENT_FLUSH_MS);
   }
 
+  function markDemoLogSent(events){
+    if (!demoModeEnabled) return;
+    let changed = false;
+    events.forEach(sentEvent => {
+      const entry = demoEventLog.find(item => item.ref === sentEvent);
+      if (entry && entry.status !== 'sent') { entry.status = 'sent'; changed = true; }
+    });
+    if (changed) refreshTrackingPanels();
+  }
+
   async function flushEvents(useBeacon=false){
     if (!eventQueue.length) return;
     const events = eventQueue.splice(0, EVENT_BATCH_SIZE);
@@ -679,6 +755,7 @@
         new Blob([body], {type:'application/json'})
       );
       if (!accepted) eventQueue.unshift(...events);
+      else markDemoLogSent(events);
       if (eventQueue.length) scheduleEventFlush();
       return;
     }
@@ -689,6 +766,7 @@
         keepalive:true
       });
       if (!response.ok) eventQueue.unshift(...events);
+      else markDemoLogSent(events);
     } catch (error) {
       eventQueue.unshift(...events);
     }
@@ -705,6 +783,12 @@
       if (Number.isInteger(numericModelId)) event.model_id = numericModelId;
     }
     eventQueue.push(event);
+    if (demoModeEnabled) {
+      const model = modelId != null ? MODELS.find(m => String(m.id) === String(modelId)) : null;
+      demoEventLog.push({ref:event, label: model ? `${eventType} · ${model.name}` : eventType, status:'queued'});
+      if (demoEventLog.length > DEMO_LOG_MAX) demoEventLog.shift();
+      refreshTrackingPanels();
+    }
     if (eventQueue.length >= EVENT_BATCH_SIZE){
       flushEvents();
     } else {
@@ -806,8 +890,15 @@
     }
     const rows = [
       ['Provider', m => m.provider],
-      [chosen[0].s1, m => m.v1],
+      ['Modality', m => m.mod],
+      // Always pulled from the model's own latency/context fields rather than the previous
+      // s1/v1 pair — that borrowed its row *label* from chosen[0] but its row *value* from
+      // every column, so comparing e.g. a Voice model against an LLM mislabeled the LLM's
+      // context-window value as "Latency".
+      ['Latency', m => m.latency ? `~${m.latency}ms` : '—'],
+      ['Context window', m => m.context || '—'],
       ['Price', m => m.v2],
+      ['Use cases', m => m.tags || '—'],
       ['Description', m => m.description || '—']
     ];
     const head = `<tr><th>Spec</th>${chosen.map(m => `<th>${escapeHtml(m.name)}</th>`).join('')}</tr>`;
@@ -899,6 +990,7 @@
       context_window:document.getElementById('model-context').value.trim() || null,
       use_case_tags:document.getElementById('model-tags').value.split(',').map(tag => tag.trim()).filter(Boolean),
       description:document.getElementById('model-description').value.trim() || `${name} from ${provider}.`,
+      story:document.getElementById('model-story').value.trim() || null,
       source_url:document.getElementById('model-source').value.trim() || null
     };
     if (adminSession && (editId || !model)) {
@@ -998,6 +1090,7 @@
     await loadModels(); // ensures MODELS is populated before any page that reads it below —
                          // needed now that a direct load of e.g. /models/42 can't rely on the
                          // catalog page having already warmed MODELS earlier in the session
+    loadDemoMode();
     const state = navStateFor(page);
     document.getElementById('app-nav').dataset.state = state;
     document.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.dataset.page === page));
@@ -1007,6 +1100,7 @@
       selectedModelId = modelId;
       renderDetail(modelId);
       startDwell(modelId);
+      refreshTrackingPanels();
     }
     if (page === 'compare') restoreCompareFromUrl();
     if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }

@@ -52,9 +52,10 @@ class ModelVectorStore:
     @staticmethod
     def document(model) -> str:
         tags = ", ".join(model.use_case_tags or [])
+        story = f" {model.story}." if getattr(model, "story", None) else ""
         return (
             f"{model.title}. {model.provider}. {model.modality}. "
-            f"{model.description}. {tags}"
+            f"{model.description}.{story} {tags}"
         )
 
     def upsert(self, model) -> None:

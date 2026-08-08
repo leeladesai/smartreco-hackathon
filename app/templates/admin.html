@@ -7,7 +7,12 @@
       <h1 class="page-title">Model catalog</h1>
       <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
     </div>
-    <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="chip" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Shows a live event-tracking overlay in the model drawer for every AI-engineer session — turn on only while demoing, not for normal use.">
+        <span class="dot" id="demo-mode-dot" style="background:var(--muted-2);"></span>Judge demo mode
+      </div>
+      <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
+    </div>
   </div>
   <table class="admin-table">
     <thead><tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr></thead>

@@ -32,7 +32,9 @@ class MeshNarrativeGenerator:
         if not self.enabled:
             raise RuntimeError("Mesh narrative generation is not configured")
         candidate_text = "\n".join(
-            f"- {candidate['id']}: {candidate['title']} ({candidate['provider']})"
+            f"- {candidate['id']}: {candidate['title']} ({candidate['provider']}). "
+            f"{candidate.get('description', '')} "
+            + (f"Why it stands out: {candidate['story']}" if candidate.get("story") else "")
             for candidate in candidates
         )
         response = self.client.chat.completions.create(

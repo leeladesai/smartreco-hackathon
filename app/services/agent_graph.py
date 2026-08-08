@@ -208,6 +208,8 @@ def _generate_narrative(session: Session, mesh_generator):
                     "modality": models_by_id[model_id].modality,
                     "price": models_by_id[model_id].price,
                     "latency_ms": models_by_id[model_id].latency_ms,
+                    "description": models_by_id[model_id].description,
+                    "story": models_by_id[model_id].story,
                 }
                 for model_id in ordered_ids
             ]

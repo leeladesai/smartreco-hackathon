@@ -2,7 +2,7 @@
 ## Krish Naik Hackathon 2026 Submission
 
 An agentic AI system that observes AI-engineer behavior (searches, model views, comparisons),
-retrieves relevant models from a catalog via RAG + semantic search, and generates grounded,
+retrieves relevant models from a catalog via RAG + vector search, and generates grounded,
 persuasive, comparison-driven recommendations that refresh as behavior evolves — with a
 cron-scheduled digest and full pipeline tracing on top.
 
@@ -186,6 +186,14 @@ forces two retries and asserts the Mesh call still only fires once.
   see the honest logging fallback.
 - **No re-ranking step** — retrieval polish (Iteration 3) stopped at metadata pre-filtering; the
   catalog is small enough in this MVP that a re-ranking pass wasn't worth the added complexity.
+- **Retrieval embeddings are a deterministic hashed bag-of-words function (`app/vector.py`), not a
+  real embedding model** — a documented cost/scope tradeoff, not an oversight. It's stable
+  (identical text always maps to the same vector) and dependency-light, so grounding and
+  same-modality filtering work reliably, but it only captures exact/near-exact term overlap — a
+  paraphrased query like "fast realtime speech" won't score as well against catalog copy that
+  says "low-latency voice" as literal keyword overlap would. Swapping in a real embedding model
+  (Mesh likely exposes one) would fix this; not done here because the current catalog size and
+  demo scenarios don't yet expose the gap in practice.
 - **No production deployment or demo video** — both were optional per the roadmap and weren't
   prioritized over completing functional/bonus scope.
 - **`recommendation_triggered` in the `/api/events/batch` response** reflects the cheap AGT-1
@@ -196,5 +204,7 @@ forces two retries and asserts the Mesh call still only fires once.
 ---
 
 **Status:** ✅ Planning phase complete. MVP-0 through Iteration 3 implemented and verified live
-against the real Mesh API. Remaining before final submission: CI green-check in the Actions tab,
-and optionally a deployed URL + demo video.
+against the real Mesh API. CI's critical checks all pass (compiles, requirements, Mesh usage, Mesh
+key valid) — the job only fails at the organizer's result-recording step until the hackathon
+dashboard submission form is filled in. Remaining: submit that form, and optionally a deployed URL
++ demo video.

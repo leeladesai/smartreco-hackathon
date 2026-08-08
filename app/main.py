@@ -24,9 +24,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, User
+from app.models import DemoModeSetting, Event, Model, Recommendation, User
 from app.schemas import (
     AuthCredentials,
+    DemoModeResponse,
+    DemoModeUpdate,
     EventBatch,
     ModelCreate,
     ModelResponse,
@@ -66,6 +68,16 @@ TEMPLATES.env.loader = ChoiceLoader(
 
 def model_response(model: Model) -> ModelResponse:
     return ModelResponse.model_validate(model)
+
+
+def get_or_create_demo_setting(session) -> DemoModeSetting:
+    setting = session.get(DemoModeSetting, 1)
+    if not setting:
+        setting = DemoModeSetting(id=1, enabled=False)
+        session.add(setting)
+        session.commit()
+        session.refresh(setting)
+    return setting
 
 
 def as_utc(value):
@@ -314,6 +326,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not model:
                 raise HTTPException(status_code=404, detail="Model not found")
             return model_response(model)
+
+    @app.get("/api/settings/demo-mode", response_model=DemoModeResponse)
+    async def get_demo_mode() -> DemoModeResponse:
+        # Public/unauthenticated on purpose — every AI-engineer session (including a judge's,
+        # who never logs in as admin) needs to know whether to render the live tracking
+        # overlay, not just the curator who flips the switch.
+        with session_factory() as session:
+            return DemoModeResponse.model_validate(get_or_create_demo_setting(session))
+
+    @app.put("/api/admin/settings/demo-mode", response_model=DemoModeResponse)
+    async def update_demo_mode(
+        payload: DemoModeUpdate, _: User = Depends(current_admin)
+    ) -> DemoModeResponse:
+        with session_factory() as session:
+            setting = get_or_create_demo_setting(session)
+            setting.enabled = payload.enabled
+            session.commit()
+            session.refresh(setting)
+            return DemoModeResponse.model_validate(setting)
 
     def content_similarity_reason(distance: float, source_title: str) -> str:
         """Same distance thresholds as retrieval_reason (AGT-4), but worded for content-based
