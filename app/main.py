@@ -59,6 +59,11 @@ from app.services.recommendation import (
     should_trigger,
 )
 from app.services.mesh import MeshNarrativeGenerator
+from app.services.observability import (
+    ObservabilityUnavailable,
+    fetch_recent_runs,
+    fetch_run_detail,
+)
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore
 
@@ -193,14 +198,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             role = None
         return render_page(request, page, template, session_role=role)
 
-    def render_admin_page(request: Request):
+    def render_admin_page(
+        request: Request, page: str = "admin", template: str = "admin.html"
+    ):
         try:
             current_admin(request)
         except HTTPException:
             return RedirectResponse(
                 "/admin/login", status_code=status.HTTP_303_SEE_OTHER
             )
-        return render_page(request, "admin", "admin.html", session_role="admin")
+        return render_page(request, page, template, session_role="admin")
 
     @app.get("/", include_in_schema=False)
     async def landing_page(request: Request):
@@ -243,6 +250,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/admin", include_in_schema=False)
     async def admin_page(request: Request):
         return render_admin_page(request)
+
+    @app.get("/admin/observability", include_in_schema=False)
+    async def admin_observability_page(request: Request):
+        return render_admin_page(request, "observability", "observability.html")
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -446,6 +457,81 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registered above via APScheduler (DLV-3)."""
         return run_digest(session_factory, vector_store, mesh_generator, notifier)
 
+    @app.get("/api/admin/observability/runs")
+    async def observability_runs(
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """OBS-2: surfaces recent agent-pipeline traces inside the admin portal
+        itself, so a curator never needs their own LangSmith login to see whether
+        recent runs succeeded and how long they took. Read-only proxy over the
+        LangSmith API — this app never writes trace data, `@traceable` (OBS-1)
+        already does that."""
+        try:
+            runs = fetch_recent_runs(app_settings)
+        except ObservabilityUnavailable as exc:
+            return {"available": False, "message": str(exc), "runs": []}
+        return {
+            "available": True,
+            "message": None,
+            "runs": [
+                {
+                    "id": run.id,
+                    "name": run.name,
+                    "run_type": run.run_type,
+                    "status": run.status,
+                    "start_time": run.start_time.isoformat()
+                    if run.start_time
+                    else None,
+                    "latency_ms": run.latency_ms,
+                    "error": run.error,
+                    "url": run.url,
+                }
+                for run in runs
+            ],
+        }
+
+    @app.get("/api/admin/observability/runs/{run_id}")
+    async def observability_run_detail(
+        run_id: str,
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """The step-by-step breakdown of a single run — brings the trace itself into
+        the admin portal instead of only linking out to LangSmith (OBS-2 follow-up)."""
+        try:
+            detail = fetch_run_detail(app_settings, run_id)
+        except ObservabilityUnavailable as exc:
+            return {"available": False, "message": str(exc), "run": None}
+        return {
+            "available": True,
+            "message": None,
+            "run": {
+                "id": detail.id,
+                "name": detail.name,
+                "status": detail.status,
+                "start_time": detail.start_time.isoformat()
+                if detail.start_time
+                else None,
+                "latency_ms": detail.latency_ms,
+                "url": detail.url,
+                "steps": [
+                    {
+                        "name": step.name,
+                        "run_type": step.run_type,
+                        "status": step.status,
+                        "start_time": step.start_time.isoformat()
+                        if step.start_time
+                        else None,
+                        "latency_ms": step.latency_ms,
+                        "error": step.error,
+                        "depth": step.depth,
+                        "inputs": step.inputs,
+                        "outputs": step.outputs,
+                    }
+                    for step in detail.steps
+                ],
+            },
+        }
+
     async def _get_user_lock(user_id: int) -> asyncio.Lock:
         async with app.state.pipeline_locks_guard:
             lock = app.state.pipeline_locks.get(user_id)
@@ -464,12 +550,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Guarded by a per-user asyncio.Lock: two near-simultaneous qualifying batches can
         each spawn this background task, each opening its own DB session; without the
         lock both could read "no recent recommendation yet" before either commits, and
-        both would proceed to write a duplicate Recommendation row."""
+        both would proceed to write a duplicate Recommendation row.
+
+        `prepare_retrieval_recommendation` is fully synchronous (SQLAlchemy, the Mesh
+        HTTP call, and — once actually configured — LangSmith's own HTTP calls). Calling
+        it directly here would block FastAPI's single-threaded event loop for however
+        long all of that takes, freezing *every* other concurrent request (unrelated
+        users' page loads included), not just this one — the opposite of "background".
+        `asyncio.to_thread` runs it on a worker thread so the event loop stays free."""
         lock = await _get_user_lock(user_id)
         async with lock:
             with session_factory() as session:
-                prepare_retrieval_recommendation(
-                    session, vector_store, user_id, app.state.mesh_generator
+                await asyncio.to_thread(
+                    prepare_retrieval_recommendation,
+                    session,
+                    vector_store,
+                    user_id,
+                    app.state.mesh_generator,
                 )
 
     @app.post("/api/events/batch")
@@ -491,6 +588,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.add_all(events)
             session.commit()
             triggered = should_trigger(session, user.id)
+            if triggered:
+                # `should_trigger`'s hash/cooldown check only has something to compare
+                # against once a Recommendation row actually exists — a burst of
+                # batches during the *first* trigger of a session (before that first
+                # background run has finished) would otherwise still each schedule
+                # their own redundant pipeline run and LangSmith trace. Skipping when
+                # one is already in flight for this user closes that gap: whatever
+                # this batch added will be picked up by the next fresh should_trigger
+                # check once the in-flight run finishes.
+                lock = app.state.pipeline_locks.get(user.id)
+                if lock is not None and lock.locked():
+                    triggered = False
         if triggered:
             background_tasks.add_task(run_pipeline_in_background, user.id)
         return {
@@ -629,6 +738,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
 
     return app
-
-
-app = create_app()

@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -6,12 +7,28 @@ from langsmith import traceable
 from openai import OpenAI
 
 from app.config import Settings
+from app.services.narrative import encode_narrative
+from app.services.prompts import NARRATIVE_SYSTEM_PROMPT, build_narrative_user_message
 
 
 @dataclass(frozen=True)
 class NarrativeResult:
     narrative: str
     model_ids: list[int]
+
+
+# Deterministic safety net, not just a prompt request: catalog primary keys are an
+# internal implementation detail (see the "ignore the ID" feedback this was added
+# from), so any "(ID 4)"/"id: 4"/"#4"-style leak is stripped regardless of whether the
+# model actually followed the system prompt's instruction not to mention them.
+_ID_MENTION_RE = re.compile(
+    r"[\(\[]?\s*\b(?:candidate[_ ]?)?id\s*[:#]?\s*\d+\s*[\)\]]?", re.IGNORECASE
+)
+
+
+def _strip_id_mentions(text: str) -> str:
+    cleaned = _ID_MENTION_RE.sub("", text)
+    return re.sub(r"\s{2,}", " ", cleaned).strip(" -")
 
 
 class MeshNarrativeGenerator:
@@ -33,9 +50,9 @@ class MeshNarrativeGenerator:
             raise RuntimeError("Mesh narrative generation is not configured")
 
         def _facts(candidate: dict) -> str:
-            # Only include facts that are actually set — most fields are modality-specific
-            # (Voice has latency, LLM has context_window, neither always has both), and an
-            # absent field must not silently read as "0" or "None" in the prompt.
+            # Only include facts that are actually set — most fields are modality-
+            # specific (Voice has latency, LLM has context_window, neither always has
+            # both), and an absent field must not silently read as "0"/"None" here.
             facts = [f"price {candidate['price']}"] if candidate.get("price") else []
             if candidate.get("latency_ms"):
                 facts.append(f"latency ~{candidate['latency_ms']}ms")
@@ -45,8 +62,13 @@ class MeshNarrativeGenerator:
                 facts.append(f"use cases: {', '.join(candidate['use_case_tags'])}")
             return f" [{'; '.join(facts)}]" if facts else ""
 
+        # candidate_id is kept out of the human-readable description entirely — it's
+        # only needed so the model can echo back which candidates it picked in
+        # `model_ids`, never as part of the name/description the narrative is built
+        # from.
         candidate_text = "\n".join(
-            f"- {candidate['id']}: {candidate['title']} ({candidate['provider']})."
+            f"- {candidate['title']} ({candidate['provider']}, "
+            f"candidate_id={candidate['id']})."
             f"{_facts(candidate)} {candidate.get('description', '')} "
             + (
                 f"Why it stands out: {candidate['story']}"
@@ -58,28 +80,11 @@ class MeshNarrativeGenerator:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "First, in one sentence, name the AI engineer's likely use case or "
-                        "goal based on their activity summary (e.g. 'building a real-time "
-                        "voice agent') — infer this only from the given activity summary and "
-                        "candidate data, never invent specifics not present in either. Then "
-                        "recommend only models from the supplied candidate list, referencing "
-                        "specific models the user already looked at by name and concrete "
-                        "numeric tradeoffs (latency, price, context window) from the candidate "
-                        "data where relevant. Do not invent model IDs, providers, or facts not "
-                        "present in the candidate list. Return valid JSON with exactly two "
-                        'keys: "narrative" (string, 2-3 sentences) and "model_ids" (array of '
-                        "integer candidate IDs)."
-                    ),
-                },
+                {"role": "system", "content": NARRATIVE_SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": (
-                        f"Activity summary: {behavior_summary}\n"
-                        f"Candidates:\n{candidate_text}\n"
-                        "Write the intent-framed, comparison-driven recommendation as JSON."
+                    "content": build_narrative_user_message(
+                        behavior_summary, candidate_text
                     ),
                 },
             ],
@@ -88,13 +93,22 @@ class MeshNarrativeGenerator:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError:
-            payload = {"narrative": content, "model_ids": []}
+            payload = {"activity_understanding": content, "recommendation_points": []}
         model_ids = []
         for model_id in payload.get("model_ids", []):
             try:
                 model_ids.append(int(model_id))
             except (TypeError, ValueError):
                 continue
-        return NarrativeResult(
-            narrative=str(payload.get("narrative", "")), model_ids=model_ids
+
+        understanding = _strip_id_mentions(
+            str(payload.get("activity_understanding", ""))
         )
+        raw_points = payload.get("recommendation_points", [])
+        if not isinstance(raw_points, list):
+            raw_points = [raw_points]
+        points = [
+            _strip_id_mentions(str(point)) for point in raw_points if str(point).strip()
+        ]
+        narrative = encode_narrative(understanding, points)
+        return NarrativeResult(narrative=narrative, model_ids=model_ids)

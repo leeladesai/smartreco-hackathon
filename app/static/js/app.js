@@ -83,11 +83,18 @@
         <span class="tracking-label">${escapeHtml(entry.label)}</span>
         <span class="tracking-status">${entry.status}</span>
       </div>`).join('');
-    const dwellRow = dwellModelId && String(dwellModelId) === String(selectedModelId)
-      ? '<div class="tracking-row muted"><span class="dot hollow"></span><span class="tracking-label">dwell timer running…</span></div>'
+    // model_view only fires on exit (dwell_seconds needs a real end time) — but a curator
+    // watching this overlay live sees the *current* model missing from "Tracked just now"
+    // otherwise, which reads as broken tracking rather than a timer in progress. Surface it
+    // as its own row, styled/worded like a real tracked entry, not a vague status line.
+    const currentModel = dwellModelId ? MODELS.find(m => String(m.id) === String(dwellModelId)) : null;
+    const dwellRow = currentModel && String(dwellModelId) === String(selectedModelId)
+      ? `<div class="tracking-row muted"><span class="dot hollow"></span><span class="tracking-label">model_view · ${escapeHtml(currentModel.name)}</span><span class="tracking-status">watching</span></div>`
       : '';
+    // Newest-first throughout: the in-progress "watching" row is the most recent activity
+    // of all, so it belongs above the already-queued/sent history, not below it.
     wrap.innerHTML = `<p class="eyebrow" style="margin:0 0 8px;">Tracked just now</p>`
-      + (rows || dwellRow ? rows + dwellRow : '<p class="note">No events tracked yet for this view.</p>');
+      + (rows || dwellRow ? dwellRow + rows : '<p class="note">No events tracked yet for this view.</p>');
   }
 
   function togglePasswordVisibility(button){
@@ -257,6 +264,128 @@
     `).join('');
   }
 
+  async function loadObservability(){
+    if (!adminSession) return;
+    const unavailableBox = document.getElementById('observability-unavailable');
+    const tableWrap = document.getElementById('observability-table-wrap');
+    const tbody = document.getElementById('observability-run-table');
+    if (!tbody) return; // only present on the observability page
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/observability/runs`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.available) {
+        tableWrap.style.display = 'none';
+        unavailableBox.style.display = 'block';
+        unavailableBox.textContent = data.message || 'LangSmith observability is not available.';
+        return;
+      }
+      unavailableBox.style.display = 'none';
+      tableWrap.style.display = '';
+      if (!data.runs.length) {
+        tbody.innerHTML = '<tr><td colspan="5">No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.runs.map(run => {
+        const ok = run.status !== 'error' && !run.error;
+        const started = run.start_time ? new Date(run.start_time).toLocaleString() : '—';
+        const latency = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
+        return `
+          <tr class="clickable" onclick="openTraceDrawer('${run.id}')" title="View step-by-step trace">
+            <td class="${ok ? 'sync-ok' : 'sync-error'}">${ok ? '✓ ' + escapeHtml(run.status) : '✕ ' + escapeHtml(run.status)}</td>
+            <td>${escapeHtml(run.name)}</td>
+            <td>${escapeHtml(started)}</td>
+            <td>${latency}</td>
+            <td>${run.error ? escapeHtml(run.error) : '—'}</td>
+          </tr>
+        `;
+      }).join('');
+    } catch (error) {
+      tableWrap.style.display = 'none';
+      unavailableBox.style.display = 'block';
+      unavailableBox.textContent = 'Could not load observability data — check the server logs.';
+    }
+  }
+
+  // Brings a single run's step-by-step trace into the admin portal itself (rather than
+  // only linking out to LangSmith) — one call to GET .../runs/{id}, which already
+  // filters LangGraph's internal plumbing spans down to our own named pipeline steps
+  // (see app/services/observability.py:KNOWN_STEP_NAMES). Uses the same drawer/sidecar
+  // pattern as the model detail drawer (base.html) rather than a centered modal — more
+  // room for the JSON payloads without feeling like a popup interruption.
+  function openTraceDrawer(runId){
+    const backdrop = document.getElementById('trace-drawer-backdrop');
+    const body = document.getElementById('trace-drawer-body');
+    const link = document.getElementById('trace-drawer-link');
+    if (!backdrop) return;
+    document.getElementById('trace-drawer-sub').textContent = '';
+    link.style.display = 'none';
+    body.innerHTML = '<p class="note">Loading trace…</p>';
+    backdrop.classList.add('show');
+    document.addEventListener('keydown', traceDrawerEscHandler);
+    loadTraceDetail(runId);
+  }
+
+  function traceDrawerEscHandler(event){
+    if (event.key === 'Escape') closeTraceDrawer();
+  }
+
+  function closeTraceDrawer(){
+    const backdrop = document.getElementById('trace-drawer-backdrop');
+    if (backdrop) backdrop.classList.remove('show');
+    document.removeEventListener('keydown', traceDrawerEscHandler);
+  }
+
+  async function loadTraceDetail(runId){
+    const body = document.getElementById('trace-drawer-body');
+    const sub = document.getElementById('trace-drawer-sub');
+    const link = document.getElementById('trace-drawer-link');
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/observability/runs/${encodeURIComponent(runId)}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.available || !data.run) {
+        body.innerHTML = `<p class="note">${escapeHtml(data.message || 'Could not load this trace.')}</p>`;
+        return;
+      }
+      const run = data.run;
+      const started = run.start_time ? new Date(run.start_time).toLocaleString() : '—';
+      const latency = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
+      sub.textContent = `${run.name} · ${started} · ${latency}`;
+      if (run.url) {
+        link.href = run.url;
+        link.style.display = '';
+      }
+      body.innerHTML = run.steps.length
+        ? run.steps.map(renderTraceStep).join('')
+        : '<p class="note">No named pipeline steps recorded for this run.</p>';
+    } catch (error) {
+      body.innerHTML = '<p class="note">Could not load this trace — check the server logs.</p>';
+    }
+  }
+
+  function renderTraceStep(step){
+    const ok = step.status !== 'error' && !step.error;
+    const latency = step.latency_ms != null ? `${Math.round(step.latency_ms)}ms` : '—';
+    const indent = Math.min(step.depth, 3) * 18;
+    const io = (label, value) => (value && Object.keys(value).length)
+      ? `<details class="trace-io"><summary>${label}</summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`
+      : '';
+    return `
+      <div class="trace-step" style="margin-left:${indent}px;">
+        <div class="trace-step-head">
+          <span class="${ok ? 'sync-ok' : 'sync-error'}">${ok ? '✓' : '✕'}</span>
+          <span class="trace-step-name">${escapeHtml(step.name)}</span>
+          <span class="trace-step-type">${escapeHtml(step.run_type)}</span>
+          <span class="trace-step-latency">${latency}</span>
+        </div>
+        ${step.error ? `<div class="trace-step-error">${escapeHtml(step.error)}</div>` : ''}
+        ${io('Input', step.inputs)}
+        ${io('Output', step.outputs)}
+      </div>
+    `;
+  }
+
   function renderDetail(modelId, prefix='detail-'){
     const model = MODELS.find(item => String(item.id) === String(modelId));
     if (!model) return;
@@ -282,8 +411,11 @@
       .map(tag => `<span class="use-tag">${escapeHtml(tag)}</span>`).join('');
     document.getElementById(`${prefix}related`).innerHTML = '<p class="note">Finding similar models…</p>';
     loadRelatedModels(model.id, prefix);
+    // Accurate regardless of dwell state: the view event only actually ships once you leave
+    // this model (dwell_seconds needs a real end time — see finalizeDwell), so claiming it's
+    // already "recorded" the instant the drawer opens was misleading.
     document.getElementById(`${prefix}note`).textContent = userSession
-      ? 'This model view has been recorded in your activity.'
+      ? 'This view is being tracked and will be recorded once you move on.'
       : 'Sign in to record model views and shape your recommendation.';
     updateCompareButton(`${prefix}compare-btn`, model.id);
   }
@@ -440,6 +572,36 @@
     return new Date(isoString).toLocaleDateString([], {day:'numeric', month:'short'});
   }
 
+  // Mesh's narrative is stored as a JSON-encoded {understanding, points} pair (see
+  // app/services/narrative.py) so the two are rendered as separate labeled sections rather
+  // than one running paragraph. Anything that isn't that shape — old plain-text narratives,
+  // placeholder copy, a bare fallback string — falls back to the previous rendering.
+  function renderNarrative(text){
+    const el = document.getElementById('dashboard-narrative');
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (error) { parsed = null; }
+    if (parsed && typeof parsed === 'object' && (parsed.understanding || (parsed.points || []).length)) {
+      const points = (parsed.points || []).filter(Boolean);
+      el.innerHTML = [
+        parsed.understanding ? `<div class="narrative-section">
+          <p class="narrative-label">Understanding your activity</p>
+          <p class="narrative-para">${escapeHtml(parsed.understanding)}</p>
+        </div>` : '',
+        points.length ? `<div class="narrative-section">
+          <p class="narrative-label">Why these recommendations</p>
+          <ul class="narrative-list">${points.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
+        </div>` : ''
+      ].join('');
+      return;
+    }
+    const lines = String(text || '').split('\n').map(line => line.replace(/^[-•\s]+/, '').trim()).filter(Boolean);
+    if (lines.length > 1) {
+      el.innerHTML = `<ul class="narrative-list">${lines.map(line => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`;
+    } else {
+      el.textContent = lines[0] || text || '';
+    }
+  }
+
   function renderDashboardEvidence(evidence){
     const row = document.getElementById('dashboard-evidence');
     const count = document.getElementById('evidence-count');
@@ -465,7 +627,7 @@
       renderDashboardEvidence(recommendation.evidence || []);
       if (recommendation.status === 'pending' || !recommendation.models?.length) {
         document.getElementById('dashboard-tags').innerHTML = '<span class="badge reason">status: learning</span><span class="badge conf">recommendation pending</span>';
-        document.getElementById('dashboard-narrative').textContent = 'Your activity is being collected. Once enough signal is available, your grounded recommendation will appear here.';
+        renderNarrative('Your activity is being collected. Once enough signal is available, your grounded recommendation will appear here.');
         document.getElementById('recommendation-grid').innerHTML = '<p class="note">Browse and compare models to give the recommendation engine something real to work with.</p>';
       } else {
         const candidates = recommendation.models.map(fromApiModel);
@@ -473,7 +635,7 @@
         document.getElementById('dashboard-tags').innerHTML = hasNarrative
           ? '<span class="badge reason">status: generated</span><span class="badge conf">grounded candidates</span>'
           : '<span class="badge reason">status: retrieval ready</span><span class="badge conf">grounded candidates</span>';
-        document.getElementById('dashboard-narrative').textContent = recommendation.narrative || 'These candidates were retrieved from the catalog using your recent activity. A generated explanation will appear when Mesh is configured.';
+        renderNarrative(recommendation.narrative || 'These candidates were retrieved from the catalog using your recent activity. A generated explanation will appear when Mesh is configured.');
         document.getElementById('recommendation-grid').innerHTML = candidates.map((model, index) => `
           <div class="card" onclick="openModel('${model.id}')">
             <div class="stripe" style="background:${modelColor(model)}"></div>
@@ -556,14 +718,12 @@
     }
     const created = new Date(pipeline.created_at);
     const timestamp = `${created.toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'})}, ${created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
-    const shortHash = pipeline.activity_hash ? pipeline.activity_hash.slice(0, 10) : 'n/a';
     const triggerLabel = PIPELINE_TRIGGER_LABELS[pipeline.trigger_reason] || pipeline.trigger_reason || 'n/a';
     flow.innerHTML = `
       <p class="pipeline-summary">${escapeHtml(pipeline.behavior_summary)}</p>
       <div class="pipeline-meta">
         <span class="pipeline-meta-item"><span class="k">Why now</span><b>${escapeHtml(triggerLabel)}</b></span>
         <span class="pipeline-meta-item"><span class="k">Generated</span><b>${escapeHtml(timestamp)}</b></span>
-        <span class="pipeline-meta-item dim" title="Fingerprint of the activity snapshot above — changes only when your behavior does"><span class="k">Snapshot</span><b>${escapeHtml(shortHash)}…</b></span>
       </div>
     `;
     if (note) note.textContent = 'This is the exact behavior snapshot the agent read for your current recommendation — check the Dashboard to see what it produced.';
@@ -1076,7 +1236,7 @@
   const TRAY_PAGES = ['catalog', 'detail', 'compare'];
 
   function navStateFor(page){
-    if (page === 'admin') return 'admin';
+    if (page === 'admin' || page === 'observability') return 'admin';
     if (BUILDER_PAGES.includes(page)) return 'engineer';
     return 'none'; // auth, admin-auth — logged-out screens get no app chrome
   }
@@ -1090,6 +1250,7 @@
     if (page === 'dashboard') return '/dashboard';
     if (page === 'activity') return '/activity';
     if (page === 'admin') return '/admin';
+    if (page === 'observability') return '/admin/observability';
     return '/catalog';
   }
 
@@ -1124,6 +1285,7 @@
     if (page === 'compare') restoreCompareFromUrl();
     if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
     if (page === 'activity') loadActivity();
+    if (page === 'observability') loadObservability();
     window.scrollTo({top:0, behavior:'instant'});
   }
 

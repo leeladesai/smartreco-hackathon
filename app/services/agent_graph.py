@@ -7,7 +7,6 @@ that decides whether to run the graph at all (AGT-1), so a per-event LLM call ne
 """
 
 import logging
-from datetime import datetime
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -18,12 +17,11 @@ from sqlalchemy.orm import Session
 from app.models import Model, Recommendation
 from app.services.mesh import NarrativeResult
 from app.services.recommendation import (
-    SESSION_COOLDOWN,
-    SESSION_GAP,
     _summarize_bucket,
     activity_hash,
     activity_summary,
     dominant_modality,
+    is_recommendation_stale,
     recent_events,
     session_bucket_events,
     session_evidence,
@@ -94,16 +92,32 @@ def _latency_beats(candidate: Model, evidence: list[dict], action: str) -> str |
     return f"beats {' + '.join(names)} on latency"
 
 
+def _story_snippet(story: str | None, max_len: int = 60) -> str | None:
+    """The curator's own "why this model" copy (`Model.story`) is a genuine, authored
+    reason — a better fallback than a vague distance label when nothing in the user's
+    own activity grounds this pick (see the "related to your recent activity" feedback
+    this was added from). Truncated to a word boundary so every card's badge stays a
+    consistent width regardless of how long a given curator wrote their story."""
+    if not story or not story.strip():
+        return None
+    text = story.strip()
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len].rsplit(" ", 1)[0]
+    return f"{truncated}…" if truncated else None
+
+
 def contextual_reason(
     candidate: Model, distance: float, query_refined: bool, evidence: list[dict]
 ) -> str:
     """Grounds `why_this` in what the user actually did this session, computed
     deterministically from real fields (never asked of the LLM — see the "story" field
     grounding discussion this was added from). Tries, in order: a latency win against
-    models the user explicitly compared, then against models the user merely viewed, then
-    a search term matching this candidate's own use-case tags/description. Falls back to
-    the existing distance-only `retrieval_reason` when none of that evidence exists —
-    never invents a reason with no real backing."""
+    models the user explicitly compared, then against models the user merely viewed,
+    then a search term matching this candidate's own use-case tags/description, then
+    the curator's own authored "story" for this model. Falls back to the distance-only
+    `retrieval_reason` only when none of that exists — never invents a reason with no
+    real backing."""
     reason = _latency_beats(candidate, evidence, "compared")
     if reason:
         return reason
@@ -122,6 +136,10 @@ def contextual_reason(
         if any(term in tag or tag in term for tag in tags) or term in description:
             return f"matches your {item['label']} search"
 
+    story_reason = _story_snippet(candidate.story)
+    if story_reason:
+        return story_reason
+
     return retrieval_reason(distance, query_refined)
 
 
@@ -136,19 +154,11 @@ def _analyze_activity(session: Session):
             .where(Recommendation.user_id == state["user_id"])
             .order_by(Recommendation.created_at.desc())
         )
-        # AGT-6: unchanged behavior since the last recommendation skips a redundant run.
-        if latest and latest.activity_hash == event_hash:
-            return {**state, "short_circuit": True}
-        # Rate limit: only enforce the cooldown if we're still inside the same session as
-        # the last recommendation (newest event and last recommendation within SESSION_GAP
-        # of each other) — a brand new session is never blocked by a stale prior cooldown.
-        if (
-            latest
-            and latest.created_at
-            and events
-            and events[0].created_at - latest.created_at < SESSION_GAP
-            and datetime.utcnow() - latest.created_at < SESSION_COOLDOWN
-        ):
+        # AGT-6: unchanged behavior (hash match) or still inside the last run's cooldown
+        # window skips a redundant run — same check `should_trigger` (recommendation.py)
+        # already runs before even scheduling this background task, so the two stay
+        # consistent by construction rather than by keeping duplicated logic in sync.
+        if not is_recommendation_stale(events, latest):
             return {**state, "short_circuit": True}
 
         buckets = session_bucket_events(events)

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Event, Model
+from app.models import Event, Model, Recommendation
 
 
 SESSION_GAP = timedelta(minutes=30)
@@ -309,15 +309,53 @@ def recent_events(session: Session, user_id: int) -> list[Event]:
     ).all()
 
 
+def is_recommendation_stale(events: list[Event], latest: Recommendation | None) -> bool:
+    """True if a new pipeline run could actually produce something different from
+    `latest` — i.e. activity changed since it was generated and its cooldown window
+    has passed. Shared by `should_trigger` (the pre-check that decides whether to even
+    schedule a background run) and the graph's own `analyze` node (AGT-6's authoritative
+    short-circuit) so the two can never quietly disagree — see the "so many agent
+    pipelines running" observability report this was split out to fix: every batch in an
+    already-triggered session was re-passing the old count-only check and spawning a new
+    background task (and LangSmith trace) that almost always immediately no-opped here
+    anyway. Checking it once, up front, means that wasted spawn no longer happens.
+    """
+    if latest is None:
+        return True
+    if not events:
+        return False
+    if latest.activity_hash == activity_hash(events):
+        return False
+    if (
+        latest.created_at
+        and events[0].created_at - latest.created_at < SESSION_GAP
+        and datetime.utcnow() - latest.created_at < SESSION_COOLDOWN
+    ):
+        return False
+    return True
+
+
 def should_trigger(session: Session, user_id: int) -> bool:
     """Cheap, pure-SQL gate run synchronously at the end of `/api/events/batch` (AGT-1).
 
-    Deliberately outside the LangGraph pipeline — the graph only runs once this says yes,
-    so a per-event LLM call never happens. Cooldown/dedupe against unchanged behavior is
-    handled inside the graph's `analyze_activity` node (AGT-6), not here.
+    Deliberately outside the LangGraph pipeline — the graph only runs once this says
+    yes, so a per-event LLM call never happens (still true here: this only adds a
+    second cheap SQL lookup, never a Mesh/LangSmith call).
 
     Gated on *current-session* activity, not lifetime event count: 2 fresh clicks in a
-    new session trigger regardless of how much history sits behind the SESSION_GAP.
+    new session trigger regardless of how much history sits behind the SESSION_GAP. On
+    top of that, also skips triggering when AGT-6's cooldown/hash-dedupe would
+    immediately no-op anyway, so an active browsing session doesn't spawn a new
+    background pipeline run (and LangSmith trace) on every single batch flush once the
+    threshold has been crossed once.
     """
-    buckets = session_bucket_events(recent_events(session, user_id))
-    return bool(buckets) and len(buckets[0]) >= SESSION_TRIGGER_COUNT
+    events = recent_events(session, user_id)
+    buckets = session_bucket_events(events)
+    if not buckets or len(buckets[0]) < SESSION_TRIGGER_COUNT:
+        return False
+    latest = session.scalar(
+        select(Recommendation)
+        .where(Recommendation.user_id == user_id)
+        .order_by(Recommendation.created_at.desc())
+    )
+    return is_recommendation_stale(events, latest)

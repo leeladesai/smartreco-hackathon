@@ -1,4 +1,45 @@
+import asyncio
+
 from fastapi.testclient import TestClient
+
+from app.models import User
+
+
+def test_events_batch_skips_retrigger_while_pipeline_already_in_flight(
+    client: TestClient,
+) -> None:
+    """Regression test for the "so many agent_pipeline traces running" report: a burst
+    of qualifying batches that lands before the *first* triggering pipeline run has
+    finished (so should_trigger's hash/cooldown check has nothing to compare against
+    yet) must not each schedule their own redundant background run."""
+    client.post(
+        "/api/auth/register",
+        json={"email": "inflight@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "inflight@test.dev", "password": "password123"},
+    )
+    with client.app.state.session_factory() as session:
+        user = session.query(User).filter(User.email == "inflight@test.dev").one()
+        user_id = user.id
+
+    # Simulate a pipeline run already in flight for this user (the lock is held for the
+    # duration of a real run — see run_pipeline_in_background in app/main.py).
+    lock = asyncio.Lock()
+    asyncio.run(lock.acquire())
+    client.app.state.pipeline_locks[user_id] = lock
+
+    response = client.post(
+        "/api/events/batch",
+        json={
+            "events": [
+                {"event_type": "model_view", "model_id": 1},
+                {"event_type": "model_view", "model_id": 2},
+            ]
+        },
+    )
+    assert response.json()["recommendation_triggered"] is False
 
 
 def test_register_login_and_batch_events(client: TestClient) -> None:

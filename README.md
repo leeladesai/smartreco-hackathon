@@ -89,7 +89,7 @@ uv sync
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 cp .env.example .env           # fill in MESH_API_KEY=rsk_...
 uv run python seed_data.py
-uv run uvicorn app.main:app --reload --port 8001
+uv run uvicorn app.asgi:app --reload --port 8001
 ```
 
 Open http://localhost:8001
@@ -104,11 +104,17 @@ retrieval-ready mode (real Chroma retrieval, no fabricated narrative) instead of
 ### One-command development startup
 
 ```bash
-./scripts/start_dev.sh
+./scripts/start_dev.sh          # start (detached) and tail the log
+./scripts/start_dev.sh stop     # stop it
+./scripts/start_dev.sh restart
+./scripts/start_dev.sh status
+./scripts/start_dev.sh logs     # just tail, without starting/stopping anything
 ```
 
-Uses port `8001` by default. Override with `PORT=8002 ./scripts/start_dev.sh`. Ctrl-C stops the
-server and log tail.
+Uses port `8001` by default. Override with `PORT=8002 ./scripts/start_dev.sh`. The server runs
+detached — Ctrl-C only stops the log tail, not the server itself; use `stop` (or `restart`) for
+that. SmartReco is one FastAPI process serving both the API and the server-rendered frontend, so
+there's a single log stream, not separate frontend/backend logs.
 
 ### Running tests
 
@@ -132,7 +138,8 @@ smartreco-hackathon/
 │   │   ├── recommendation.py# trigger check, behavior summary, activity hash
 │   │   ├── mesh.py          # Mesh API client (the only LLM call boundary)
 │   │   ├── digest.py        # scheduled digest + notifier abstraction
-│   │   └── tracing.py       # LangSmith opt-in wiring
+│   │   ├── tracing.py       # LangSmith opt-in wiring
+│   │   └── observability.py # admin-portal LangSmith run viewer (OBS-2)
 │   ├── templates/          # Jinja2 per-screen templates extending base.html
 │   └── static/{css,js}/    # shared styling + frontend logic
 ├── tests/                # pytest suite (TDD)
@@ -212,6 +219,12 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
   pipeline demonstrations.
 - A real per-user `asyncio.Lock` fixing a genuine race condition that could produce duplicate
   `Recommendation` rows from two near-simultaneous qualifying event batches.
+- **Admin observability dashboard** (`OBS-2`) — an admin-only `/admin/observability` screen pulls
+  recent `agent_pipeline` LangSmith runs (status, latency, error, trace link) directly into the
+  admin portal via `GET /api/admin/observability/runs`, so a curator can see whether the last few
+  pipeline runs succeeded without a separate LangSmith login. Requires `OBS-1`'s
+  `LANGSMITH_API_KEY` to be set; shows a clear "not configured" state otherwise rather than
+  erroring.
 
 ---
 
@@ -233,10 +246,13 @@ Beyond the original FRD/roadmap scope, built and verified live in a follow-up ha
   demo scenarios don't yet expose the gap in practice.
 - **No production deployment or demo video** — both were optional per the roadmap and weren't
   prioritized over completing functional/bonus scope.
-- **`recommendation_triggered` in the `/api/events/batch` response** reflects the cheap AGT-1
-  event-count check firing, not that a new recommendation was actually stored — the AGT-6 dedupe
-  check now runs inside the background task (a consequence of the NFR-1 fix), so the response
-  can't know the outcome synchronously without reintroducing the latency problem it fixes.
+- **`recommendation_triggered` in the `/api/events/batch` response** reflects `should_trigger`
+  (`recommendation.py`): the session-activity-count threshold *and* the same cheap SQL AGT-6
+  cooldown/hash-dedupe check the graph's `analyze` node uses (`is_recommendation_stale`), so it
+  no longer fires on every batch in an already-triggered session. It still can't know whether
+  the *generation* step will actually succeed (a real Mesh call, which only runs in the
+  background per the NFR-1 fix) — that part of the outcome genuinely isn't knowable
+  synchronously without reintroducing the latency problem NFR-1 fixes.
 
 ---
 

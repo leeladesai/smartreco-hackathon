@@ -97,7 +97,7 @@ uv sync
 source .venv/bin/activate      # Windows: .venv\\Scripts\\activate
 cp .env.example .env           # fill in MESH_API_KEY=rsk_...
 uv run python seed_data.py
-uv run uvicorn app.main:app --reload --port 8001
+uv run uvicorn app.asgi:app --reload --port 8001
 ```
 
 Or use the one-command dev startup (defaults to port 8001, override with `PORT=8002`):

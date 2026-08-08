@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import Settings
 from app.models import Recommendation, User
 from app.services.agent_graph import prepare_retrieval_recommendation
+from app.services.narrative import narrative_as_plain_text
 from app.vector import ModelVectorStore
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,9 @@ class LoggingNotifier:
             "[digest:log-only] would notify user_id=%s (%s): %s",
             user.id,
             user.email,
-            recommendation.narrative or recommendation.behavior_summary,
+            narrative_as_plain_text(
+                recommendation.narrative, recommendation.behavior_summary
+            ),
         )
 
 
@@ -60,8 +63,10 @@ class EmailNotifier:
         message["From"] = self.from_email
         message["To"] = user.email
         message.set_content(
-            recommendation.narrative
-            or f"Based on your recent activity: {recommendation.behavior_summary}"
+            narrative_as_plain_text(
+                recommendation.narrative,
+                f"Based on your recent activity: {recommendation.behavior_summary}",
+            )
         )
         with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
             server.starttls()
@@ -76,10 +81,10 @@ class TelegramNotifier:
     chat_id: str
 
     def send(self, user: User, recommendation: Recommendation) -> None:
-        text = (
-            f"SmartReco digest for {user.email}:\n"
-            f"{recommendation.narrative or recommendation.behavior_summary}"
+        body = narrative_as_plain_text(
+            recommendation.narrative, recommendation.behavior_summary
         )
+        text = f"SmartReco digest for {user.email}:\n{body}"
         response = httpx.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={"chat_id": self.chat_id, "text": text},

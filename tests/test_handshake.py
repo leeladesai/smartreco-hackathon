@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.main import app
+from app.asgi import app
 from app.models import User
 from app.security import hash_password
 

@@ -74,6 +74,7 @@ they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..
 | POST | `/api/events/batch` | user | TRK-4, body: `{events: [...]}`, triggers evaluator inline |
 | GET | `/api/recommendations/me` | user | DLV-1, latest stored recommendation |
 | GET | `/api/activity/me` | user | DLV-4, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/admin/observability/runs` | admin | OBS-2, recent `agent_pipeline` LangSmith runs (status/latency/error/trace link), read-only proxy over the LangSmith API; returns `{"available": false, ...}` rather than an error when `LANGSMITH_API_KEY` is unset |
 
 `/api/auth/*` and `/api/admin/login` are separate router modules sharing the same `users` table and
 password-hashing logic, but not the same route or handler — the AI engineer module can never issue an
@@ -96,6 +97,7 @@ implementation checklist.
 | GET `/dashboard` | `dashboard.html` | AI engineer |
 | GET `/activity` | `activity.html` | AI engineer |
 | GET `/admin` | `admin.html` | curator |
+| GET `/admin/observability` | `observability.html` | curator |
 
 Auth-gating on these routes is server-side (redirect to `/login` or `/admin/login` on a missing or
 wrong-role session cookie) — not merely a client-side nav toggle.

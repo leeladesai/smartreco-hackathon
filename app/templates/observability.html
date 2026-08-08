@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-observability">
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">Curator console</p>
+      <h1 class="page-title">Pipeline observability</h1>
+      <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
+    </div>
+    <button class="btn" type="button" onclick="loadObservability()">Refresh</button>
+  </div>
+  <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
+  <table class="admin-table" id="observability-table-wrap">
+    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>Latency</th><th>Error</th></tr></thead>
+    <tbody id="observability-run-table"></tbody>
+  </table>
+  <p class="note" style="margin-top:10px;">Click a run to see its step-by-step trace.</p>
+</div>
+
+<!-- Trace sidecar — same drawer pattern as the model detail drawer in base.html, rather
+     than a centered modal, so a wide JSON payload has real room without feeling like a
+     popup interruption. -->
+<div class="drawer-backdrop" id="trace-drawer-backdrop" onclick="if(event.target===this) closeTraceDrawer()">
+  <div class="drawer wide" id="trace-drawer">
+    <div class="drawer-head">
+      <div>
+        <h2 id="trace-drawer-title">Trace detail</h2>
+        <p class="provider" id="trace-drawer-sub"></p>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; flex:none;">
+        <a class="btn" id="trace-drawer-link" href="#" target="_blank" rel="noopener" style="display:none; padding:9px 16px; text-decoration:none;">Open in LangSmith ↗</a>
+        <button class="modal-close" onclick="closeTraceDrawer()" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="drawer-body" id="trace-drawer-body"></div>
+  </div>
+</div>
+{% endblock %}

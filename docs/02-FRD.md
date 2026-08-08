@@ -70,12 +70,13 @@ and (for admin) no self-registration — not one login screen with a role picker
 | DLV-1 | Latest recommendation is shown on the user's dashboard | Narrative + model cards rendered |
 | DLV-2 | Recommendation view refreshes after new agent runs | Stale recommendation not shown once a new one is stored |
 | DLV-3 (bonus) | Scheduled digest delivered via email/Telegram | Real scheduler (APScheduler/Celery Beat), not a manual trigger |
-| DLV-4 | AI engineer can view their own tracked activity and how it produced their current recommendation | Read-only view over already-persisted data (`events`, `activity_hash`, `trigger_reason` from `recommendations`) — no new backend logic; shows the raw event log plus the `behavior_summary` → `activity_hash` → `trigger_reason` chain behind the delivered recommendation |
+| DLV-4 | AI engineer can view their own tracked activity and how it produced their current recommendation | Read-only view over already-persisted data (`events`, `trigger_reason` from `recommendations`) — no new backend logic; shows the raw event log plus the `behavior_summary` → `trigger_reason` chain behind the delivered recommendation. `activity_hash` remains a real column and stays the AGT-6 dedupe key, but is internal-only — it's a cache-key fingerprint with no reader-facing meaning, so it's deliberately not surfaced in this UI (dropped after review; see `docs/08-Build-Status.md`) |
 
 ### OBS
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
 | OBS-1 (bonus) | Agent graph execution is traced | LangSmith trace exists per pipeline run, inspectable |
+| OBS-2 (bonus) | Curator can inspect recent pipeline traces from the admin portal | Admin-only `/admin/observability` screen lists recent `agent_pipeline` runs (status, latency, error, trace link) pulled live from the LangSmith API — no separate LangSmith login required; shows a clear "not configured" state when `LANGSMITH_API_KEY` is unset rather than erroring |
 
 ---
 

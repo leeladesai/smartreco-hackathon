@@ -4,7 +4,11 @@ from app.config import Settings
 from app.db import build_session_factory
 from app.models import Event, Model, User
 from app.security import hash_password
-from app.services.agent_graph import contextual_reason, prepare_retrieval_recommendation
+from app.services.agent_graph import (
+    _story_snippet,
+    contextual_reason,
+    prepare_retrieval_recommendation,
+)
 
 
 class FakeVectorStore:
@@ -261,7 +265,15 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
         assert recommendation is None
 
 
-def _model(id, title, modality, latency_ms=None, use_case_tags=None, description="d"):
+def _model(
+    id,
+    title,
+    modality,
+    latency_ms=None,
+    use_case_tags=None,
+    description="d",
+    story=None,
+):
     return Model(
         id=id,
         title=title,
@@ -271,6 +283,7 @@ def _model(id, title, modality, latency_ms=None, use_case_tags=None, description
         latency_ms=latency_ms,
         description=description,
         use_case_tags=use_case_tags or [],
+        story=story,
     )
 
 
@@ -317,6 +330,50 @@ def test_contextual_reason_falls_back_to_distance_reason() -> None:
         contextual_reason(candidate, 0.5, True, [])
         == "Matched after broadening your activity signal"
     )
+
+
+def test_contextual_reason_prefers_story_over_distance_fallback() -> None:
+    candidate = _model(
+        1, "Plain Model", "LLM", story="Pick this when cost matters more than speed."
+    )
+    assert (
+        contextual_reason(candidate, 0.5, False, [])
+        == "Pick this when cost matters more than speed."
+    )
+
+
+def test_contextual_reason_prefers_search_match_over_story() -> None:
+    candidate = _model(
+        1,
+        "Multilingual TTS",
+        "Voice",
+        use_case_tags=["multilingual"],
+        story="Some curator story that should be ranked lower than a search match.",
+    )
+    evidence = [
+        {
+            "action": "searched",
+            "label": '"multilingual"',
+            "model": None,
+            "created_at": datetime.utcnow(),
+        },
+    ]
+    assert (
+        contextual_reason(candidate, 0.5, False, evidence)
+        == 'matches your "multilingual" search'
+    )
+
+
+def test_story_snippet_truncates_to_word_boundary() -> None:
+    long_story = "A" * 40 + " " + "B" * 40
+    snippet = _story_snippet(long_story, max_len=45)
+    assert snippet == "A" * 40 + "…"
+    assert len(snippet) <= 46
+
+
+def test_story_snippet_returns_none_for_missing_or_blank_story() -> None:
+    assert _story_snippet(None) is None
+    assert _story_snippet("   ") is None
 
 
 def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() -> None:
