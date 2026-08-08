@@ -7,7 +7,7 @@ that decides whether to run the graph at all (AGT-1), so a per-event LLM call ne
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -18,10 +18,14 @@ from sqlalchemy.orm import Session
 from app.models import Model, Recommendation
 from app.services.mesh import NarrativeResult
 from app.services.recommendation import (
+    SESSION_COOLDOWN,
+    SESSION_GAP,
+    _summarize_bucket,
     activity_hash,
     activity_summary,
     dominant_modality,
     recent_events,
+    session_bucket_events,
 )
 from app.vector import ModelVectorStore
 
@@ -30,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 RETRIEVAL_TOP_K = 8
 MAX_RETRIES = 2
-COOLDOWN = timedelta(minutes=15)
 
 # Empirically calibrated against app/vector.py's deterministic hashed bag-of-words embedding:
 # genuinely relevant matches score well under 1.0 on this collection, off-topic/generic queries
@@ -43,6 +46,7 @@ class AgentState(TypedDict, total=False):
     user_id: int
     trigger_reason: str
     behavior_summary: str
+    retrieval_query: str
     refined_query: str
     activity_hash: str
     retry_count: int
@@ -83,12 +87,36 @@ def _analyze_activity(session: Session):
         # AGT-6: unchanged behavior since the last recommendation skips a redundant run.
         if latest and latest.activity_hash == event_hash:
             return {**state, "short_circuit": True}
-        # Rate limit: even if behavior changed, don't re-run inside the cooldown window.
-        if latest and latest.created_at and datetime.utcnow() - latest.created_at < COOLDOWN:
+        # Rate limit: only enforce the cooldown if we're still inside the same session as
+        # the last recommendation (newest event and last recommendation within SESSION_GAP
+        # of each other) — a brand new session is never blocked by a stale prior cooldown.
+        if (
+            latest
+            and latest.created_at
+            and events
+            and events[0].created_at - latest.created_at < SESSION_GAP
+            and datetime.utcnow() - latest.created_at < SESSION_COOLDOWN
+        ):
             return {**state, "short_circuit": True}
+
+        buckets = session_bucket_events(events)
+        current_bucket = buckets[0] if buckets else []
+        older_events = [event for bucket in buckets[1:] for event in bucket]
+        current_text = _summarize_bucket(session, current_bucket)
+        older_text = _summarize_bucket(session, older_events)
+        # Weight the current session 2x relative to older sessions in the retrieval
+        # query text (via repetition) — the deterministic hashed bag-of-words embedding
+        # in app/vector.py has no real semantics to lean on, so query-text weighting via
+        # repetition is how the current session dominates retrieval.
+        retrieval_parts = [current_text, current_text]
+        if older_text:
+            retrieval_parts.append(older_text)
+        retrieval_query = " ".join(part for part in retrieval_parts if part) or summary
+
         return {
             **state,
             "behavior_summary": summary,
+            "retrieval_query": retrieval_query,
             "activity_hash": event_hash,
             "retry_count": 0,
             "modality_filter": dominant_modality(session, events),
@@ -101,7 +129,11 @@ def _analyze_activity(session: Session):
 def _retrieve_models(vector_store: ModelVectorStore):
     @traceable(run_type="retriever", name="retrieve_models")
     def node(state: AgentState) -> AgentState:
-        query = state.get("refined_query") or state["behavior_summary"]
+        query = (
+            state.get("refined_query")
+            or state.get("retrieval_query")
+            or state["behavior_summary"]
+        )
         # Only pre-filter on the first pass — a retry already broadens the query text
         # because the narrower search came back weak, so keep the candidate pool wide too.
         modality_filter = state.get("modality_filter") if state.get("retry_count") == 0 else None
@@ -122,12 +154,15 @@ def _grade_refine(state: AgentState) -> AgentState:
 
     if weak and retry_count < MAX_RETRIES:
         # Broaden the query for the next retrieval pass by dropping its most specific
-        # clause (the tail of the summary tends to carry the narrowest detail).
-        words = state["behavior_summary"].split()
+        # clause (the tail of the summary tends to carry the narrowest detail). Broaden
+        # from the same weighted retrieval_query text that's actually driving retrieval,
+        # not the display-only behavior_summary.
+        base_query = state.get("retrieval_query") or state["behavior_summary"]
+        words = base_query.split()
         broadened = (
             " ".join(words[: max(3, len(words) * 2 // 3)])
             if len(words) > 3
-            else state["behavior_summary"]
+            else base_query
         )
         logger.info(
             "Weak retrieval (best_distance=%s) for user_id=%s; retry %s/%s with a broadened query",

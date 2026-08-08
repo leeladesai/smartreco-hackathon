@@ -44,6 +44,39 @@
   <div class="btn" id="tray-compare-btn" onclick="if(compareSelection.length>=2) go('compare')" style="flex:none;">Compare →</div>
 </div>
 
+<!-- model drawer — VIEW opens this in place instead of navigating away, so browsing stays
+     fast and the catalog/dashboard grid underneath keeps its scroll + filter state. Shared
+     here (rather than per-template) since both catalog and dashboard cards open it. Dwell
+     tracking starts/stops on open/close exactly like the standalone /models/{id} page does
+     on navigation, and the URL is pushed via history so back/forward and deep links still work. -->
+<div class="drawer-backdrop" id="model-drawer-backdrop" onclick="if(event.target===this) closeModelDrawer()">
+  <div class="drawer" id="model-drawer">
+    <div class="drawer-head">
+      <div>
+        <span class="modality-tag" id="drawer-modality">Voice</span>
+        <h2 id="drawer-title">Select a model</h2>
+        <p class="provider" id="drawer-provider">Choose a model from the catalog.</p>
+        <div id="drawer-slug"></div>
+      </div>
+      <button class="modal-close" onclick="closeModelDrawer()" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <p class="desc" id="drawer-description">Model details will appear here.</p>
+      <table class="spec-table" id="drawer-specs"></table>
+      <div class="use-tags" id="drawer-tags"></div>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <div class="btn icon" id="drawer-watchlist-btn" style="padding:9px 0;" title="Add to watchlist" aria-label="Add to watchlist">☆</div>
+        <div class="btn" id="drawer-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
+      </div>
+      <div class="drawer-related">
+        <h4>You might also be interested in</h4>
+        <div id="drawer-related"></div>
+      </div>
+      <p class="note" id="drawer-note" style="margin-top:16px;"></p>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/app.js?v={{ js_version }}"></script>
 <script>
   window.INITIAL_PAGE = {{ initial_page|tojson }};

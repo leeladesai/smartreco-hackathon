@@ -41,7 +41,7 @@ class ModelResponse(ModelCreate):
 
 class EventInput(BaseModel):
     event_type: str = Field(
-        pattern="^(page_view|model_view|search|click|model_compare|dwell)$"
+        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter|model_copy|model_watchlist)$"
     )
     model_id: int | None = None
     metadata: dict = Field(default_factory=dict)

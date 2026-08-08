@@ -1,4 +1,6 @@
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -41,7 +43,12 @@ from app.services.catalog import (
     delete_model as delete_model_service,
     update_model as update_model_service,
 )
-from app.services.agent_graph import prepare_retrieval_recommendation, retrieval_reason
+from app.services.agent_graph import (
+    STRONG_RETRIEVAL_DISTANCE,
+    WEAK_RETRIEVAL_DISTANCE,
+    prepare_retrieval_recommendation,
+    retrieval_reason,
+)
 from app.services.digest import build_notifier, run_digest
 from app.services.recommendation import activity_summary, should_trigger
 from app.services.mesh import MeshNarrativeGenerator
@@ -59,6 +66,17 @@ TEMPLATES.env.loader = ChoiceLoader(
 
 def model_response(model: Model) -> ModelResponse:
     return ModelResponse.model_validate(model)
+
+
+def as_utc(value):
+    """SQLite's CURRENT_TIMESTAMP (via func.now()) is UTC but comes back tz-naive, so
+    datetime.isoformat() serializes it with no 'Z'/offset — the browser's Date parser then
+    reads it as local time instead of converting it, silently corrupting every displayed
+    timestamp by the viewer's UTC offset. Stamping tzinfo here makes the API's timestamps
+    unambiguous for any client, rather than papering over it in one frontend render call."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=timezone.utc)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -106,6 +124,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.mesh_generator = mesh_generator
     app.state.notifier = notifier
     app.state.scheduler = scheduler
+    app.state.pipeline_locks = {}
+    app.state.pipeline_locks_guard = asyncio.Lock()
     app.mount(
         "/static",
         StaticFiles(directory=PROJECT_ROOT / "app" / "static"),
@@ -143,6 +163,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
         return render_page(request, page, template, session_role=user.role)
 
+    def render_optional_session_page(request: Request, page: str, template: str):
+        # The catalog is browsable while signed out, but a signed-in visitor's session must
+        # still be recognized here — it's the page most view/search/compare activity starts
+        # from, and until now it silently rendered as "not signed in" even with a valid
+        # session cookie, which meant none of that activity ever got tracked.
+        try:
+            role = current_user(request).role
+        except HTTPException:
+            role = None
+        return render_page(request, page, template, session_role=role)
+
     def render_admin_page(request: Request):
         try:
             current_admin(request)
@@ -154,7 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def landing_page(request: Request):
-        return render_page(request, "catalog", "catalog.html")
+        return render_optional_session_page(request, "catalog", "catalog.html")
 
     @app.get("/login", include_in_schema=False)
     async def login_page(request: Request):
@@ -166,7 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/catalog", include_in_schema=False)
     async def catalog_page(request: Request):
-        return render_page(request, "catalog", "catalog.html")
+        return render_optional_session_page(request, "catalog", "catalog.html")
 
     @app.get("/models/{model_id}", include_in_schema=False)
     async def model_detail_page(request: Request, model_id: int):
@@ -284,6 +315,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Model not found")
             return model_response(model)
 
+    def content_similarity_reason(distance: float, source_title: str) -> str:
+        """Same distance thresholds as retrieval_reason (AGT-4), but worded for content-based
+        similarity to a specific model rather than a match to the user's activity — using
+        retrieval_reason's "your recent activity" phrasing here would misattribute why this
+        model showed up."""
+        if distance <= STRONG_RETRIEVAL_DISTANCE:
+            return f"Strong match to {source_title}"
+        if distance <= WEAK_RETRIEVAL_DISTANCE:
+            return f"Similar to {source_title}"
+        return "Broader catalog match"
+
+    @app.get("/api/models/{model_id}/related")
+    async def related_models(model_id: int, limit: int = 3) -> list[dict[str, object]]:
+        """Content-based "you might also be interested in": queries the same Chroma vector
+        store the recommendation pipeline uses, but keyed on *this model's own* embedding
+        text (title/provider/modality/description/tags — see ModelVectorStore.document)
+        rather than a user's activity summary. Grounded in real similarity, not activity —
+        deliberately independent of the personalized recommendation on the Dashboard."""
+        with session_factory() as session:
+            model = session.get(Model, model_id)
+            if not model:
+                raise HTTPException(status_code=404, detail="Model not found")
+            query_text = ModelVectorStore.document(model)
+            # Prefer same-modality matches first — the deterministic hashed bag-of-words
+            # embedding (app/vector.py) has weak semantics, so an unfiltered query can surface
+            # a cross-modality "match" (e.g. an LLM as "similar to" an image model) purely on
+            # shared generic words. Only fall back to an unfiltered query if same-modality
+            # doesn't yield enough candidates (e.g. this modality has too few catalog entries).
+            same_modality = vector_store.query_scored(
+                query_text, limit=limit + 1, where={"modality": model.modality}
+            )
+            seen_ids = {model_id}
+            results: list[dict[str, object]] = []
+
+            def _add_candidates(scored: list[tuple[int, float]]) -> None:
+                for candidate_id, distance in scored:
+                    if len(results) >= limit or candidate_id in seen_ids:
+                        continue
+                    seen_ids.add(candidate_id)
+                    candidate = session.get(Model, candidate_id)
+                    if not candidate:
+                        continue
+                    results.append(
+                        {
+                            **model_response(candidate).model_dump(mode="json"),
+                            "why_this": content_similarity_reason(distance, model.title),
+                        }
+                    )
+
+            _add_candidates(same_modality)
+            if len(results) < limit:
+                _add_candidates(vector_store.query_scored(query_text, limit=limit + 1))
+            return results
+
     @app.post(
         "/api/admin/models",
         response_model=ModelResponse,
@@ -321,16 +406,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         registered above via APScheduler (DLV-3)."""
         return run_digest(session_factory, vector_store, mesh_generator, notifier)
 
-    def run_pipeline_in_background(user_id: int) -> None:
+    async def _get_user_lock(user_id: int) -> asyncio.Lock:
+        async with app.state.pipeline_locks_guard:
+            lock = app.state.pipeline_locks.get(user_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                app.state.pipeline_locks[user_id] = lock
+            return lock
+
+    async def run_pipeline_in_background(user_id: int) -> None:
         """NFR-1: the pipeline's Mesh call is a real network round trip (hundreds of ms to
         seconds) — running it inline on `/api/events/batch` would blow the <150ms p95
         ingestion budget every time a trigger fires. It runs here, after the response is
         already sent, in its own session (the request's session is closed by then). The
-        dashboard's polling (DLV-2) is what surfaces the result once this finishes."""
-        with session_factory() as session:
-            prepare_retrieval_recommendation(
-                session, vector_store, user_id, app.state.mesh_generator
-            )
+        dashboard's polling (DLV-2) is what surfaces the result once this finishes.
+
+        Guarded by a per-user asyncio.Lock: two near-simultaneous qualifying batches can
+        each spawn this background task, each opening its own DB session; without the
+        lock both could read "no recent recommendation yet" before either commits, and
+        both would proceed to write a duplicate Recommendation row."""
+        lock = await _get_user_lock(user_id)
+        async with lock:
+            with session_factory() as session:
+                prepare_retrieval_recommendation(
+                    session, vector_store, user_id, app.state.mesh_generator
+                )
 
     @app.post("/api/events/batch")
     async def ingest_events(
@@ -392,7 +492,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "behavior_summary": latest.behavior_summary,
                     "activity_hash": latest.activity_hash,
                     "trigger_reason": latest.trigger_reason,
-                    "created_at": latest.created_at,
+                    "created_at": as_utc(latest.created_at),
                 }
             events = session.scalars(
                 select(Event)
@@ -440,7 +540,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             events = session.scalars(
                 select(Event)
                 .where(Event.user_id == user.id)
-                .order_by(Event.created_at.desc())
+                # created_at is second-resolution (SQLite CURRENT_TIMESTAMP), so a batch flush
+                # that inserts several events in one commit can tie on it — id.desc() breaks
+                # the tie by actual insertion order instead of leaving it DB-arbitrary.
+                .order_by(Event.created_at.desc(), Event.id.desc())
                 .limit(50)
             ).all()
             latest = session.scalar(
@@ -454,7 +557,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "type": event.event_type,
                         "model_id": event.model_id,
                         "metadata": event.metadata_json,
-                        "created_at": event.created_at,
+                        "created_at": as_utc(event.created_at),
                     }
                     for event in events
                 ],
@@ -462,7 +565,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "behavior_summary": latest.behavior_summary,
                     "activity_hash": latest.activity_hash,
                     "trigger_reason": latest.trigger_reason,
-                    "created_at": latest.created_at,
+                    "created_at": as_utc(latest.created_at),
                 }
                 if latest
                 else None,

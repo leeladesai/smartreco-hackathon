@@ -1,9 +1,19 @@
 import hashlib
+import logging
 import re
 from collections.abc import Sequence
 from pathlib import Path
 
 import chromadb
+
+# This pinned chromadb version calls posthog's old positional capture(distinct_id, event,
+# properties) signature; the installed posthog major version rewrote that to capture(event,
+# **kwargs), so the call now raises a TypeError before posthog's own code ever runs — meaning
+# chromadb.Settings(anonymized_telemetry=False) can't prevent it (that flag is checked inside
+# posthog, past the point where the mismatched call already failed). Silencing the logger it
+# reports through is what actually stops the noise; the failure itself was always harmless
+# (chromadb catches it internally either way).
+logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
 
 class DeterministicEmbeddingFunction:
@@ -27,7 +37,13 @@ class DeterministicEmbeddingFunction:
 class ModelVectorStore:
     def __init__(self, path: str) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(path=path)
+        # anonymized_telemetry=False: this pinned chromadb version calls posthog's old
+        # positional capture() signature, which the installed posthog major version no longer
+        # accepts — chromadb swallows the resulting TypeError and just logs it every client
+        # init. Harmless, but disabling telemetry removes the noise (and the outbound call).
+        client = chromadb.PersistentClient(
+            path=path, settings=chromadb.Settings(anonymized_telemetry=False)
+        )
         self.collection = client.get_or_create_collection(
             name="models",
             embedding_function=DeterministicEmbeddingFunction(),

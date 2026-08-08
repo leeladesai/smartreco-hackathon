@@ -6,13 +6,14 @@
     <h1 class="page-title">Your recommendation</h1>
   </div>
 
-  <div class="stepper">
-    <div class="step done"><div class="n">✓</div><div class="label">Analyze</div></div><div class="step-line"></div>
-    <div class="step done"><div class="n">✓</div><div class="label">Retrieve</div></div><div class="step-line"></div>
-    <div class="step done"><div class="n">✓</div><div class="label">Grade / Refine</div></div><div class="step-line"></div>
-    <div class="step now"><div class="n">4</div><div class="label">Generate</div></div><div class="step-line"></div>
-    <div class="step"><div class="n">5</div><div class="label">Deliver</div></div>
+  <div class="stepper" id="dashboard-stepper">
+    <div class="step" id="step-analyze" data-n="1"><div class="n">1</div><div class="label">Analyze</div></div><div class="step-line"></div>
+    <div class="step" id="step-retrieve" data-n="2"><div class="n">2</div><div class="label">Retrieve</div></div><div class="step-line"></div>
+    <div class="step" id="step-grade" data-n="3"><div class="n">3</div><div class="label">Grade / Refine</div></div><div class="step-line"></div>
+    <div class="step" id="step-generate" data-n="4"><div class="n">4</div><div class="label">Generate</div></div><div class="step-line"></div>
+    <div class="step" id="step-deliver" data-n="5"><div class="n">5</div><div class="label">Deliver</div></div>
   </div>
+  <p class="note" id="stepper-note" style="margin:-14px 0 20px;"></p>
 
   <div class="narrative-card">
     <div class="tag-row" id="dashboard-tags">
@@ -26,46 +27,37 @@
   <div class="evidence-wrap">
     <h4>Recommended — because you did this ↓</h4>
     <div class="rec-grid" id="recommendation-grid">
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">3 views · ElevenLabs Turbo</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0198</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>Cartesia Sonic</h3>
-            <p class="provider">Cartesia</p>
-            <div class="spec-row"><span>Latency</span><b>~135ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.00015/char</b></div>
-          </div>
+      <div class="card" style="cursor:default;">
+        <div class="stripe" style="background:var(--amber);"></div>
+        <div class="card-body">
+          <div class="card-top"><span class="part-id">Match 1</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+          <h3>Cartesia Sonic</h3>
+          <p class="provider">Cartesia</p>
+          <p class="why-tag">3 views · ElevenLabs Turbo</p>
+          <div class="spec-row"><span>Latency</span><b>~135ms</b></div>
+          <div class="spec-row"><span>Price</span><b>$0.00015/char</b></div>
         </div>
       </div>
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">matched search</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0176</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>Deepgram Aura</h3>
-            <p class="provider">Deepgram</p>
-            <div class="spec-row"><span>Latency</span><b>~200ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.0135/1K char</b></div>
-          </div>
+      <div class="card" style="cursor:default;">
+        <div class="stripe" style="background:var(--amber);"></div>
+        <div class="card-body">
+          <div class="card-top"><span class="part-id">Match 2</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+          <h3>Deepgram Aura</h3>
+          <p class="provider">Deepgram</p>
+          <p class="why-tag">matched search</p>
+          <div class="spec-row"><span>Latency</span><b>~200ms</b></div>
+          <div class="spec-row"><span>Price</span><b>$0.0135/1K char</b></div>
         </div>
       </div>
-      <div class="rec-item">
-        <div class="evidence-line"></div>
-        <div class="evidence-note">1 comparison · PlayHT vs 11L</div>
-        <div class="card" style="cursor:default;">
-          <div class="stripe" style="background:var(--amber);"></div>
-          <div class="card-body">
-            <div class="card-top"><span class="part-id">MDL-0142</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
-            <h3>ElevenLabs Turbo v2.5</h3>
-            <p class="provider">ElevenLabs</p>
-            <div class="spec-row"><span>Latency</span><b>~275ms</b></div>
-            <div class="spec-row"><span>Price</span><b>$0.0002/char</b></div>
-          </div>
+      <div class="card" style="cursor:default;">
+        <div class="stripe" style="background:var(--amber);"></div>
+        <div class="card-body">
+          <div class="card-top"><span class="part-id">Match 3</span><span class="modality-tag" style="background:var(--amber-dim); color:var(--amber);">Voice</span></div>
+          <h3>ElevenLabs Turbo v2.5</h3>
+          <p class="provider">ElevenLabs</p>
+          <p class="why-tag">1 comparison · PlayHT vs 11L</p>
+          <div class="spec-row"><span>Latency</span><b>~275ms</b></div>
+          <div class="spec-row"><span>Price</span><b>$0.0002/char</b></div>
         </div>
       </div>
     </div>

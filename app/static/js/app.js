@@ -17,6 +17,9 @@
   let selectedModelId = null;
   let compareSelection = []; // model ids the user has explicitly added to compare — never pre-filled
   const COMPARE_STORAGE_KEY = 'smartreco.compareSelection';
+  let watchlist = []; // model ids the user has starred — client-side only, no backend list
+  const WATCHLIST_STORAGE_KEY = 'smartreco.watchlist';
+  try { watchlist = JSON.parse(localStorage.getItem(WATCHLIST_STORAGE_KEY) || '[]'); } catch (error) { watchlist = []; }
   const eventQueue = [];
   const EVENT_BATCH_SIZE = 8;
   const EVENT_FLUSH_MS = 4000;
@@ -56,6 +59,59 @@
 
   function modelColor(model){ return modalityColors[model.mod] || 'var(--muted)'; }
 
+  // A display-only identifier derived from provider+name (e.g. "cartesia/sonic") — the
+  // Model table has no slug column, so this is computed client-side, purely for the copy
+  // action; it is never sent to or validated against the server.
+  function modelSlug(model){
+    const slugify = value => String(value || '').toLowerCase().trim()
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const providerSlug = slugify(model.provider);
+    const nameSlug = slugify(model.name);
+    return providerSlug ? `${providerSlug}/${nameSlug}` : nameSlug;
+  }
+
+  const COPY_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+  function slugRowHtml(model){
+    const slug = modelSlug(model);
+    return `<div class="slug-row" onclick="copyModelSlug(event, '${model.id}', '${escapeHtml(slug)}')" title="Copy identifier">
+      <code>${escapeHtml(slug)}</code>${COPY_ICON}
+    </div>`;
+  }
+
+  function copyModelSlug(event, modelId, slug){
+    event.stopPropagation();
+    const row = event.currentTarget;
+    const codeEl = row.querySelector('code');
+    const original = codeEl.textContent;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(slug).catch(() => {});
+    }
+    trackEvent('model_copy', modelId, {slug});
+    row.classList.add('copied');
+    codeEl.textContent = 'Copied!';
+    setTimeout(() => { row.classList.remove('copied'); codeEl.textContent = original; }, 1200);
+  }
+
+  // Client-side only (no backend list) — mirrors the compare-tray pattern. Adding fires a
+  // tracked event so a deliberate "star" counts as interest signal for the recommendation
+  // engine (see app/services/recommendation.py); removing does not, same rationale as compare.
+  function toggleWatchlist(event, modelId){
+    event.stopPropagation();
+    const index = watchlist.indexOf(modelId);
+    const adding = index === -1;
+    if (adding) watchlist.push(modelId); else watchlist.splice(index, 1);
+    localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
+    trackEvent('model_watchlist', modelId, {action: adding ? 'add' : 'remove'});
+    renderCatalog();
+  }
+
+  function watchlistButtonHtml(model){
+    const on = watchlist.includes(model.id);
+    const label = on ? 'Remove from watchlist' : 'Add to watchlist';
+    return `<div class="btn icon ${on ? 'on' : ''}" onclick="toggleWatchlist(event, '${model.id}')" title="${label}" aria-label="${label}">${on ? '★' : '☆'}</div>`;
+  }
+
   function fromApiModel(model){
     const isVoice = model.modality === 'Voice';
     return {
@@ -84,21 +140,36 @@
     }
   }
 
+  let selectedProviderFilter = null;
+
+  function activeModalityFilters(){
+    return Array.from(document.querySelectorAll('#modality-filters .chip.active[data-modality]')).map(c => c.dataset.modality);
+  }
+
   function renderCatalog(){
     if (!grid) return; // catalog grid only exists on the catalog page now
-    grid.innerHTML = MODELS.map(m => `
+    const activeModalities = activeModalityFilters();
+    const latencyChip = document.querySelector('#modality-filters .chip.active[data-latency-max]');
+    const maxLatency = latencyChip ? Number(latencyChip.dataset.latencyMax) : null;
+    const watchlistOnly = document.querySelector('#modality-filters .chip.active[data-watchlist-only]');
+    let visible = activeModalities.length ? MODELS.filter(m => activeModalities.includes(m.mod)) : MODELS;
+    if (selectedProviderFilter) visible = visible.filter(m => m.provider === selectedProviderFilter);
+    if (maxLatency != null) visible = visible.filter(m => m.latency !== '' && m.latency != null && Number(m.latency) < maxLatency);
+    if (watchlistOnly) visible = visible.filter(m => watchlist.includes(m.id));
+    grid.innerHTML = visible.map(m => `
       <div class="card" onclick="openModel('${m.id}')">
         <div class="stripe" style="background:${modelColor(m)}"></div>
         <div class="card-body">
           <div class="card-top">
-            <span class="part-id">${escapeHtml(m.id)}</span>
             <span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(m)} 22%, transparent); color:${modelColor(m)};">${escapeHtml(m.mod)}</span>
           </div>
           <h3>${escapeHtml(m.name)}</h3>
           <p class="provider">${escapeHtml(m.provider)}</p>
+          ${slugRowHtml(m)}
           <div class="spec-row"><span>${escapeHtml(m.s1)}</span><b>${escapeHtml(m.v1)}</b></div>
           <div class="spec-row"><span>${escapeHtml(m.s2)}</span><b>${escapeHtml(m.v2)}</b></div>
           <div class="card-actions">
+            ${watchlistButtonHtml(m)}
             <div class="btn ${compareSelection.includes(m.id) ? 'on' : ''}" onclick="event.stopPropagation(); toggleCompareModel('${m.id}');">${compareSelection.includes(m.id) ? '✓ Comparing' : '+ Compare'}</div>
             <div class="btn primary" onclick="event.stopPropagation(); openModel('${m.id}');">View</div>
           </div>
@@ -121,31 +192,63 @@
     `).join('');
   }
 
-  function renderDetail(modelId){
+  function renderDetail(modelId, prefix='detail-'){
     const model = MODELS.find(item => String(item.id) === String(modelId));
     if (!model) return;
     selectedModelId = model.id;
     const color = modelColor(model);
-    const modality = document.getElementById('detail-modality');
+    const modality = document.getElementById(`${prefix}modality`);
     modality.textContent = model.mod;
     modality.style.background = `color-mix(in srgb, ${color} 22%, transparent)`;
     modality.style.color = color;
-    document.getElementById('detail-title').textContent = model.name;
-    document.getElementById('detail-provider').textContent = `${model.provider} · ${model.id}`;
-    document.getElementById('detail-description').textContent = model.description || `${model.name} from ${model.provider}.`;
-    document.getElementById('detail-specs').innerHTML = [
+    document.getElementById(`${prefix}title`).textContent = model.name;
+    document.getElementById(`${prefix}provider`).textContent = model.provider;
+    const slugEl = document.getElementById(`${prefix}slug`);
+    if (slugEl) slugEl.innerHTML = slugRowHtml(model);
+    const watchlistEl = document.getElementById(`${prefix}watchlist-btn`);
+    if (watchlistEl) watchlistEl.outerHTML = watchlistButtonHtml(model).replace('class="btn icon', `id="${prefix}watchlist-btn" class="btn icon`);
+    document.getElementById(`${prefix}description`).textContent = model.description || `${model.name} from ${model.provider}.`;
+    document.getElementById(`${prefix}specs`).innerHTML = [
       [model.s1, model.v1], ['Price', model.v2],
       ['Context window', model.context || 'n/a'],
       ['Source', model.source || 'Catalog record']
     ].map(([label, value]) => `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`).join('');
-    document.getElementById('detail-tags').innerHTML = (model.tags || '').split(',').map(tag => tag.trim()).filter(Boolean)
+    document.getElementById(`${prefix}tags`).innerHTML = (model.tags || '').split(',').map(tag => tag.trim()).filter(Boolean)
       .map(tag => `<span class="use-tag">${escapeHtml(tag)}</span>`).join('');
-    document.getElementById('detail-related').innerHTML = MODELS.filter(item => String(item.id) !== String(model.id)).slice(0, 3)
-      .map(item => `<div class="related-item"><span>${escapeHtml(item.name)}</span><span class="rlt">${escapeHtml(item.v1)} · ${escapeHtml(item.v2)}</span></div>`).join('');
-    document.getElementById('detail-note').textContent = userSession
+    document.getElementById(`${prefix}related`).innerHTML = '<p class="note">Finding similar models…</p>';
+    loadRelatedModels(model.id, prefix);
+    document.getElementById(`${prefix}note`).textContent = userSession
       ? 'This model view has been recorded in your activity.'
       : 'Sign in to record model views and shape your recommendation.';
-    updateCompareButton('detail-compare-btn', model.id);
+    updateCompareButton(`${prefix}compare-btn`, model.id);
+  }
+
+  // Content-based, not activity-based: queries the same vector store the recommendation
+  // pipeline uses, but keyed on this model's own embedding text rather than the user's
+  // behavior — genuinely similar catalog entries, independent of the personalized
+  // Dashboard recommendation. See GET /api/models/{id}/related in app/main.py.
+  async function loadRelatedModels(modelId, prefix){
+    const container = document.getElementById(`${prefix}related`);
+    if (!container) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/models/${modelId}/related`);
+      if (!response.ok) throw new Error('related fetch failed');
+      const items = await response.json();
+      if (String(selectedModelId) !== String(modelId)) return; // user already moved on
+      if (!items.length) {
+        container.innerHTML = '<p class="note">No close catalog matches yet.</p>';
+        return;
+      }
+      container.innerHTML = items.map(item => `
+        <div class="related-item" style="cursor:pointer;" onclick="openModel('${item.id}')">
+          <div class="related-item-top"><span>${escapeHtml(item.title)}</span><span class="rlt">${escapeHtml(item.price)}</span></div>
+          <p class="related-why">${escapeHtml(item.why_this || '')}</p>
+        </div>`).join('');
+    } catch (error) {
+      if (String(selectedModelId) === String(modelId)) {
+        container.innerHTML = '<p class="note">Could not load related models.</p>';
+      }
+    }
   }
 
   function updateCompareButton(buttonId, modelId){
@@ -170,15 +273,96 @@
   }
 
   function openModel(modelId){
-    // selectedModelId must be set before go() so routeFor('detail') builds the right URL —
-    // rendering doesn't happen here since this page is about to fully unload.
-    selectedModelId = String(modelId);
-    go('detail');
+    // The drawer markup lives in base.html, so it's present on every screen. Where it exists,
+    // open in place; the standalone /models/{id} page itself has no drawer trigger, so go()
+    // is only ever reached from a direct URL load or a non-JS fallback.
+    const backdrop = document.getElementById('model-drawer-backdrop');
+    if (backdrop) {
+      openModelDrawer(modelId);
+    } else {
+      selectedModelId = String(modelId);
+      go('detail');
+    }
   }
+
+  function drawerEscHandler(event){
+    if (event.key === 'Escape') closeModelDrawer();
+  }
+
+  function openModelDrawer(modelId){
+    const backdrop = document.getElementById('model-drawer-backdrop');
+    if (!backdrop) return;
+    const alreadyOpen = backdrop.classList.contains('show');
+    finalizeDwell(); // close out any dwell from a previously open drawer model
+    selectedModelId = String(modelId);
+    renderDetail(selectedModelId, 'drawer-');
+    startDwell(selectedModelId);
+    backdrop.classList.add('show');
+    document.addEventListener('keydown', drawerEscHandler);
+    // Switching models while already open replaces the current history entry rather than
+    // stacking one per click, so back/forward still lands on "before the drawer" in one step.
+    const url = `/models/${selectedModelId}`;
+    if (alreadyOpen) history.replaceState({drawerModel: selectedModelId}, '', url);
+    else history.pushState({drawerModel: selectedModelId}, '', url);
+  }
+
+  function closeModelDrawer(fromPopstate=false){
+    const backdrop = document.getElementById('model-drawer-backdrop');
+    if (!backdrop || !backdrop.classList.contains('show')) return;
+    backdrop.classList.remove('show');
+    finalizeDwell();
+    flushEvents();
+    document.removeEventListener('keydown', drawerEscHandler);
+    if (!fromPopstate) history.back();
+  }
+
+  window.addEventListener('popstate', () => closeModelDrawer(true));
 
   let dashboardRecId = null;
   let dashboardPollTimer = null;
   const DASHBOARD_POLL_MS = 15000;
+
+  const STEPPER_STEPS = ['analyze', 'retrieve', 'grade', 'generate', 'deliver'];
+  const STEPPER_NOTES = {
+    none: 'Waiting on your first tracked actions — browse or search the catalog to start the pipeline.',
+    no_candidates: 'Retrieval ran but found no close catalog match for your activity yet — keep browsing to sharpen the signal.',
+    retrieval_ready: 'Delivered from retrieval only — generation was skipped because no narrative generator (Mesh) is configured.',
+    ready: 'Delivered with a generated narrative — the full pipeline ran end to end.',
+  };
+
+  function renderStepper(recommendation){
+    const stepper = document.getElementById('dashboard-stepper');
+    const note = document.getElementById('stepper-note');
+    if (!stepper) return;
+    const status = recommendation.status;
+    const hasEvents = status !== 'pending' || recommendation.trigger_reason != null;
+    let states, noteKey;
+    if (status === 'pending' && !hasEvents) {
+      states = ['now', 'pending', 'pending', 'pending', 'pending'];
+      noteKey = 'none';
+    } else if (status === 'pending') {
+      states = ['done', 'now', 'pending', 'pending', 'pending'];
+      noteKey = 'no_candidates';
+    } else if (status === 'ready') {
+      states = ['done', 'done', 'done', 'done', 'done'];
+      noteKey = 'ready';
+    } else {
+      states = ['done', 'done', 'done', 'skipped', 'done'];
+      noteKey = 'retrieval_ready';
+    }
+    STEPPER_STEPS.forEach((key, i) => {
+      const el = document.getElementById(`step-${key}`);
+      if (!el) return;
+      el.classList.remove('done', 'now', 'skipped');
+      const state = states[i];
+      const numEl = el.querySelector('.n');
+      if (state === 'done') { el.classList.add('done'); numEl.textContent = '✓'; }
+      else if (state === 'now') { el.classList.add('now'); numEl.textContent = el.dataset.n; }
+      else if (state === 'skipped') { el.classList.add('skipped'); numEl.textContent = '–'; }
+      else { numEl.textContent = el.dataset.n; }
+    });
+    if (note) note.textContent = STEPPER_NOTES[noteKey] || '';
+  }
 
   async function loadDashboard(){
     if (!userSession) return;
@@ -187,6 +371,7 @@
       if (!response.ok) return;
       const recommendation = await response.json();
       dashboardRecId = recommendation.id ?? null;
+      renderStepper(recommendation);
       if (recommendation.status === 'pending' || !recommendation.models?.length) {
         document.getElementById('dashboard-tags').innerHTML = '<span class="badge reason">status: learning</span><span class="badge conf">recommendation pending</span>';
         document.getElementById('dashboard-narrative').textContent = 'Your activity is being collected. Once enough signal is available, your grounded recommendation will appear here.';
@@ -202,17 +387,17 @@
         document.getElementById('dashboard-delta').textContent = hasNarrative
           ? `Generated from ${candidates.length} grounded catalog candidate${candidates.length === 1 ? '' : 's'}.`
           : `${candidates.length} catalog candidate${candidates.length === 1 ? '' : 's'} retrieved from your activity.`;
-        document.getElementById('recommendation-grid').innerHTML = candidates.map(model => `
-          <div class="rec-item">
-            ${model.whyThis ? `<div class="evidence-line"></div><div class="evidence-note">${escapeHtml(model.whyThis)}</div>` : ''}
-            <div class="card" onclick="openModel('${model.id}')">
-              <div class="stripe" style="background:${modelColor(model)}"></div>
-              <div class="card-body">
-                <div class="card-top"><span class="part-id">${escapeHtml(model.id)}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
-                <h3>${escapeHtml(model.name)}</h3><p class="provider">${escapeHtml(model.provider)}</p>
-                <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
-                <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
-              </div>
+        document.getElementById('recommendation-grid').innerHTML = candidates.map((model, index) => `
+          <div class="card" onclick="openModel('${model.id}')">
+            <div class="stripe" style="background:${modelColor(model)}"></div>
+            <div class="card-body">
+              <div class="card-top"><span class="part-id">Match ${index + 1}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
+              <h3>${escapeHtml(model.name)}</h3><p class="provider">${escapeHtml(model.provider)}</p>
+              ${slugRowHtml(model)}
+              ${model.whyThis ? `<p class="why-tag">${escapeHtml(model.whyThis)}</p>` : ''}
+              <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
+              <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
+              <div class="card-actions">${watchlistButtonHtml(model)}</div>
             </div>
           </div>`).join('');
       }
@@ -245,6 +430,10 @@
     dashboardPollTimer = null;
   }
 
+  let activityEvents = [];
+  let activityPage = 1;
+  const ACTIVITY_PAGE_SIZE = 10;
+
   async function loadActivity(){
     const log = document.getElementById('activity-log');
     if (!userSession) {
@@ -255,20 +444,126 @@
       const response = await fetch(`${API_BASE}/api/activity/me`);
       if (!response.ok) return;
       const payload = await response.json();
-      if (!payload.events.length) {
-        log.innerHTML = '<p class="note">No activity recorded yet. Start by searching or opening a model.</p>';
-        return;
-      }
-      log.innerHTML = payload.events.map(event => {
-        const model = MODELS.find(item => String(item.id) === String(event.model_id));
-        const detail = model ? model.name : event.metadata?.query || 'Catalog activity';
-        const dwell = event.metadata?.dwell_seconds ? ` <span>· dwell ${escapeHtml(event.metadata.dwell_seconds)}s</span>` : '';
-        return `<div class="log-row"><div class="log-time">${escapeHtml(new Date(event.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}))}</div><div class="log-type" style="background:var(--amber-dim); color:var(--amber);">${escapeHtml(event.type)}</div><div class="log-detail">${escapeHtml(detail)}${dwell}</div></div>`;
-      }).join('');
-      document.getElementById('activity-note').textContent = `${payload.events.length} persisted event${payload.events.length === 1 ? '' : 's'} · event ingestion is active.`;
+      activityEvents = payload.events;
+      renderActivityLog();
+      renderActivityPipeline(payload.pipeline);
     } catch (error) {
       log.innerHTML = '<p class="note">Activity is temporarily unavailable.</p>';
     }
+  }
+
+  const PIPELINE_TRIGGER_LABELS = {
+    event_threshold: 'Enough new activity was tracked',
+    activity_retrieval: 'Live preview from your recent activity',
+    no_retrieval_candidates: 'No strong catalog match yet',
+    cooldown_active: 'Skipped — you just got a recommendation',
+    unchanged_activity: 'Skipped — nothing new since your last one',
+  };
+
+  function renderActivityPipeline(pipeline){
+    const flow = document.getElementById('activity-pipeline');
+    const note = document.getElementById('activity-pipeline-note');
+    if (!flow) return;
+    if (!pipeline || !pipeline.behavior_summary) {
+      flow.innerHTML = '<p class="pipeline-summary muted">Nothing generated yet — browse or search the catalog to give the agent something to read.</p>';
+      if (note) note.textContent = 'Your persisted event stream will appear here once the recommendation pipeline is connected.';
+      return;
+    }
+    const created = new Date(pipeline.created_at);
+    const timestamp = `${created.toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'})}, ${created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'})}`;
+    const shortHash = pipeline.activity_hash ? pipeline.activity_hash.slice(0, 10) : 'n/a';
+    const triggerLabel = PIPELINE_TRIGGER_LABELS[pipeline.trigger_reason] || pipeline.trigger_reason || 'n/a';
+    flow.innerHTML = `
+      <p class="pipeline-summary">${escapeHtml(pipeline.behavior_summary)}</p>
+      <div class="pipeline-meta">
+        <span class="pipeline-meta-item"><span class="k">Why now</span><b>${escapeHtml(triggerLabel)}</b></span>
+        <span class="pipeline-meta-item"><span class="k">Generated</span><b>${escapeHtml(timestamp)}</b></span>
+        <span class="pipeline-meta-item dim" title="Fingerprint of the activity snapshot above — changes only when your behavior does"><span class="k">Snapshot</span><b>${escapeHtml(shortHash)}…</b></span>
+      </div>
+    `;
+    if (note) note.textContent = 'This is the exact behavior snapshot the agent read for your current recommendation — check the Dashboard to see what it produced.';
+  }
+
+  function describeFilterChange(metadata){
+    const parts = [];
+    if (metadata?.modalities?.length) parts.push(metadata.modalities.join(', '));
+    if (metadata?.provider) parts.push(`provider: ${metadata.provider}`);
+    if (metadata?.latency_max != null) parts.push(`latency < ${metadata.latency_max}ms`);
+    return parts.length ? `Filtered by ${parts.join(' · ')}` : 'Filters cleared';
+  }
+
+  function renderActivityRow(event){
+    const model = MODELS.find(item => String(item.id) === String(event.model_id));
+    const detail = event.type === 'catalog_filter' ? describeFilterChange(event.metadata)
+      : event.type === 'model_watchlist' ? `${event.metadata?.action === 'remove' ? 'Removed from' : 'Added to'} watchlist: ${model ? model.name : 'model'}`
+      : event.type === 'model_copy' ? `Copied identifier: ${event.metadata?.slug || (model ? model.name : '')}`
+      : model ? model.name : event.metadata?.query || 'Catalog activity';
+    const dwell = event.metadata?.dwell_seconds != null ? ` <span>· dwell ${escapeHtml(event.metadata.dwell_seconds)}s</span>` : '';
+    const created = new Date(event.created_at);
+    const dateStr = created.toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'});
+    const timeStr = created.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    return `<div class="log-row"><div class="log-time">${escapeHtml(dateStr)}, ${escapeHtml(timeStr)}</div><div class="log-type" style="background:var(--amber-dim); color:var(--amber);">${escapeHtml(event.type)}</div><div class="log-detail">${escapeHtml(detail)}${dwell}</div></div>`;
+  }
+
+  function renderActivityLog(){
+    const log = document.getElementById('activity-log');
+    const note = document.getElementById('activity-note');
+    const pagination = document.getElementById('activity-pagination');
+    if (!log) return;
+    if (!activityEvents.length) {
+      log.innerHTML = '<p class="note">No activity recorded yet. Start by searching or opening a model.</p>';
+      if (note) note.textContent = '';
+      if (pagination) pagination.style.display = 'none';
+      return;
+    }
+    const activeTypes = Array.from(document.querySelectorAll('#activity-type-filters .chip.active[data-event-type]')).map(c => c.dataset.eventType);
+    const query = (document.getElementById('activity-search')?.value || '').trim().toLowerCase();
+    const filtered = activityEvents.filter(event => {
+      if (activeTypes.length && !activeTypes.includes(event.type)) return false;
+      if (query) {
+        const model = MODELS.find(item => String(item.id) === String(event.model_id));
+        const detailText = (event.type === 'catalog_filter' ? describeFilterChange(event.metadata)
+          : model ? model.name : event.metadata?.query || '').toLowerCase();
+        if (!detailText.includes(query)) return false;
+      }
+      return true;
+    });
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / ACTIVITY_PAGE_SIZE));
+    activityPage = Math.min(Math.max(activityPage, 1), totalPages);
+    const start = (activityPage - 1) * ACTIVITY_PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + ACTIVITY_PAGE_SIZE);
+
+    log.innerHTML = pageItems.length ? pageItems.map(renderActivityRow).join('')
+      : '<p class="note">No activity matches this filter.</p>';
+
+    if (note) {
+      if (!filtered.length) {
+        note.textContent = '';
+      } else {
+        const rangeStart = start + 1;
+        const rangeEnd = Math.min(start + ACTIVITY_PAGE_SIZE, filtered.length);
+        const scope = filtered.length === activityEvents.length
+          ? `${activityEvents.length} persisted event${activityEvents.length === 1 ? '' : 's'}`
+          : `${filtered.length} of ${activityEvents.length} persisted events`;
+        note.textContent = `Showing ${rangeStart}–${rangeEnd} of ${scope} · event ingestion is active.`;
+      }
+    }
+
+    if (pagination) {
+      pagination.style.display = filtered.length > ACTIVITY_PAGE_SIZE ? 'flex' : 'none';
+      const label = document.getElementById('activity-page-label');
+      const prevBtn = document.getElementById('activity-prev');
+      const nextBtn = document.getElementById('activity-next');
+      if (label) label.textContent = `Page ${activityPage} of ${totalPages}`;
+      if (prevBtn) prevBtn.disabled = activityPage <= 1;
+      if (nextBtn) nextBtn.disabled = activityPage >= totalPages;
+    }
+  }
+
+  function setActivityPage(page){
+    activityPage = page;
+    renderActivityLog();
   }
 
   // ---- login-page "live comparison" widget — always computed from the real catalog,
@@ -402,9 +697,13 @@
 
   function trackEvent(eventType, modelId=null, metadata={}){
     if (!userSession) return;
-    const numericModelId = Number(modelId);
     const event = {event_type:eventType, metadata};
-    if (Number.isInteger(numericModelId)) event.model_id = numericModelId;
+    // Number(null) is 0, not NaN — without the explicit null check, every model-less event
+    // (search, catalog_filter) would silently ship as model_id: 0 instead of omitting it.
+    if (modelId != null) {
+      const numericModelId = Number(modelId);
+      if (Number.isInteger(numericModelId)) event.model_id = numericModelId;
+    }
     eventQueue.push(event);
     if (eventQueue.length >= EVENT_BATCH_SIZE){
       flushEvents();
@@ -429,8 +728,11 @@
 
   function finalizeDwell(){
     if (!dwellModelId || !dwellStartedAt) return;
-    const seconds = Math.round((Date.now() - dwellStartedAt) / 1000);
-    if (seconds >= 1) trackEvent('model_view', dwellModelId, {dwell_seconds: seconds});
+    // The drawer opens/closes far faster than a full page navigation ever did, so a sub-second
+    // glance is common and still real evaluation signal — it must still be captured, just with
+    // an honest (possibly 0) dwell_seconds rather than being dropped on the floor.
+    const seconds = Math.max(0, Math.round((Date.now() - dwellStartedAt) / 1000));
+    trackEvent('model_view', dwellModelId, {dwell_seconds: seconds});
     dwellModelId = null;
     dwellStartedAt = null;
   }
@@ -450,7 +752,10 @@
     }
     renderCatalog();
     localStorage.setItem(COMPARE_STORAGE_KEY, JSON.stringify(compareSelection));
-    if (selectedModelId) updateCompareButton('detail-compare-btn', selectedModelId);
+    if (selectedModelId) {
+      updateCompareButton('detail-compare-btn', selectedModelId);
+      updateCompareButton('drawer-compare-btn', selectedModelId);
+    }
     renderTray();
   }
 
@@ -719,7 +1024,86 @@
 
   renderTray();
 
-  document.querySelectorAll('#modality-filters .chip').forEach(c => c.addEventListener('click', () => c.classList.toggle('active')));
+  // Filter chips only ever mutated the DOM/grid, never the tracked event stream — which model
+  // relaxes/tightens a filter to is real evaluation signal, same as a search query is. Debounced
+  // so a quick run of clicks (e.g. toggling three modality chips in a row) logs one event, not one
+  // per click.
+  let filterTrackTimer;
+  function trackFilterChange(){
+    clearTimeout(filterTrackTimer);
+    filterTrackTimer = setTimeout(() => {
+      const latencyChip = document.querySelector('#modality-filters .chip.active[data-latency-max]');
+      trackEvent('catalog_filter', null, {
+        modalities: activeModalityFilters(),
+        provider: selectedProviderFilter,
+        latency_max: latencyChip ? Number(latencyChip.dataset.latencyMax) : null
+      });
+    }, 400);
+  }
+
+  document.querySelectorAll('#modality-filters .chip[data-modality], #modality-filters .chip[data-latency-max]').forEach(c => c.addEventListener('click', () => {
+    c.classList.toggle('active');
+    renderCatalog();
+    trackFilterChange();
+  }));
+
+  // Watchlist-only is a personal view toggle, not a search/evaluation filter — the underlying
+  // add/remove actions are already tracked individually via toggleWatchlist, so this doesn't
+  // also fire a catalog_filter event.
+  document.querySelectorAll('#modality-filters .chip[data-watchlist-only]').forEach(c => c.addEventListener('click', () => {
+    c.classList.toggle('active');
+    renderCatalog();
+  }));
+
+  function renderProviderDropdown(){
+    const panel = document.getElementById('provider-dropdown-panel');
+    if (!panel) return;
+    const providers = Array.from(new Set(MODELS.map(m => m.provider))).sort();
+    panel.innerHTML = [`<div class="dropdown-item ${!selectedProviderFilter ? 'active' : ''}" onclick="selectProviderFilter(null)">All providers</div>`]
+      .concat(providers.map(p => `<div class="dropdown-item ${selectedProviderFilter === p ? 'active' : ''}" onclick="selectProviderFilter('${escapeHtml(p)}')">${escapeHtml(p)}</div>`))
+      .join('');
+  }
+
+  function toggleProviderDropdown(event){
+    event.stopPropagation();
+    const panel = document.getElementById('provider-dropdown-panel');
+    if (!panel) return;
+    renderProviderDropdown();
+    panel.classList.toggle('show');
+  }
+
+  function selectProviderFilter(provider){
+    selectedProviderFilter = provider;
+    document.querySelector('#provider-filter .chip').classList.toggle('active', Boolean(provider));
+    document.getElementById('provider-filter-label').textContent = provider ? `: ${provider}` : '';
+    document.getElementById('provider-dropdown-panel').classList.remove('show');
+    renderCatalog();
+    trackFilterChange();
+  }
+
+  document.addEventListener('click', event => {
+    const panel = document.getElementById('provider-dropdown-panel');
+    if (panel && panel.classList.contains('show') && !event.target.closest('#provider-filter')) {
+      panel.classList.remove('show');
+    }
+  });
+
+  document.querySelectorAll('#activity-type-filters .chip[data-event-type]').forEach(c => c.addEventListener('click', () => {
+    c.classList.toggle('active');
+    activityPage = 1; // a changed filter invalidates whatever page you were on
+    renderActivityLog();
+  }));
+  const activitySearchInput = document.getElementById('activity-search'); // activity page only
+  if (activitySearchInput) {
+    let activitySearchTimer;
+    activitySearchInput.addEventListener('input', () => {
+      clearTimeout(activitySearchTimer);
+      activitySearchTimer = setTimeout(() => {
+        activityPage = 1;
+        renderActivityLog();
+      }, 150);
+    });
+  }
   const searchInput = document.querySelector('.searchbar input'); // catalog page only
   if (searchInput) {
     let searchTimer;

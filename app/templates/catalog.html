@@ -9,18 +9,22 @@
 
   <div class="searchbar">
     <span style="color:var(--muted-2)">⌕</span>
-    <input placeholder="Search by task — &quot;real-time voice&quot;, &quot;long context summarization&quot;…" value="real-time voice">
+    <input placeholder="Search by task — &quot;real-time voice&quot;, &quot;long context summarization&quot;…">
     <span class="kbd">/</span>
   </div>
 
   <div class="filter-row" id="modality-filters">
-    <div class="chip active" data-dot="var(--cyan)"><span class="dot" style="background:var(--cyan)"></span>LLM</div>
-    <div class="chip" data-dot="var(--amber)"><span class="dot" style="background:var(--amber)"></span>Voice</div>
-    <div class="chip" data-dot="var(--violet)"><span class="dot" style="background:var(--violet)"></span>Image</div>
-    <div class="chip" data-dot="var(--rose)"><span class="dot" style="background:var(--rose)"></span>Video</div>
-    <div class="chip" data-dot="var(--teal)"><span class="dot" style="background:var(--teal)"></span>Embedding</div>
-    <div class="chip" style="margin-left:10px; border-style:dashed;">Provider ▾</div>
-    <div class="chip" style="border-style:dashed;">Latency &lt; 300ms</div>
+    <div class="chip" data-modality="LLM"><span class="dot" style="background:var(--cyan)"></span>LLM</div>
+    <div class="chip" data-modality="Voice"><span class="dot" style="background:var(--amber)"></span>Voice</div>
+    <div class="chip" data-modality="Image"><span class="dot" style="background:var(--violet)"></span>Image</div>
+    <div class="chip" data-modality="Video"><span class="dot" style="background:var(--rose)"></span>Video</div>
+    <div class="chip" data-modality="Embedding"><span class="dot" style="background:var(--teal)"></span>Embedding</div>
+    <div class="chip-dropdown" id="provider-filter" style="margin-left:10px;">
+      <div class="chip" style="border-style:dashed;" onclick="toggleProviderDropdown(event)">Provider<span id="provider-filter-label"></span> ▾</div>
+      <div class="dropdown-panel" id="provider-dropdown-panel"></div>
+    </div>
+    <div class="chip" style="border-style:dashed;" data-latency-max="300">Latency &lt; 300ms</div>
+    <div class="chip" style="border-style:dashed;" data-watchlist-only="1">★ Watchlist</div>
   </div>
 
   <div class="grid" id="catalog-grid"></div>

@@ -12,15 +12,19 @@
           <span class="modality-tag" id="detail-modality" style="background:var(--amber-dim); color:var(--amber);">Voice</span>
           <h2 id="detail-title">Select a model</h2>
           <p class="provider" id="detail-provider">Choose a model from the catalog.</p>
+          <div id="detail-slug"></div>
         </div>
-        <div class="btn" id="detail-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
+        <div style="flex:none; display:flex; gap:8px;">
+          <div class="btn icon" id="detail-watchlist-btn" style="padding:9px 0;" title="Add to watchlist" aria-label="Add to watchlist">☆</div>
+          <div class="btn" id="detail-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
+        </div>
       </div>
       <p class="desc" id="detail-description">Model details will appear here.</p>
       <table class="spec-table" id="detail-specs"></table>
       <div class="use-tags" id="detail-tags"></div>
     </div>
     <div class="panel related">
-      <h4>You might also be looking at</h4>
+      <h4>You might also be interested in</h4>
       <div id="detail-related"></div>
       <p class="note" id="detail-note" style="margin-top:20px;">Select a model to see related options.</p>
     </div>
