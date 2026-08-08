@@ -89,18 +89,24 @@ Keep tickets and tests tagged with their FRD ID, for example `[AGT-4]` or `[CAT-
 
 ## Commands
 
-The dependency manifest is `requirements.txt`. The intended setup and run flow is:
+Dependencies are managed with `uv` (`pyproject.toml` / `uv.lock`; `requirements.txt` is kept in
+sync for tooling that expects it). Setup and run flow:
 
 ```bash
-python -m venv venv
-source venv/bin/activate       # Windows: venv\\Scripts\\activate
-pip install -r requirements.txt
-cp .env.example .env
-python seed_data.py
-python -m uvicorn app.main:app --reload
+uv sync
+source .venv/bin/activate      # Windows: .venv\\Scripts\\activate
+cp .env.example .env           # fill in MESH_API_KEY=rsk_...
+uv run python seed_data.py
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
-Once implementation exists, use these checks before handing off a change:
+Or use the one-command dev startup (defaults to port 8001, override with `PORT=8002`):
+
+```bash
+./scripts/start_dev.sh
+```
+
+Checks to run before handing off a change:
 
 ```bash
 pytest
@@ -108,9 +114,6 @@ pytest --cov=app
 black --check .
 flake8 .
 ```
-
-At the time this file was created, those commands are partly aspirational because the application
-and test directories have not been scaffolded.
 
 ## Testing expectations
 
