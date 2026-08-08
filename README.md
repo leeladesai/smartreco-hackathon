@@ -29,10 +29,13 @@ separate frontend service.
   bounds retries at 2 on weak retrieval; generation never runs more than once per trigger
   regardless of retries. The pipeline runs in a FastAPI background task, not inline on the
   ingestion request (see NFR-1 below).
-- **Delivery**: dashboard shows the latest recommendation with per-model "why this" tags sourced
-  from retrieval distance, and polls for freshness so a stale recommendation is never shown after
-  a new background run completes. A cron-scheduled digest (APScheduler) re-runs the pipeline per
-  user and delivers via email/Telegram/log-fallback.
+- **Delivery**: dashboard shows the latest recommendation, with a "Because you looked at these"
+  evidence row (itemized, deduped, current-session activity) and a per-model "why this" tag
+  computed deterministically from that same evidence — a latency win against models the user
+  actually compared/viewed, or a search-term match on the candidate's own use-case tags — falling
+  back to a retrieval-distance label only when neither applies. Polls for freshness so a stale
+  recommendation is never shown after a new background run completes. A cron-scheduled digest
+  (APScheduler) re-runs the pipeline per user and delivers via email/Telegram/log-fallback.
 - **Observability**: every agent run persists `trigger_reason` + timestamps regardless of
   LangSmith; LangSmith tracing wraps every graph node plus the Mesh call itself, opt-in via
   `LANGSMITH_API_KEY`.
@@ -156,9 +159,10 @@ re-triggers generation.
 
 **Real agentic depth (Iteration 2, bonus scope):** the pipeline is a genuine 5-node LangGraph graph
 (`analyze → retrieve → grade/refine → generate → store`), not a single-shot prompt — with bounded
-retry (max 2) on weak retrieval, and per-model "why this" tags on the dashboard sourced from actual
-retrieval distance, not canned text. The dashboard polls for a fresher recommendation rather than
-ever showing a stale one after a background run completes.
+retry (max 2) on weak retrieval, and per-model "why this" tags on the dashboard computed
+deterministically from the user's actual session evidence (see below), not canned text. The
+dashboard polls for a fresher recommendation rather than ever showing a stale one after a
+background run completes.
 
 **Bonus polish (Iteration 3, all three items done, not just prioritized):**
 - LangSmith trace per pipeline run, opt-in via `LANGSMITH_API_KEY` — every graph node plus the
@@ -175,6 +179,39 @@ measurement — the triggered pipeline's live Mesh call was originally blocking 
 response; it now runs in a `BackgroundTasks` job, verified live at ~50ms response time.
 `NFR-2` (≤1 LLM call per trigger) is guaranteed by the graph's structure and covered by a test that
 forces two retries and asserts the Mesh call still only fires once.
+
+---
+
+## 🎁 Post-roadmap enhancements
+
+Beyond the original FRD/roadmap scope, built and verified live in a follow-up hardening pass:
+
+- **Session-aware recommendation weighting** — the current browsing session dominates the
+  recommendation over older, diluted history (geometric decay per inactivity-gap session bucket)
+  instead of a flat "last 20 events" window; fixes a real bug where a 3-way modality tie across
+  sessions disabled retrieval filtering entirely.
+- **Dashboard evidence + grounded "why this" tags** — a "Because you looked at these" row shows
+  the itemized, deduped activity from the current session; each recommendation card's reason is
+  computed deterministically (a latency win against models actually compared/viewed, or a
+  search-term match on the candidate's own use-case tags) rather than a flat distance label. The
+  top narrative is now intent-framed (e.g. "building a real-time voice agent") because the Mesh
+  prompt was fixed to actually receive price/latency/context-window/use-case-tag facts it was
+  previously silently dropping.
+- **Curator "story" field wired end-to-end** — the persuasive "why this model" text captured in
+  the admin console previously never reached the database or the Mesh prompt; it's now a real
+  column, folded into both the Chroma embedding text and the narrative-generation candidate data.
+- **Catalog expansion via Mesh** — `scripts/expand_catalog_via_mesh.py` grew the seed catalog from
+  9 to 27 models using the Mesh LLM itself, validated through the existing dual-write path.
+- **Engagement features**: copy-to-clipboard on a model's identifier (tracked as its own event
+  type), a client-side watchlist/wishlist that feeds the same recommendation signal as views and
+  comparisons, and a content-similarity "you might also be interested in" endpoint
+  (`/api/models/{id}/related`) distinct from the activity-driven dashboard recommendation.
+- **Judge demo mode** — an admin-only, global toggle (`GET`/`PUT /api/settings/demo-mode`) that
+  shows a live queued→sent event-tracking overlay in the model drawer/detail page for every
+  AI-engineer session. Off by default so it never surfaces during normal use; meant only for live
+  pipeline demonstrations.
+- A real per-user `asyncio.Lock` fixing a genuine race condition that could produce duplicate
+  `Recommendation` rows from two near-simultaneous qualifying event batches.
 
 ---
 
