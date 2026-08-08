@@ -72,18 +72,23 @@ def test_non_admin_cannot_manage_models(client: TestClient) -> None:
     assert response.status_code == 403
 
 
-def test_admin_can_manually_trigger_digest_but_non_admin_cannot(client: TestClient) -> None:
+def test_admin_can_manually_trigger_digest_but_non_admin_cannot(
+    client: TestClient,
+) -> None:
     client.post(
-        "/api/auth/register", json={"email": "digest-user@test.dev", "password": "password123"}
+        "/api/auth/register",
+        json={"email": "digest-user@test.dev", "password": "password123"},
     )
     client.post(
-        "/api/auth/login", json={"email": "digest-user@test.dev", "password": "password123"}
+        "/api/auth/login",
+        json={"email": "digest-user@test.dev", "password": "password123"},
     )
     blocked = client.post("/api/admin/digest/run")
     assert blocked.status_code == 403
 
     client.post(
-        "/api/admin/login", json={"email": "curator@test.dev", "password": "password123"}
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
     )
     allowed = client.post("/api/admin/digest/run")
     assert allowed.status_code == 200
@@ -156,9 +161,9 @@ def test_recommendation_retrieves_only_indexed_catalog_candidates(
         },
     )
     unchanged = client.get("/api/recommendations/me").json()
-    assert unchanged["created_at"] == first_created_at, (
-        "AGT-6 should dedupe unchanged activity — no new recommendation should be stored"
-    )
+    assert (
+        unchanged["created_at"] == first_created_at
+    ), "AGT-6 should dedupe unchanged activity — no new recommendation should be stored"
 
 
 def test_mesh_narrative_is_persisted_and_model_ids_are_grounded(

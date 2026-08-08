@@ -75,17 +75,6 @@ class ModelVectorStore:
     def delete(self, model_id: int) -> None:
         self.collection.delete(ids=[str(model_id)])
 
-    def query(
-        self, text: str, limit: int = 5, where: dict | None = None
-    ) -> list[int]:
-        if not text.strip() or self.collection.count() == 0:
-            return []
-        results = self.collection.query(
-            query_texts=[text], n_results=limit, where=where
-        )
-        ids = results.get("ids", [[]])[0]
-        return [int(model_id) for model_id in ids]
-
     def query_scored(
         self, text: str, limit: int = 5, where: dict | None = None
     ) -> list[tuple[int, float]]:
@@ -104,6 +93,3 @@ class ModelVectorStore:
             (int(model_id), float(distance))
             for model_id, distance in zip(ids, distances)
         ]
-
-    def count(self) -> int:
-        return self.collection.count()

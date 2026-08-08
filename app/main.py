@@ -90,7 +90,8 @@ def as_utc(value):
     datetime.isoformat() serializes it with no 'Z'/offset — the browser's Date parser then
     reads it as local time instead of converting it, silently corrupting every displayed
     timestamp by the viewer's UTC offset. Stamping tzinfo here makes the API's timestamps
-    unambiguous for any client, rather than papering over it in one frontend render call."""
+    unambiguous for any client, rather than papering over it in one frontend render call.
+    """
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=timezone.utc)
@@ -151,7 +152,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def asset_version(relative_path: str) -> int:
         """Cache-busts static CSS/JS by mtime, not just server restart — otherwise a
-        browser can keep serving a stale cached copy after an edit even on a normal reload."""
+        browser can keep serving a stale cached copy after an edit even on a normal reload.
+        """
         return int((PROJECT_ROOT / "app" / "static" / relative_path).stat().st_mtime)
 
     def render_page(
@@ -396,7 +398,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     results.append(
                         {
                             **model_response(candidate).model_dump(mode="json"),
-                            "why_this": content_similarity_reason(distance, model.title),
+                            "why_this": content_similarity_reason(
+                                distance, model.title
+                            ),
                         }
                     )
 
@@ -530,7 +534,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "narrative": latest.narrative,
                     "models": [
                         {
-                            **model_response(models_by_id[model_id]).model_dump(mode="json"),
+                            **model_response(models_by_id[model_id]).model_dump(
+                                mode="json"
+                            ),
                             "why_this": reason_by_id.get(model_id),
                         }
                         for model_id in latest.model_ids
@@ -543,7 +549,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "evidence": evidence_payload,
                 }
             if not current_events:
-                return {"status": "pending", "narrative": None, "models": [], "evidence": []}
+                return {
+                    "status": "pending",
+                    "narrative": None,
+                    "models": [],
+                    "evidence": [],
+                }
 
             summary = activity_summary(session, current_events)
             scored = app.state.vector_store.query_scored(summary)
@@ -565,7 +576,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             candidates = [
                 {
                     **model_response(models_by_id[model_id]).model_dump(mode="json"),
-                    "why_this": contextual_reason(models_by_id[model_id], distance, False, evidence),
+                    "why_this": contextual_reason(
+                        models_by_id[model_id], distance, False, evidence
+                    ),
                 }
                 for model_id, distance in scored
                 if model_id in models_by_id

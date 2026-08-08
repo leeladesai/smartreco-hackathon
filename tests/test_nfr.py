@@ -25,11 +25,14 @@ def test_event_ingestion_p95_latency_under_budget(client: TestClient) -> None:
     agent pipeline (a real network LLM call) runs in a background task after the response is
     sent, not inline — see `run_pipeline_in_background` in `app/main.py`. Each sample uses a
     fresh user with a single event, staying under AGT-1's 3-event trigger threshold, so this
-    isolates plain ingestion cost rather than measuring a run that also happens to trigger."""
+    isolates plain ingestion cost rather than measuring a run that also happens to trigger.
+    """
     samples: list[float] = []
     for i in range(SAMPLE_SIZE):
         email = f"perf{i}@test.dev"
-        client.post("/api/auth/register", json={"email": email, "password": "password123"})
+        client.post(
+            "/api/auth/register", json={"email": email, "password": "password123"}
+        )
         client.post("/api/auth/login", json={"email": email, "password": "password123"})
 
         start = time.perf_counter()
@@ -42,9 +45,9 @@ def test_event_ingestion_p95_latency_under_budget(client: TestClient) -> None:
         assert response.json()["recommendation_triggered"] is False
 
     p95 = _p95(samples)
-    assert p95 < NFR1_P95_BUDGET_SECONDS, (
-        f"p95 ingestion latency {p95 * 1000:.1f}ms exceeds the {NFR1_P95_BUDGET_SECONDS * 1000:.0f}ms budget"
-    )
+    assert (
+        p95 < NFR1_P95_BUDGET_SECONDS
+    ), f"p95 ingestion latency {p95 * 1000:.1f}ms exceeds the {NFR1_P95_BUDGET_SECONDS * 1000:.0f}ms budget"
 
 
 def _make_session_factory(tmp_path):
@@ -58,13 +61,20 @@ def _make_session_factory(tmp_path):
 def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> None:
     """NFR-2: at most 1 LLM generation call per trigger event, excluding bounded retries.
     Retries (AGT-4) only re-run retrieval, never generation — forcing 2 retries here proves
-    the Mesh call count stays at 1 regardless of how many retrieval attempts happened."""
+    the Mesh call count stays at 1 regardless of how many retrieval attempts happened.
+    """
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="nfr2@test.dev", password_hash=hash_password("x"), role="user")
+        user = User(
+            email="nfr2@test.dev", password_hash=hash_password("x"), role="user"
+        )
         model = Model(
-            title="Eventually Found", provider="Test", modality="LLM",
-            price="$0", description="d", use_case_tags=[],
+            title="Eventually Found",
+            provider="Test",
+            modality="LLM",
+            price="$0",
+            description="d",
+            use_case_tags=[],
         )
         session.add_all([user, model])
         session.commit()
@@ -77,7 +87,9 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
             def __init__(self) -> None:
                 self.calls = 0
 
-            def query_scored(self, text: str, limit: int = 5, where: dict | None = None):
+            def query_scored(
+                self, text: str, limit: int = 5, where: dict | None = None
+            ):
                 self.calls += 1
                 # Weak until the 3rd attempt (initial + 2 retries == MAX_RETRIES), so
                 # grade_refine is forced through its full retry budget before proceeding.

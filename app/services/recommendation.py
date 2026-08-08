@@ -95,7 +95,9 @@ def _summarize_bucket(session: Session, events: list[Event]) -> str:
         and event.model_id in models_by_id
     ]
     if watchlist_events:
-        watchlisted_titles = [models_by_id[event.model_id].title for event in watchlist_events]
+        watchlisted_titles = [
+            models_by_id[event.model_id].title for event in watchlist_events
+        ]
         parts.append(f"Watchlisted: {', '.join(dict.fromkeys(watchlisted_titles))}.")
 
     interest_events = view_events + watchlist_events
@@ -110,7 +112,9 @@ def _summarize_bucket(session: Session, events: list[Event]) -> str:
             ordered = sorted(modality_events, key=lambda event: event.created_at)
             span = ordered[-1].created_at - ordered[0].created_at
             if span <= MODALITY_CLUSTER_WINDOW:
-                parts.append(f"Browsing multiple {modality} models — evaluating options.")
+                parts.append(
+                    f"Browsing multiple {modality} models — evaluating options."
+                )
 
     compare_events = [
         event
@@ -137,7 +141,9 @@ def activity_summary(session: Session, events: list[Event]) -> str:
     if not buckets:
         return ""
     current = _summarize_bucket(session, buckets[0])
-    older = _summarize_bucket(session, [event for bucket in buckets[1:] for event in bucket])
+    older = _summarize_bucket(
+        session, [event for bucket in buckets[1:] for event in bucket]
+    )
     parts: list[str] = []
     if current:
         parts.append(f"In this session: {current}")
@@ -162,7 +168,9 @@ def dominant_modality(session: Session, events: list[Event]) -> str | None:
     if not buckets:
         return None
 
-    model_ids = {event.model_id for events_ in buckets for event in events_ if event.model_id}
+    model_ids = {
+        event.model_id for events_ in buckets for event in events_ if event.model_id
+    }
     if not model_ids:
         return None
     models_by_id = {
@@ -205,7 +213,9 @@ def dominant_modality(session: Session, events: list[Event]) -> str | None:
     return leader_modality
 
 
-def session_evidence(session: Session, events: list[Event], limit: int = 5) -> list[dict]:
+def session_evidence(
+    session: Session, events: list[Event], limit: int = 5
+) -> list[dict]:
     """Current session only (buckets[0]), newest-first — the raw, itemized "what actually
     happened" list backing the Dashboard's evidence row, as opposed to `activity_summary`'s
     prose blob. Deduped by (action, key) so re-viewing the same model twice in a row only
@@ -220,7 +230,9 @@ def session_evidence(session: Session, events: list[Event], limit: int = 5) -> l
     models_by_id = (
         {
             model.id: model
-            for model in session.scalars(select(Model).where(Model.id.in_(model_ids))).all()
+            for model in session.scalars(
+                select(Model).where(Model.id.in_(model_ids))
+            ).all()
         }
         if model_ids
         else {}
@@ -239,7 +251,10 @@ def session_evidence(session: Session, events: list[Event], limit: int = 5) -> l
         action = action_by_type.get(event.event_type)
         if not action:
             continue
-        if event.event_type == "model_watchlist" and (event.metadata_json or {}).get("action") != "add":
+        if (
+            event.event_type == "model_watchlist"
+            and (event.metadata_json or {}).get("action") != "add"
+        ):
             continue
         if event.event_type == "search":
             query = (event.metadata_json or {}).get("query")
@@ -260,7 +275,9 @@ def session_evidence(session: Session, events: list[Event], limit: int = 5) -> l
             {
                 "action": action,
                 "label": label,
-                "model": models_by_id.get(event.model_id) if event.event_type != "search" else None,
+                "model": models_by_id.get(event.model_id)
+                if event.event_type != "search"
+                else None,
                 "created_at": event.created_at,
             }
         )

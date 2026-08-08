@@ -1,5 +1,6 @@
 """DLV-3: scheduled digest, delivered via email or Telegram, driven by a real cron
-scheduler (see `app/services/scheduler.py`) rather than a manual trigger.
+scheduler (the APScheduler wiring in `app/main.py`'s `create_app`) rather than a manual
+trigger.
 
 Delivery is provider-agnostic (`Notifier`): email addresses recipients per-user via
 `User.email`, which already exists on the schema. Telegram has no per-user chat-id mapping
@@ -27,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 class Notifier(Protocol):
-    def send(self, user: User, recommendation: Recommendation) -> None: ...
+    def send(self, user: User, recommendation: Recommendation) -> None:
+        ...
 
 
 @dataclass

@@ -30,9 +30,7 @@ def test_build_notifier_prefers_email_then_telegram_then_logging() -> None:
         EmailNotifier,
     )
     assert isinstance(
-        build_notifier(
-            Settings(telegram_bot_token="token", telegram_chat_id="chat")
-        ),
+        build_notifier(Settings(telegram_bot_token="token", telegram_chat_id="chat")),
         TelegramNotifier,
     )
     assert isinstance(build_notifier(Settings()), LoggingNotifier)
@@ -46,7 +44,9 @@ class RecordingNotifier:
         self.sent.append((user, recommendation))
 
 
-def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(tmp_path) -> None:
+def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
+    tmp_path,
+) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         with_history = User(
@@ -58,12 +58,18 @@ def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(tmp_
         session.add_all([with_history, no_history])
         session.commit()
         session.add(
-            Event(user_id=with_history.id, event_type="search", metadata_json={"query": "voice"})
+            Event(
+                user_id=with_history.id,
+                event_type="search",
+                metadata_json={"query": "voice"},
+            )
         )
         session.commit()
 
     notifier = RecordingNotifier()
-    summary = run_digest(session_factory, NullVectorStore(), mesh_generator=None, notifier=notifier)
+    summary = run_digest(
+        session_factory, NullVectorStore(), mesh_generator=None, notifier=notifier
+    )
 
     # No candidates in the empty vector store, so neither user ever gets a stored
     # Recommendation — digest should skip both rather than error or fabricate one.
@@ -71,12 +77,16 @@ def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(tmp_
     assert notifier.sent == []
 
 
-def test_run_digest_delivers_existing_recommendation_without_new_events(tmp_path) -> None:
+def test_run_digest_delivers_existing_recommendation_without_new_events(
+    tmp_path,
+) -> None:
     """A user with a stable recommendation (nothing new since last run) should still get
     today's digest — DLV-3 sends the latest recommendation, not only fresh ones."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="stable@test.dev", password_hash=hash_password("x"), role="user")
+        user = User(
+            email="stable@test.dev", password_hash=hash_password("x"), role="user"
+        )
         session.add(user)
         session.commit()
         session.add(
@@ -92,7 +102,9 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(tmp_path
         session.commit()
 
     notifier = RecordingNotifier()
-    summary = run_digest(session_factory, NullVectorStore(), mesh_generator=None, notifier=notifier)
+    summary = run_digest(
+        session_factory, NullVectorStore(), mesh_generator=None, notifier=notifier
+    )
 
     assert summary == {"sent": 1, "skipped": 0}
     assert len(notifier.sent) == 1
@@ -104,7 +116,9 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(tmp_path
 def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="broken@test.dev", password_hash=hash_password("x"), role="user")
+        user = User(
+            email="broken@test.dev", password_hash=hash_password("x"), role="user"
+        )
         session.add(user)
         session.commit()
         session.add(
@@ -123,5 +137,10 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
         def send(self, user: User, recommendation: Recommendation) -> None:
             raise RuntimeError("smtp down")
 
-    summary = run_digest(session_factory, NullVectorStore(), mesh_generator=None, notifier=FailingNotifier())
+    summary = run_digest(
+        session_factory,
+        NullVectorStore(),
+        mesh_generator=None,
+        notifier=FailingNotifier(),
+    )
     assert summary == {"sent": 0, "skipped": 1}

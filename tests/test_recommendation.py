@@ -18,14 +18,24 @@ def _make_session_factory(tmp_path):
 def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="evidence@test.dev", password_hash=hash_password("x"), role="user")
+        user = User(
+            email="evidence@test.dev", password_hash=hash_password("x"), role="user"
+        )
         old_model = Model(
-            title="Old Model", provider="Test", modality="LLM",
-            price="$0", description="d", use_case_tags=[],
+            title="Old Model",
+            provider="Test",
+            modality="LLM",
+            price="$0",
+            description="d",
+            use_case_tags=[],
         )
         new_model = Model(
-            title="New Model", provider="Test", modality="LLM",
-            price="$0", description="d", use_case_tags=[],
+            title="New Model",
+            provider="Test",
+            modality="LLM",
+            price="$0",
+            description="d",
+            use_case_tags=[],
         )
         session.add_all([user, old_model, new_model])
         session.commit()
@@ -35,13 +45,19 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
             [
                 # Older session, well outside SESSION_GAP of the events below.
                 Event(
-                    user_id=user.id, event_type="model_view", model_id=old_model.id,
-                    metadata_json={}, created_at=now - SESSION_GAP - timedelta(hours=1),
+                    user_id=user.id,
+                    event_type="model_view",
+                    model_id=old_model.id,
+                    metadata_json={},
+                    created_at=now - SESSION_GAP - timedelta(hours=1),
                 ),
                 # Current session.
                 Event(
-                    user_id=user.id, event_type="model_view", model_id=new_model.id,
-                    metadata_json={}, created_at=now,
+                    user_id=user.id,
+                    event_type="model_view",
+                    model_id=new_model.id,
+                    metadata_json={},
+                    created_at=now,
                 ),
             ]
         )
@@ -58,10 +74,16 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
 def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="dedupe@test.dev", password_hash=hash_password("x"), role="user")
+        user = User(
+            email="dedupe@test.dev", password_hash=hash_password("x"), role="user"
+        )
         model = Model(
-            title="Cartesia Sonic", provider="Cartesia", modality="Voice",
-            price="$0", description="d", use_case_tags=[],
+            title="Cartesia Sonic",
+            provider="Cartesia",
+            modality="Voice",
+            price="$0",
+            description="d",
+            use_case_tags=[],
         )
         session.add_all([user, model])
         session.commit()
@@ -70,16 +92,24 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
         session.add_all(
             [
                 Event(
-                    user_id=user.id, event_type="search", metadata_json={"query": "multilingual"},
+                    user_id=user.id,
+                    event_type="search",
+                    metadata_json={"query": "multilingual"},
                     created_at=now - timedelta(minutes=2),
                 ),
                 Event(
-                    user_id=user.id, event_type="model_view", model_id=model.id,
-                    metadata_json={}, created_at=now - timedelta(minutes=1),
+                    user_id=user.id,
+                    event_type="model_view",
+                    model_id=model.id,
+                    metadata_json={},
+                    created_at=now - timedelta(minutes=1),
                 ),
                 Event(
-                    user_id=user.id, event_type="model_view", model_id=model.id,
-                    metadata_json={}, created_at=now,
+                    user_id=user.id,
+                    event_type="model_view",
+                    model_id=model.id,
+                    metadata_json={},
+                    created_at=now,
                 ),
             ]
         )

@@ -189,7 +189,9 @@ def _retrieve_models(vector_store: ModelVectorStore):
         )
         # Only pre-filter on the first pass — a retry already broadens the query text
         # because the narrower search came back weak, so keep the candidate pool wide too.
-        modality_filter = state.get("modality_filter") if state.get("retry_count") == 0 else None
+        modality_filter = (
+            state.get("modality_filter") if state.get("retry_count") == 0 else None
+        )
         where = {"modality": modality_filter} if modality_filter else None
         scored = vector_store.query_scored(query, limit=RETRIEVAL_TOP_K, where=where)
         return {**state, "candidates_scored": scored}

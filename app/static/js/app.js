@@ -543,8 +543,6 @@
     event_threshold: 'Enough new activity was tracked',
     activity_retrieval: 'Live preview from your recent activity',
     no_retrieval_candidates: 'No strong catalog match yet',
-    cooldown_active: 'Skipped — you just got a recommendation',
-    unchanged_activity: 'Skipped — nothing new since your last one',
   };
 
   function renderActivityPipeline(pipeline){

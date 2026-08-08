@@ -9,7 +9,8 @@ from app.config import Settings
 
 def configure_langsmith(settings: Settings) -> bool:
     """Enable LangSmith tracing via env vars if an API key is configured. Returns whether
-    tracing is now active, so callers can log/report it without re-checking `settings`."""
+    tracing is now active, so callers can log/report it without re-checking `settings`.
+    """
     if not settings.langsmith_api_key:
         return False
     os.environ["LANGSMITH_TRACING"] = "true"

@@ -50,13 +50,17 @@ def test_admin_page_ships_admin_only_markup_not_shared_with_other_routes() -> No
             existing.role = "admin"
             existing.password_hash = hash_password(password)
         else:
-            session.add(User(email=email, password_hash=hash_password(password), role="admin"))
+            session.add(
+                User(email=email, password_hash=hash_password(password), role="admin")
+            )
         session.commit()
 
     # A scoped client, not the shared module-level `client` — logging in here must not leak
     # a session cookie into other tests in this file that assume an unauthenticated client.
     with TestClient(app) as admin_client:
-        admin_client.post("/api/admin/login", json={"email": email, "password": password})
+        admin_client.post(
+            "/api/admin/login", json={"email": email, "password": password}
+        )
         response = admin_client.get("/admin")
 
     assert response.status_code == 200

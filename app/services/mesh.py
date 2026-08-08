@@ -31,6 +31,7 @@ class MeshNarrativeGenerator:
     ) -> NarrativeResult:
         if not self.enabled:
             raise RuntimeError("Mesh narrative generation is not configured")
+
         def _facts(candidate: dict) -> str:
             # Only include facts that are actually set — most fields are modality-specific
             # (Voice has latency, LLM has context_window, neither always has both), and an
@@ -47,7 +48,11 @@ class MeshNarrativeGenerator:
         candidate_text = "\n".join(
             f"- {candidate['id']}: {candidate['title']} ({candidate['provider']})."
             f"{_facts(candidate)} {candidate.get('description', '')} "
-            + (f"Why it stands out: {candidate['story']}" if candidate.get("story") else "")
+            + (
+                f"Why it stands out: {candidate['story']}"
+                if candidate.get("story")
+                else ""
+            )
             for candidate in candidates
         )
         response = self.client.chat.completions.create(
