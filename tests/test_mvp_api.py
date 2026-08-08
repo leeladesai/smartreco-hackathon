@@ -135,6 +135,9 @@ def test_recommendation_retrieves_only_indexed_catalog_candidates(
     assert recommendation.json()["status"] == "retrieval_ready"
     assert recommendation.json()["activity_hash"]
     assert recommendation.json()["models"][0]["id"] == created.json()["id"]
+    # Dashboard evidence row (session-scoped, itemized activity behind the recommendation).
+    evidence_actions = {item["action"] for item in recommendation.json()["evidence"]}
+    assert evidence_actions == {"searched", "viewed", "compared"}
 
     # `recommendation_triggered` on the response only reflects the cheap AGT-1 event-count
     # check (NFR-1: the expensive pipeline now runs in the background, off the request path,

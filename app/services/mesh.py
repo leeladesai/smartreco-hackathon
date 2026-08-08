@@ -31,9 +31,22 @@ class MeshNarrativeGenerator:
     ) -> NarrativeResult:
         if not self.enabled:
             raise RuntimeError("Mesh narrative generation is not configured")
+        def _facts(candidate: dict) -> str:
+            # Only include facts that are actually set — most fields are modality-specific
+            # (Voice has latency, LLM has context_window, neither always has both), and an
+            # absent field must not silently read as "0" or "None" in the prompt.
+            facts = [f"price {candidate['price']}"] if candidate.get("price") else []
+            if candidate.get("latency_ms"):
+                facts.append(f"latency ~{candidate['latency_ms']}ms")
+            if candidate.get("context_window"):
+                facts.append(f"context window {candidate['context_window']}")
+            if candidate.get("use_case_tags"):
+                facts.append(f"use cases: {', '.join(candidate['use_case_tags'])}")
+            return f" [{'; '.join(facts)}]" if facts else ""
+
         candidate_text = "\n".join(
-            f"- {candidate['id']}: {candidate['title']} ({candidate['provider']}). "
-            f"{candidate.get('description', '')} "
+            f"- {candidate['id']}: {candidate['title']} ({candidate['provider']})."
+            f"{_facts(candidate)} {candidate.get('description', '')} "
             + (f"Why it stands out: {candidate['story']}" if candidate.get("story") else "")
             for candidate in candidates
         )
@@ -43,10 +56,17 @@ class MeshNarrativeGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "Recommend only models in the supplied candidate list. "
-                        "Do not invent model IDs or providers. Return valid JSON "
-                        'with exactly two keys: "narrative" (string) and '
-                        '"model_ids" (array of integer candidate IDs).'
+                        "First, in one sentence, name the AI engineer's likely use case or "
+                        "goal based on their activity summary (e.g. 'building a real-time "
+                        "voice agent') — infer this only from the given activity summary and "
+                        "candidate data, never invent specifics not present in either. Then "
+                        "recommend only models from the supplied candidate list, referencing "
+                        "specific models the user already looked at by name and concrete "
+                        "numeric tradeoffs (latency, price, context window) from the candidate "
+                        "data where relevant. Do not invent model IDs, providers, or facts not "
+                        "present in the candidate list. Return valid JSON with exactly two "
+                        'keys: "narrative" (string, 2-3 sentences) and "model_ids" (array of '
+                        "integer candidate IDs)."
                     ),
                 },
                 {
@@ -54,7 +74,7 @@ class MeshNarrativeGenerator:
                     "content": (
                         f"Activity summary: {behavior_summary}\n"
                         f"Candidates:\n{candidate_text}\n"
-                        "Write a concise comparison-driven recommendation as JSON."
+                        "Write the intent-framed, comparison-driven recommendation as JSON."
                     ),
                 },
             ],

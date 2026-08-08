@@ -48,11 +48,16 @@ from app.services.catalog import (
 from app.services.agent_graph import (
     STRONG_RETRIEVAL_DISTANCE,
     WEAK_RETRIEVAL_DISTANCE,
+    contextual_reason,
     prepare_retrieval_recommendation,
-    retrieval_reason,
 )
 from app.services.digest import build_notifier, run_digest
-from app.services.recommendation import activity_summary, should_trigger
+from app.services.recommendation import (
+    activity_summary,
+    recent_events,
+    session_evidence,
+    should_trigger,
+)
 from app.services.mesh import MeshNarrativeGenerator
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore
@@ -499,6 +504,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 .where(Recommendation.user_id == user.id)
                 .order_by(Recommendation.created_at.desc())
             )
+            current_events = recent_events(session, user.id)
+            evidence = session_evidence(session, current_events)
+            evidence_payload = [
+                {
+                    "label": item["label"],
+                    "action": item["action"],
+                    "created_at": as_utc(item["created_at"]),
+                }
+                for item in evidence
+            ]
+
             if latest:
                 models = session.scalars(
                     select(Model).where(Model.id.in_(latest.model_ids))
@@ -524,17 +540,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "activity_hash": latest.activity_hash,
                     "trigger_reason": latest.trigger_reason,
                     "created_at": as_utc(latest.created_at),
+                    "evidence": evidence_payload,
                 }
-            events = session.scalars(
-                select(Event)
-                .where(Event.user_id == user.id)
-                .order_by(Event.created_at.desc())
-                .limit(20)
-            ).all()
-            if not events:
-                return {"status": "pending", "narrative": None, "models": []}
+            if not current_events:
+                return {"status": "pending", "narrative": None, "models": [], "evidence": []}
 
-            summary = activity_summary(session, events)
+            summary = activity_summary(session, current_events)
             scored = app.state.vector_store.query_scored(summary)
             if not scored:
                 return {
@@ -542,6 +553,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "narrative": None,
                     "models": [],
                     "trigger_reason": "no_retrieval_candidates",
+                    "evidence": evidence_payload,
                 }
             candidate_ids = [model_id for model_id, _ in scored]
             models_by_id = {
@@ -553,7 +565,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             candidates = [
                 {
                     **model_response(models_by_id[model_id]).model_dump(mode="json"),
-                    "why_this": retrieval_reason(distance, False),
+                    "why_this": contextual_reason(models_by_id[model_id], distance, False, evidence),
                 }
                 for model_id, distance in scored
                 if model_id in models_by_id
@@ -563,6 +575,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "narrative": None,
                 "models": candidates,
                 "trigger_reason": "activity_retrieval",
+                "evidence": evidence_payload,
             }
 
     @app.get("/api/activity/me")

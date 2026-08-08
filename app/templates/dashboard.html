@@ -16,16 +16,21 @@
   <p class="note" id="stepper-note" style="margin:-14px 0 20px;"></p>
 
   <div class="narrative-card">
+    <p class="eyebrow" style="margin-bottom:8px;">Your session, in short</p>
     <div class="tag-row" id="dashboard-tags">
       <span class="badge reason">status: learning</span>
       <span class="badge conf">recommendation pending</span>
     </div>
     <p class="narrative-text" id="dashboard-narrative">Browse a few models and we’ll show the recommendation generated from your actual activity here.</p>
-    <span class="delta-chip" id="dashboard-delta">No recommendation stored yet.</span>
   </div>
 
   <div class="evidence-wrap">
-    <h4>Recommended — because you did this ↓</h4>
+    <h4>Because you looked at these <span class="muted" id="evidence-count"></span></h4>
+    <div class="evidence-row" id="dashboard-evidence"></div>
+  </div>
+
+  <div class="evidence-wrap">
+    <h4>New picks for you</h4>
     <div class="rec-grid" id="recommendation-grid">
       <div class="card" style="cursor:default;">
         <div class="stripe" style="background:var(--amber);"></div>

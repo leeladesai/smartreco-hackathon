@@ -234,7 +234,7 @@
   .step-line{width:26px; height:1px; background:var(--line); margin:0 8px;}
 
   .narrative-card{
-    background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--amber);
+    background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--cyan);
     border-radius:0 8px 8px 0; padding:20px 22px; margin-bottom:8px;
   }
   .narrative-card .tag-row{display:flex; gap:8px; margin-bottom:10px; align-items:center;}
@@ -244,9 +244,17 @@
   .narrative-text{font-size:15px; line-height:1.65; margin:0;}
   .narrative-text b{color:var(--amber); font-weight:600;}
   .delta-chip{font-family:var(--mono); font-size:10.5px; color:var(--teal); margin-top:12px; display:inline-block;}
+  .muted{color:var(--muted-2);}
 
   .evidence-wrap{margin-top:28px;}
   .evidence-wrap h4{font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin-bottom:16px;}
+  .evidence-row{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;}
+  .evidence-chip{
+    border:1px solid var(--line); border-radius:8px; padding:10px 14px; min-width:150px;
+    background:var(--panel);
+  }
+  .evidence-chip .label{font-size:13px; font-weight:600; margin:0 0 4px;}
+  .evidence-chip .sub{font-family:var(--mono); font-size:10px; color:var(--muted-2); text-transform:capitalize;}
   .rec-grid{display:grid; grid-template-columns:repeat(auto-fill, minmax(250px,1fr)); gap:16px; margin-top:16px;}
   .why-tag{
     font-family:var(--mono); font-size:9.5px; text-transform:uppercase; letter-spacing:.05em;

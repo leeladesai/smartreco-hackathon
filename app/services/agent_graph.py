@@ -26,6 +26,7 @@ from app.services.recommendation import (
     dominant_modality,
     recent_events,
     session_bucket_events,
+    session_evidence,
 )
 from app.vector import ModelVectorStore
 
@@ -51,6 +52,7 @@ class AgentState(TypedDict, total=False):
     activity_hash: str
     retry_count: int
     modality_filter: str | None
+    evidence: list[dict]
     candidates_scored: list[tuple[int, float]]
     query_refined: bool
     grade_action: str
@@ -71,6 +73,56 @@ def retrieval_reason(distance: float, query_refined: bool) -> str:
     if distance <= WEAK_RETRIEVAL_DISTANCE:
         return "Related to your recent activity"
     return "Broader catalog match"
+
+
+def _latency_beats(candidate: Model, evidence: list[dict], action: str) -> str | None:
+    peers = [
+        item["model"]
+        for item in evidence
+        if item["action"] == action
+        and item.get("model")
+        and item["model"].id != candidate.id
+        and item["model"].modality == candidate.modality
+        and item["model"].latency_ms is not None
+    ]
+    if candidate.latency_ms is None or not peers:
+        return None
+    beaten = [peer for peer in peers if candidate.latency_ms < peer.latency_ms]
+    if not beaten:
+        return None
+    names = list(dict.fromkeys(peer.title for peer in beaten))[:2]
+    return f"beats {' + '.join(names)} on latency"
+
+
+def contextual_reason(
+    candidate: Model, distance: float, query_refined: bool, evidence: list[dict]
+) -> str:
+    """Grounds `why_this` in what the user actually did this session, computed
+    deterministically from real fields (never asked of the LLM — see the "story" field
+    grounding discussion this was added from). Tries, in order: a latency win against
+    models the user explicitly compared, then against models the user merely viewed, then
+    a search term matching this candidate's own use-case tags/description. Falls back to
+    the existing distance-only `retrieval_reason` when none of that evidence exists —
+    never invents a reason with no real backing."""
+    reason = _latency_beats(candidate, evidence, "compared")
+    if reason:
+        return reason
+    reason = _latency_beats(candidate, evidence, "viewed")
+    if reason:
+        return reason
+
+    tags = [tag.lower() for tag in (candidate.use_case_tags or [])]
+    description = (candidate.description or "").lower()
+    for item in evidence:
+        if item["action"] != "searched":
+            continue
+        term = item["label"].strip('"').lower()
+        if not term:
+            continue
+        if any(term in tag or tag in term for tag in tags) or term in description:
+            return f"matches your {item['label']} search"
+
+    return retrieval_reason(distance, query_refined)
 
 
 def _analyze_activity(session: Session):
@@ -120,6 +172,7 @@ def _analyze_activity(session: Session):
             "activity_hash": event_hash,
             "retry_count": 0,
             "modality_filter": dominant_modality(session, events),
+            "evidence": session_evidence(session, events),
             "short_circuit": False,
         }
 
@@ -208,6 +261,8 @@ def _generate_narrative(session: Session, mesh_generator):
                     "modality": models_by_id[model_id].modality,
                     "price": models_by_id[model_id].price,
                     "latency_ms": models_by_id[model_id].latency_ms,
+                    "context_window": models_by_id[model_id].context_window,
+                    "use_case_tags": models_by_id[model_id].use_case_tags,
                     "description": models_by_id[model_id].description,
                     "story": models_by_id[model_id].story,
                 }
@@ -239,13 +294,20 @@ def _generate_narrative(session: Session, mesh_generator):
 
         distances = dict(state.get("candidates_scored", []))
         query_refined = state.get("query_refined", False)
+        evidence = state.get("evidence", [])
         retrieval_meta = [
             {
                 "model_id": model_id,
                 "distance": distances.get(model_id),
-                "reason": retrieval_reason(distances.get(model_id, WEAK_RETRIEVAL_DISTANCE), query_refined),
+                "reason": contextual_reason(
+                    models_by_id[model_id],
+                    distances.get(model_id, WEAK_RETRIEVAL_DISTANCE),
+                    query_refined,
+                    evidence,
+                ),
             }
             for model_id in final_ids
+            if model_id in models_by_id
         ]
 
         return {

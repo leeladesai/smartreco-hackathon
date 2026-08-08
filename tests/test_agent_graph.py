@@ -1,8 +1,10 @@
+from datetime import datetime
+
 from app.config import Settings
 from app.db import build_session_factory
 from app.models import Event, Model, User
 from app.security import hash_password
-from app.services.agent_graph import prepare_retrieval_recommendation
+from app.services.agent_graph import contextual_reason, prepare_retrieval_recommendation
 
 
 class FakeVectorStore:
@@ -195,3 +197,44 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
         # Initial attempt + MAX_RETRIES(=2) retries, then give up without storing anything.
         assert empty_store.calls == 3
         assert recommendation is None
+
+
+def _model(id, title, modality, latency_ms=None, use_case_tags=None, description="d"):
+    return Model(
+        id=id, title=title, modality=modality, provider="Test", price="$0",
+        latency_ms=latency_ms, description=description, use_case_tags=use_case_tags or [],
+    )
+
+
+def test_contextual_reason_prefers_latency_comparison_over_compared_models() -> None:
+    candidate = _model(1, "Fast Voice", "Voice", latency_ms=100)
+    slower_compared = _model(2, "Slow Voice A", "Voice", latency_ms=300)
+    evidence = [
+        {"action": "compared", "label": "Slow Voice A", "model": slower_compared, "created_at": datetime.utcnow()},
+    ]
+    assert contextual_reason(candidate, 0.5, False, evidence) == "beats Slow Voice A on latency"
+
+
+def test_contextual_reason_matches_search_term_to_use_case_tag() -> None:
+    candidate = _model(1, "Multilingual TTS", "Voice", use_case_tags=["multilingual"])
+    evidence = [
+        {"action": "searched", "label": '"multilingual"', "model": None, "created_at": datetime.utcnow()},
+    ]
+    assert contextual_reason(candidate, 0.5, False, evidence) == 'matches your "multilingual" search'
+
+
+def test_contextual_reason_falls_back_to_distance_reason() -> None:
+    candidate = _model(1, "Plain Model", "LLM")
+    assert contextual_reason(candidate, 0.5, False, []) == "Strong match to your recent activity"
+    assert contextual_reason(candidate, 0.5, True, []) == "Matched after broadening your activity signal"
+
+
+def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() -> None:
+    # A faster model in a different modality must never be used as a latency comparison —
+    # ms are only comparable within the same modality (e.g. Voice vs Voice).
+    candidate = _model(1, "Image Gen", "Image")
+    unrelated = _model(2, "Fast Voice", "Voice", latency_ms=50)
+    evidence = [
+        {"action": "compared", "label": "Fast Voice", "model": unrelated, "created_at": datetime.utcnow()},
+    ]
+    assert contextual_reason(candidate, 0.5, False, evidence) == "Strong match to your recent activity"

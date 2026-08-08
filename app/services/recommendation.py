@@ -205,6 +205,70 @@ def dominant_modality(session: Session, events: list[Event]) -> str | None:
     return leader_modality
 
 
+def session_evidence(session: Session, events: list[Event], limit: int = 5) -> list[dict]:
+    """Current session only (buckets[0]), newest-first — the raw, itemized "what actually
+    happened" list backing the Dashboard's evidence row, as opposed to `activity_summary`'s
+    prose blob. Deduped by (action, key) so re-viewing the same model twice in a row only
+    shows once. Each item: {"action", "label", "model": Model | None, "created_at"}.
+    """
+    buckets = session_bucket_events(events)
+    if not buckets:
+        return []
+    current = buckets[0]
+
+    model_ids = {event.model_id for event in current if event.model_id}
+    models_by_id = (
+        {
+            model.id: model
+            for model in session.scalars(select(Model).where(Model.id.in_(model_ids))).all()
+        }
+        if model_ids
+        else {}
+    )
+
+    action_by_type = {
+        "model_view": "viewed",
+        "model_compare": "compared",
+        "search": "searched",
+        "model_watchlist": "watchlisted",
+    }
+
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for event in current:
+        action = action_by_type.get(event.event_type)
+        if not action:
+            continue
+        if event.event_type == "model_watchlist" and (event.metadata_json or {}).get("action") != "add":
+            continue
+        if event.event_type == "search":
+            query = (event.metadata_json or {}).get("query")
+            if not query:
+                continue
+            label = f'"{query}"'
+            key = (action, query)
+        else:
+            model = models_by_id.get(event.model_id)
+            if not model:
+                continue
+            label = model.title
+            key = (action, model.title)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "action": action,
+                "label": label,
+                "model": models_by_id.get(event.model_id) if event.event_type != "search" else None,
+                "created_at": event.created_at,
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
+
+
 def activity_hash(events: list[Event]) -> str:
     payload = [
         {

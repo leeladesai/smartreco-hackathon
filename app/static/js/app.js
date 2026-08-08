@@ -430,6 +430,30 @@
     if (note) note.textContent = STEPPER_NOTES[noteKey] || '';
   }
 
+  function timeAgo(isoString){
+    const seconds = Math.max(0, Math.round((Date.now() - new Date(isoString).getTime()) / 1000));
+    if (seconds < 60) return 'just now';
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return new Date(isoString).toLocaleDateString([], {day:'numeric', month:'short'});
+  }
+
+  function renderDashboardEvidence(evidence){
+    const row = document.getElementById('dashboard-evidence');
+    const count = document.getElementById('evidence-count');
+    if (!row) return;
+    count.textContent = evidence.length ? `(${evidence.length} this session)` : '';
+    row.innerHTML = evidence.length
+      ? evidence.map(item => `
+        <div class="evidence-chip">
+          <p class="label">${escapeHtml(item.label)}</p>
+          <p class="sub">${escapeHtml(item.action)} · ${timeAgo(item.created_at)}</p>
+        </div>`).join('')
+      : '<div class="evidence-chip"><p class="sub">Nothing tracked yet this session — browse a model to get started.</p></div>';
+  }
+
   async function loadDashboard(){
     if (!userSession) return;
     try {
@@ -438,10 +462,10 @@
       const recommendation = await response.json();
       dashboardRecId = recommendation.id ?? null;
       renderStepper(recommendation);
+      renderDashboardEvidence(recommendation.evidence || []);
       if (recommendation.status === 'pending' || !recommendation.models?.length) {
         document.getElementById('dashboard-tags').innerHTML = '<span class="badge reason">status: learning</span><span class="badge conf">recommendation pending</span>';
         document.getElementById('dashboard-narrative').textContent = 'Your activity is being collected. Once enough signal is available, your grounded recommendation will appear here.';
-        document.getElementById('dashboard-delta').textContent = 'No recommendation stored yet.';
         document.getElementById('recommendation-grid').innerHTML = '<p class="note">Browse and compare models to give the recommendation engine something real to work with.</p>';
       } else {
         const candidates = recommendation.models.map(fromApiModel);
@@ -450,9 +474,6 @@
           ? '<span class="badge reason">status: generated</span><span class="badge conf">grounded candidates</span>'
           : '<span class="badge reason">status: retrieval ready</span><span class="badge conf">grounded candidates</span>';
         document.getElementById('dashboard-narrative').textContent = recommendation.narrative || 'These candidates were retrieved from the catalog using your recent activity. A generated explanation will appear when Mesh is configured.';
-        document.getElementById('dashboard-delta').textContent = hasNarrative
-          ? `Generated from ${candidates.length} grounded catalog candidate${candidates.length === 1 ? '' : 's'}.`
-          : `${candidates.length} catalog candidate${candidates.length === 1 ? '' : 's'} retrieved from your activity.`;
         document.getElementById('recommendation-grid').innerHTML = candidates.map((model, index) => `
           <div class="card" onclick="openModel('${model.id}')">
             <div class="stripe" style="background:${modelColor(model)}"></div>
