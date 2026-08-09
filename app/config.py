@@ -9,7 +9,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 class Settings(BaseSettings):
     mesh_api_key: str | None = None
     mesh_base_url: str = "https://api.meshapi.ai/v1"
-    mesh_model: str = "tencent/hy3"
+    # Benchmarked live against tencent/hy3 (free, but a "thinking" model — averaged
+    # 46.5s per narrative call) and openai/gpt-5-nano (19s despite not being flagged
+    # as a reasoning model — burns ~3k hidden tokens anyway). gpt-4.1-nano averaged
+    # 1.8s with consistently valid, non-duplicated model_ids, at ~$0.00014/call.
+    mesh_model: str = "openai/gpt-4.1-nano"
     # Real semantic embeddings via Mesh, replacing the deterministic hashed
     # bag-of-words fallback (app/vector.py) whenever mesh_api_key is set. Cheapest
     # embedding-capable model on Mesh as of this writing ($0.002/1M tokens) — see
@@ -21,15 +25,20 @@ class Settings(BaseSettings):
     chroma_collection_name: str = "models"
     embedding_dimension: int = 64
     session_cookie_name: str = "trailmind_session"
+    # False by default so http://localhost keeps working in local dev — a public HTTPS
+    # deployment (see render.yaml) should set this true so the session cookie is never
+    # sent over a plain-HTTP connection.
+    session_cookie_secure: bool = False
 
     # OBS-1: LangSmith tracing (bonus, optional — off unless an API key is set)
     langsmith_api_key: str | None = None
     langsmith_project: str = "trailmind"
 
-    # DLV-3: scheduled digest (bonus). Email delivers per-user via `User.email`; Telegram
-    # delivers per-user via `User.telegram_chat_id`, falling back to the shared
-    # `telegram_chat_id` broadcast chat below only for a user who hasn't set their own.
-    # Neither configured falls back to logging the digest instead of silently dropping it.
+    # DLV-3: scheduled digest (bonus). Email delivers per-user via `User.email`;
+    # Telegram delivers per-user via `User.telegram_chat_id`, falling back to the
+    # shared `telegram_chat_id` broadcast chat below only for a user who hasn't set
+    # their own. Neither configured falls back to logging the digest instead of
+    # silently dropping it.
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None

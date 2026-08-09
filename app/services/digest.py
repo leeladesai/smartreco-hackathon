@@ -13,6 +13,7 @@ instead of silently dropped — same graceful-degradation pattern as
 """
 
 import logging
+import os
 import smtplib
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -142,7 +143,11 @@ def build_notifier(settings: Settings) -> Notifier:
             smtp_username=settings.smtp_username,
             smtp_password=settings.smtp_password,
             from_email=settings.smtp_from_email,
-            app_url=settings.app_base_url,
+            # Render auto-injects RENDER_EXTERNAL_URL into every web service (see
+            # render.yaml) — falling back to it means the "View full dashboard" link
+            # is correct on a Render deploy with zero manual APP_BASE_URL step, while
+            # explicit APP_BASE_URL (or neither, e.g. local dev) still wins/no-ops.
+            app_url=settings.app_base_url or os.environ.get("RENDER_EXTERNAL_URL"),
         )
     if settings.telegram_bot_token:
         return TelegramNotifier(

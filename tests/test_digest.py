@@ -60,6 +60,36 @@ def test_build_notifier_prefers_email_then_telegram_then_logging() -> None:
     )
 
 
+def test_build_notifier_email_prefers_explicit_app_url_over_render_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://from-render-env.onrender.com")
+    notifier = build_notifier(
+        Settings(
+            smtp_host="smtp.test",
+            smtp_from_email="a@test.dev",
+            app_base_url="https://explicit.example",
+        )
+    )
+    assert notifier.app_url == "https://explicit.example"
+
+
+def test_build_notifier_email_falls_back_to_render_external_url(monkeypatch) -> None:
+    monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://from-render-env.onrender.com")
+    notifier = build_notifier(
+        Settings(smtp_host="smtp.test", smtp_from_email="a@test.dev", app_base_url=None)
+    )
+    assert notifier.app_url == "https://from-render-env.onrender.com"
+
+
+def test_build_notifier_email_app_url_none_without_render_env(monkeypatch) -> None:
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    notifier = build_notifier(
+        Settings(smtp_host="smtp.test", smtp_from_email="a@test.dev", app_base_url=None)
+    )
+    assert notifier.app_url is None
+
+
 def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
     captured = {}
 

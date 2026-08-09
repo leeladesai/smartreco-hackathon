@@ -1,0 +1,90 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploys TrailMind as a single web service. No separate frontend/DB/vector-DB
+# services: SQLite and Chroma both live as local files on this service's own disk,
+# matching how the app already runs locally (app/config.py's defaults).
+#
+# Free plan note: Render's free web services have an EPHEMERAL filesystem — every
+# redeploy (and some restarts) wipes trailmind.db and chroma_data/ back to empty.
+# startCommand re-runs seed_data.py on every boot specifically so the demo catalog and
+# demo accounts always come back, even on a fresh/wiped disk. Anything a judge does
+# beyond that (new registrations, new catalog uploads) will NOT survive a redeploy
+# unless you attach a persistent Disk (see the commented `disk:` block below — Disks
+# require a paid instance type, not available on the Free plan).
+#
+# Free plan also note: the service spins down after ~15 min of no traffic and takes
+# ~30-60s to wake on the next request — the first hit after idle will be slow. It also
+# means the DLV-3 daily digest cron (APScheduler, in-process) won't fire while asleep.
+# An always-on paid plan removes both limitations.
+
+services:
+  - type: web
+    name: trailmind
+    runtime: python
+    plan: free
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    # seed_data.py is idempotent (upserts by email/title, never duplicates) — safe to
+    # run on every boot, not just the first one.
+    startCommand: "python seed_data.py && uvicorn app.asgi:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.15
+      # Random, unique per deploy — do not reuse the local-dev SECRET_KEY.
+      - key: SECRET_KEY
+        generateValue: true
+      # A public HTTPS deployment should mark the session cookie Secure (HTTPS-only);
+      # the local-dev default stays False so http://localhost keeps working unchanged.
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      # --- Secrets: set these in the Render dashboard after the blueprint is created,
+      # never commit real values here. `sync: false` means "required, but not stored
+      # in this file" — Render will prompt for each on first deploy. ---
+      - key: MESH_API_KEY
+        sync: false
+      - key: MESH_MODEL
+        value: openai/gpt-4.1-nano
+      - key: MESH_EMBEDDING_MODEL
+        value: google/embeddinggemma-300m
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGSMITH_PROJECT
+        value: trailmind
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: DIGEST_CRON_HOUR
+        value: "9"
+      - key: DIGEST_CRON_MINUTE
+        value: "0"
+      # APP_BASE_URL powers the "View full dashboard" link in the digest email.
+      # Left unset here on purpose: app/services/digest.py falls back to Render's own
+      # auto-injected RENDER_EXTERNAL_URL when this isn't set, so it's correct by
+      # default with zero manual step. Only set this explicitly if you attach a custom
+      # domain and want the email to link there instead of the onrender.com URL.
+
+    # Persistent disk (optional, requires a paid instance type — uncomment and set
+    # `plan:` above to `starter` or higher to use this). Without it, trailmind.db and
+    # chroma_data/ are ephemeral (see the free-plan note above).
+    # disk:
+    #   name: trailmind-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    # With the disk mounted, also uncomment these two so the DB/vector store live on
+    # it instead of the ephemeral app directory:
+    # envVars (add to the list above):
+    #   - key: DATABASE_URL
+    #     value: sqlite:////var/data/trailmind.db
+    #   - key: CHROMA_DB_PATH
+    #     value: /var/data/chroma_data

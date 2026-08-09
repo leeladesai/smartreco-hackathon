@@ -203,6 +203,52 @@ def test_non_admin_cannot_bulk_upload_catalog(client: TestClient) -> None:
     assert response.status_code == 403
 
 
+def test_session_cookie_secure_flag_follows_settings(tmp_path) -> None:
+    """A public HTTPS deployment (render.yaml sets SESSION_COOKIE_SECURE=true) must
+    never send the session cookie over plain HTTP — local dev keeps the default False
+    so http://localhost still works unchanged."""
+    from app.config import Settings
+    from app.main import create_app
+
+    insecure_settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'insecure.db'}",
+        chroma_db_path=str(tmp_path / "insecure-chroma"),
+        secret_key="test-secret",
+        mesh_api_key=None,
+        langsmith_api_key=None,
+        session_cookie_secure=False,
+    )
+    insecure_client = TestClient(create_app(insecure_settings))
+    insecure_client.post(
+        "/api/auth/register",
+        json={"email": "cookie-insecure@test.dev", "password": "password123"},
+    )
+    response = insecure_client.post(
+        "/api/auth/login",
+        json={"email": "cookie-insecure@test.dev", "password": "password123"},
+    )
+    assert "secure" not in response.headers["set-cookie"].lower()
+
+    secure_settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'secure.db'}",
+        chroma_db_path=str(tmp_path / "secure-chroma"),
+        secret_key="test-secret",
+        mesh_api_key=None,
+        langsmith_api_key=None,
+        session_cookie_secure=True,
+    )
+    secure_client = TestClient(create_app(secure_settings))
+    secure_client.post(
+        "/api/auth/register",
+        json={"email": "cookie-secure@test.dev", "password": "password123"},
+    )
+    response = secure_client.post(
+        "/api/auth/login",
+        json={"email": "cookie-secure@test.dev", "password": "password123"},
+    )
+    assert "secure" in response.headers["set-cookie"].lower()
+
+
 def test_admin_can_list_users(client: TestClient) -> None:
     client.post(
         "/api/auth/register",

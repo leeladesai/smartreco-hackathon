@@ -125,6 +125,52 @@ pytest
 
 ---
 
+## 🌐 Deploying (public URL)
+
+**Vercel doesn't fit this app** — it's serverless/edge (no persistent disk, no
+always-on process), and this app depends on both: SQLite and Chroma are local files
+that need durable writes across requests, and the DLV-3 daily digest runs via an
+in-process APScheduler cron that needs a continuously running process to live in.
+Making it Vercel-compatible would mean swapping SQLite→hosted Postgres,
+Chroma→hosted vector DB, and APScheduler→Vercel Cron Jobs — a re-architecture, not a
+deploy config.
+
+**[Render](https://render.com)** is the target this repo is configured for instead —
+a persistent disk + an always-on process means everything above just works unchanged,
+closest to "push this repo, get a URL." `render.yaml` (repo root) is a ready-to-use
+[Blueprint](https://render.com/docs/blueprint-spec).
+
+1. Push this repo to GitHub (already done if you're reading this from the repo).
+2. In the Render dashboard: **New → Blueprint**, connect your GitHub account, and
+   select this repo. Render reads `render.yaml` and proposes the service.
+3. Before the first deploy, Render will prompt for every env var marked `sync: false`
+   in `render.yaml` — at minimum `MESH_API_KEY`. Fill in `SMTP_*`/`TELEGRAM_*`/
+   `LANGSMITH_API_KEY` too if you want email/Telegram/tracing live on the deployed
+   instance; leave any of them blank and that feature gracefully degrades exactly like
+   it does locally (logged-only digest, no tracing).
+4. Deploy. `startCommand` runs `seed_data.py` before `uvicorn` on every boot, so the
+   demo catalog and demo accounts (`curator@trailmind.dev` / `engineer@trailmind.dev`)
+   are always present — even after a redeploy wipes the disk (see below).
+5. Your public URL is `https://<service-name>.onrender.com`. The digest email's
+   "View full dashboard" link picks this up automatically via Render's own
+   `RENDER_EXTERNAL_URL`, no manual step needed.
+
+**Known limitations of the Free plan** (documented in `render.yaml` too):
+- **Ephemeral disk** — every redeploy wipes `trailmind.db`/`chroma_data/` back to just
+  the seeded demo data; anything a judge registers or uploads won't survive a
+  redeploy. Attaching a persistent Disk (commented block in `render.yaml`) fixes this,
+  but Disks require a paid instance type.
+- **Spins down after ~15 min idle**, waking on the next request in ~30-60s — the first
+  hit after idle will be slow, and the digest cron won't fire while asleep. An
+  always-on paid plan removes both.
+- **chromadb + old system SQLite**: if the build succeeds but the app fails at startup
+  with a SQLite-version error from `chromadb`, add `pysqlite3-binary` to
+  `requirements.txt` and see [Chroma's troubleshooting
+  guide](https://docs.trychroma.com/troubleshooting#sqlite) — a known gotcha on some
+  minimal Linux base images, not something reproducible in local dev to pre-fix here.
+
+---
+
 ## 📁 Project structure
 
 ```
