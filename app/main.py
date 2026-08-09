@@ -545,6 +545,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if run.start_time
                     else None,
                     "latency_ms": run.latency_ms,
+                    "pipeline_latency_ms": run.pipeline_latency_ms,
+                    "user_id": run.user_id,
                     "error": run.error,
                     "url": run.url,
                 }

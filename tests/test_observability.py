@@ -57,8 +57,9 @@ def test_observability_unavailable_without_langsmith_key(tmp_path, monkeypatch) 
 
 def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
     class FakeRun:
-        def __init__(self, id_, name, status, error=None):
+        def __init__(self, id_, name, status, error=None, tags=None):
             self.id = id_
+            self.trace_id = id_
             self.name = name
             self.run_type = "chain"
             self.status = status
@@ -66,15 +67,21 @@ def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
             self.start_time = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
             self.end_time = datetime(2026, 8, 8, 12, 0, 2, tzinfo=timezone.utc)
             self.session_id = "fake-session"
+            self.tags = tags or []
 
     class FakeClient:
         def __init__(self, api_key=None):
             self.api_key = api_key
 
         def list_runs(self, **kwargs):
+            # fetch_recent_runs makes two calls: the root-run list (execution_order=1)
+            # and a bulk pipeline_latency_ms lookup over each page's trace_ids (no
+            # execution_order kwarg) — this test only cares about the former.
+            if kwargs.get("execution_order") != 1:
+                return iter([])
             return iter(
                 [
-                    FakeRun("1", "agent_pipeline", "success"),
+                    FakeRun("1", "agent_pipeline", "success", tags=["user:7"]),
                     FakeRun("2", "agent_pipeline", "error", error="Mesh timeout"),
                 ]
             )
@@ -94,14 +101,118 @@ def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
     assert len(body["runs"]) == 2
     assert body["runs"][0]["name"] == "agent_pipeline"
     assert body["runs"][0]["latency_ms"] == 2000
+    assert body["runs"][0]["user_id"] == 7
+    assert body["runs"][0]["pipeline_latency_ms"] is None
     assert body["runs"][1]["error"] == "Mesh timeout"
+    assert body["runs"][1]["user_id"] is None
     assert body["runs"][0]["url"] == "https://smith.langchain.com/fake/1"
+
+
+def test_observability_runs_computes_pipeline_latency_via_one_bulk_query(
+    tmp_path, monkeypatch
+) -> None:
+    """pipeline_latency_ms must be the sum of a trace's own top-level named steps
+    (analyze/retrieve/rerank/grade_refine/generate/store), fetched via one extra
+    bulk list_runs call for the whole page — not a per-row read_run(load_child_runs)
+    call, and never double-counting a nested span like mesh_generate_narrative
+    (contained inside generate_narrative's own latency_ms already)."""
+
+    class FakeRun:
+        def __init__(
+            self, id_, name, trace_id=None, start_time=None, end_time=None, tags=None
+        ):
+            self.id = id_
+            self.trace_id = trace_id or id_
+            self.name = name
+            self.run_type = "chain"
+            self.status = "success"
+            self.error = None
+            self.start_time = start_time
+            self.end_time = end_time
+            self.session_id = "fake-session"
+            self.tags = tags or []
+
+    t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    roots = [
+        FakeRun(
+            "root-a",
+            "agent_pipeline",
+            start_time=t0,
+            end_time=t0 + timedelta(seconds=10),
+        ),
+        FakeRun(
+            "root-b",
+            "agent_pipeline",
+            start_time=t0 + timedelta(minutes=1),
+            end_time=t0 + timedelta(minutes=1, seconds=5),
+        ),
+    ]
+    # root-a's own children: 1000ms + 2000ms = 3000ms real pipeline work, plus a
+    # nested mesh_generate_narrative (2000ms, same window as generate_narrative) that
+    # must NOT add to the sum — deliberately included here (as if a server-side filter
+    # quirk let it through) to prove the client-side name re-check actually excludes
+    # it, not just that the fake happens to omit it. root-b gets no children at all
+    # (no named step ran).
+    children = [
+        FakeRun(
+            "step-1",
+            "analyze_activity",
+            trace_id="root-a",
+            start_time=t0,
+            end_time=t0 + timedelta(seconds=1),
+        ),
+        FakeRun(
+            "step-2",
+            "generate_narrative",
+            trace_id="root-a",
+            start_time=t0 + timedelta(seconds=1),
+            end_time=t0 + timedelta(seconds=3),
+        ),
+        FakeRun(
+            "step-3",
+            "mesh_generate_narrative",
+            trace_id="root-a",
+            start_time=t0 + timedelta(seconds=1),
+            end_time=t0 + timedelta(seconds=3),
+        ),
+    ]
+
+    call_count = {"n": 0}
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            pass
+
+        def list_runs(self, **kwargs):
+            call_count["n"] += 1
+            if kwargs.get("execution_order") == 1:
+                return iter(roots)
+            # The one bulk children query for the whole page.
+            return iter(children)
+
+        def get_run_url(self, *, run):
+            return f"https://smith.langchain.com/fake/{run.id}"
+
+    import app.services.observability as observability_module
+
+    monkeypatch.setattr(observability_module, "Client", FakeClient)
+
+    admin_client = _admin_client(tmp_path, monkeypatch, langsmith_api_key="fake-key")
+    response = admin_client.get("/api/admin/observability/runs")
+    body = response.json()
+    runs_by_id = {run["id"]: run for run in body["runs"]}
+
+    assert runs_by_id["root-a"]["pipeline_latency_ms"] == 3000.0
+    assert runs_by_id["root-b"]["pipeline_latency_ms"] is None
+    # Exactly 2 list_runs calls total for the whole page — not one per row.
+    assert call_count["n"] == 2
 
 
 def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
     class FakeRun:
         def __init__(self, id_, name, status, start_time):
             self.id = id_
+            self.trace_id = id_
             self.name = name
             self.run_type = "chain"
             self.status = status
@@ -109,6 +220,7 @@ def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
             self.start_time = start_time
             self.end_time = start_time + timedelta(seconds=2)
             self.session_id = "fake-session"
+            self.tags = []
 
     t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -117,6 +229,8 @@ def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
             self.api_key = api_key
 
         def list_runs(self, **kwargs):
+            if kwargs.get("execution_order") != 1:
+                return iter([])
             # Deliberately yielded oldest-first (run "1" has the earliest start_time)
             # — fetch_recent_runs must sort newest-first itself before paging, so the
             # page order can't just be trusting this iterator's own order.
@@ -164,6 +278,7 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
     class FakeRun:
         def __init__(self, id_):
             self.id = id_
+            self.trace_id = id_
             self.name = "agent_pipeline"
             self.run_type = "chain"
             self.status = "success"
@@ -171,15 +286,20 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
             self.start_time = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
             self.end_time = self.start_time + timedelta(seconds=1)
             self.session_id = "fake-session"
+            self.tags = ["user:42"]
 
-    captured_kwargs = {}
+    captured_calls = []
 
     class FakeClient:
         def __init__(self, api_key=None):
             pass
 
         def list_runs(self, **kwargs):
-            captured_kwargs.update(kwargs)
+            captured_calls.append(kwargs)
+            if kwargs.get("execution_order") != 1:
+                return iter(
+                    []
+                )  # the bulk pipeline_latency_ms lookup — not under test here
             return iter([FakeRun("only-this-users-run")])
 
         def get_run_url(self, *, run):
@@ -193,13 +313,21 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
 
     response = admin_client.get("/api/admin/observability/runs?user_id=42")
     assert response.status_code == 200
-    assert captured_kwargs.get("filter") == 'has(tags, "user:42")'
-    assert [run["id"] for run in response.json()["runs"]] == ["only-this-users-run"]
+    root_call = next(
+        call for call in captured_calls if call.get("execution_order") == 1
+    )
+    assert root_call.get("filter") == 'has(tags, "user:42")'
+    body = response.json()
+    assert [run["id"] for run in body["runs"]] == ["only-this-users-run"]
+    assert body["runs"][0]["user_id"] == 42
 
     # Without user_id, no filter is sent at all — the unscoped "all users" view.
-    captured_kwargs.clear()
+    captured_calls.clear()
     admin_client.get("/api/admin/observability/runs")
-    assert "filter" not in captured_kwargs
+    root_call = next(
+        call for call in captured_calls if call.get("execution_order") == 1
+    )
+    assert "filter" not in root_call
 
 
 def test_observability_reports_api_failure(tmp_path, monkeypatch) -> None:

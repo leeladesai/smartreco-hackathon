@@ -7,6 +7,7 @@ message.
 
 import itertools
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -19,6 +20,31 @@ class ObservabilityUnavailable(Exception):
     """Raised when LangSmith isn't configured or the API call fails; UI-safe message."""
 
 
+# The same six top-level nodes tracked by KNOWN_STEP_NAMES below, minus
+# mesh_generate_narrative — that one is nested *inside* generate_narrative's own span
+# (a child, not a sibling), so its time is already contained within generate_narrative's
+# own latency_ms. Including it here would double-count it when summing a page's
+# pipeline_latency_ms in one bulk query (see fetch_recent_runs).
+TOP_LEVEL_STEP_NAMES = (
+    "analyze_activity",
+    "retrieve_models",
+    "rerank_candidates",
+    "grade_refine",
+    "generate_narrative",
+    "store_and_deliver",
+)
+
+_USER_TAG_RE = re.compile(r"^user:(\d+)$")
+
+
+def _extract_user_id(tags: list[str] | None) -> int | None:
+    for tag in tags or []:
+        match = _USER_TAG_RE.match(tag)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 @dataclass(frozen=True)
 class TraceRun:
     id: str
@@ -26,7 +52,16 @@ class TraceRun:
     run_type: str
     status: str
     start_time: datetime | None
+    # Raw wall-clock time (root end_time - start_time) — dominated by LangGraph
+    # 0.0.20's own internal tracing overhead when tracing is on (confirmed live:
+    # ~40s of a ~43s run). Kept as "wall time", with pipeline_latency_ms as the
+    # honest "what our own pipeline actually spent" figure — neither is presented
+    # as the other.
     latency_ms: float | None
+    # Sum of this run's own named steps (TOP_LEVEL_STEP_NAMES), fetched via one bulk
+    # query per page rather than a per-row fetch — see fetch_recent_runs.
+    pipeline_latency_ms: float | None
+    user_id: int | None
     error: str | None
     url: str | None
 
@@ -72,15 +107,7 @@ class TraceDetail:
 # (app/services/agent_graph.py, app/services/mesh.py) are surfaced as steps; everything
 # else is skipped without losing its children, so a genuinely nested span (the Mesh
 # call inside generate_narrative) still shows up at a sensible depth.
-KNOWN_STEP_NAMES = {
-    "analyze_activity",
-    "retrieve_models",
-    "rerank_candidates",
-    "grade_refine",
-    "generate_narrative",
-    "store_and_deliver",
-    "mesh_generate_narrative",
-}
+KNOWN_STEP_NAMES = set(TOP_LEVEL_STEP_NAMES) | {"mesh_generate_narrative"}
 
 
 def _run_url(client: Client, run) -> str | None:
@@ -143,6 +170,47 @@ def _collect_steps(run, depth: int) -> list["TraceStep"]:
     return steps
 
 
+def _bulk_pipeline_latencies_by_trace(
+    client: Client, settings: Settings, trace_ids: list[str]
+) -> dict[str, float]:
+    """One extra LangSmith query for a whole page (not one per row): fetches every
+    TOP_LEVEL_STEP_NAMES span across all the given trace_ids in a single filtered
+    list_runs call, then sums per trace in Python. Mirrors fetch_run_detail's
+    depth-0-only summing, but via a name filter instead of tree traversal — cheaper
+    for a list of many traces, since it never has to pull each trace's ~30 LangGraph
+    noise spans just to discard them.
+    """
+    if not trace_ids:
+        return {}
+    trace_id_list = ", ".join(f'"{trace_id}"' for trace_id in trace_ids)
+    name_list = ", ".join(f'"{name}"' for name in TOP_LEVEL_STEP_NAMES)
+    try:
+        children = client.list_runs(
+            project_name=settings.langsmith_project,
+            filter=f"and(in(trace_id, [{trace_id_list}]), in(name, [{name_list}]))",
+        )
+        totals: dict[str, float] = {}
+        for child in children:
+            # The `name` filter above is server-side — re-checked here too rather than
+            # trusting it was applied exactly as asked (defensive, same spirit as
+            # _safe_payload treating LangSmith's response shape as untrusted input).
+            # Critically, this also guarantees mesh_generate_narrative (nested inside
+            # generate_narrative's own span) can never be double-counted even if a
+            # server-side filter quirk ever let it through.
+            if child.name not in TOP_LEVEL_STEP_NAMES:
+                continue
+            latency = _latency_ms(child)
+            if latency is None:
+                continue
+            trace_id = str(child.trace_id)
+            totals[trace_id] = totals.get(trace_id, 0.0) + latency
+        return totals
+    except Exception:
+        # Best-effort only — a failed enrichment query must never take down the whole
+        # list (the wall-time figure alone is still a usable fallback).
+        return {}
+
+
 def fetch_recent_runs(
     settings: Settings, limit: int = 25, offset: int = 0, user_id: int | None = None
 ) -> tuple[list[TraceRun], bool]:
@@ -192,6 +260,9 @@ def fetch_recent_runs(
     )
     has_more = len(runs) > offset + limit
     page = runs[offset : offset + limit]
+    pipeline_latencies = _bulk_pipeline_latencies_by_trace(
+        client, settings, [str(run.trace_id) for run in page]
+    )
     return (
         [
             TraceRun(
@@ -201,6 +272,8 @@ def fetch_recent_runs(
                 status=run.status or ("error" if run.error else "success"),
                 start_time=run.start_time,
                 latency_ms=_latency_ms(run),
+                pipeline_latency_ms=pipeline_latencies.get(str(run.trace_id)),
+                user_id=_extract_user_id(run.tags),
                 error=run.error,
                 url=_run_url(client, run),
             )

@@ -17,7 +17,7 @@
   <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
   <table class="admin-table" id="observability-table-wrap">
-    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
+    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>User</th><th title="Sum of our own pipeline steps only — excludes LangGraph/tracing overhead.">Pipeline time</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
     <tbody id="observability-run-table"></tbody>
   </table>
   <div class="pagination" id="observability-pagination">

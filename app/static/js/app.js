@@ -406,6 +406,7 @@
   let observabilityOffset = 0;
   let observabilityHasMore = false;
   let observabilityUserFilter = '';
+  let observabilityUsersById = {}; // populated alongside the filter dropdown, reused to show a real email instead of a bare id in the table's User column
 
   // Populates the "All users" dropdown from the same admin users list already used on
   // /admin/users — every agent_pipeline run is tagged user:<id> at trace time
@@ -419,6 +420,7 @@
       const response = await fetch(`${API_BASE}/api/admin/users`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const users = await response.json();
+      observabilityUsersById = Object.fromEntries(users.map(user => [String(user.id), user.email]));
       const previousValue = select.value;
       select.innerHTML = '<option value="">All users</option>' + users.map(user =>
         `<option value="${user.id}">${escapeHtml(user.email)}</option>`
@@ -446,6 +448,13 @@
     const pageLabel = document.getElementById('observability-page-label');
     const pagination = document.getElementById('observability-pagination');
     if (!tbody) return; // only present on the observability page
+    // The LangSmith API call this makes is real network time (hundreds of ms to a
+    // few seconds), not instant — without this, the gap between the page shell
+    // rendering and data arriving is a blank table body, which reads as broken
+    // rather than "still loading".
+    tbody.innerHTML = '<tr><td colspan="7">Loading recent runs…</td></tr>';
+    unavailableBox.style.display = 'none';
+    tableWrap.style.display = '';
     try {
       const userParam = observabilityUserFilter ? `&user_id=${encodeURIComponent(observabilityUserFilter)}` : '';
       const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}${userParam}`);
@@ -476,19 +485,25 @@
           : observabilityUserFilter
             ? 'No pipeline runs yet for this user.'
             : 'No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.';
-        tbody.innerHTML = `<tr><td colspan="5">${emptyMessage}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7">${emptyMessage}</td></tr>`;
         return;
       }
       tbody.innerHTML = data.runs.map(run => {
         const ok = run.status !== 'error' && !run.error;
         const started = run.start_time ? new Date(run.start_time).toLocaleString() : '—';
-        const latency = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
+        const pipelineTime = run.pipeline_latency_ms != null ? `${Math.round(run.pipeline_latency_ms)}ms` : '—';
+        const wallTime = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
+        const userLabel = run.user_id != null
+          ? escapeHtml(observabilityUsersById[String(run.user_id)] || `user:${run.user_id}`)
+          : '—';
         return `
           <tr class="clickable" onclick="openTraceDrawer('${run.id}')" title="View step-by-step trace">
             <td class="${ok ? 'sync-ok' : 'sync-error'}">${ok ? '✓ ' + escapeHtml(run.status) : '✕ ' + escapeHtml(run.status)}</td>
             <td>${escapeHtml(run.name)}</td>
             <td>${escapeHtml(started)}</td>
-            <td>${latency}</td>
+            <td>${userLabel}</td>
+            <td>${pipelineTime}</td>
+            <td>${wallTime}</td>
             <td>${run.error ? escapeHtml(run.error) : '—'}</td>
           </tr>
         `;
@@ -1571,7 +1586,7 @@
     if (page === 'compare') restoreCompareFromUrl();
     if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
     if (page === 'activity') loadActivity();
-    if (page === 'observability') { loadObservability(); loadCostRollup(); loadObservabilityUserFilter(); }
+    if (page === 'observability') { loadObservabilityUserFilter().then(loadObservability); loadCostRollup(); }
     if (page === 'admin-users') loadUsers();
     window.scrollTo({top:0, behavior:'instant'});
   }
