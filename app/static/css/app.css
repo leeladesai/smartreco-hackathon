@@ -349,6 +349,12 @@
   .stat-tile .v{display:block; font-family:var(--mono); font-size:20px; font-weight:600; color:var(--text);}
   .stat-tile .v small{font-size:12px; font-weight:500; color:var(--muted);}
 
+  /* ---- admin overview: event-type bar list (single-hue magnitude comparison,
+       not a multi-series/identity chart — see loadOverview() for the rationale) ---- */
+  .event-bar-row{display:grid; grid-template-columns:160px 1fr 40px; align-items:center; gap:12px; padding:6px 0;}
+  .event-bar-label{font-family:var(--mono); font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .event-bar-count{font-family:var(--mono); font-size:11px; color:var(--text); text-align:right;}
+
   /* ---- trace detail modal ---- */
   .trace-step{border:1px solid var(--line-soft); border-radius:6px; margin-bottom:10px; overflow:hidden;}
   .trace-step-head{display:flex; align-items:center; gap:10px; padding:10px 14px; font-family:var(--mono); font-size:12px;}

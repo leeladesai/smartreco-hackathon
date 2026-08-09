@@ -327,6 +327,92 @@
     `).join('');
   }
 
+  // Admin Overview: platform-usage metrics (app/services/admin_overview.py) —
+  // distinct from Observability, which is AI-pipeline/LangSmith technical health.
+  // Event-type counts are a single-measure magnitude comparison across categories,
+  // not a multi-series/identity comparison, so bars use one consistent hue (cyan)
+  // rather than a different color per bar — per this app's own dataviz convention
+  // (categorical hues are for identity, e.g. modality tags; a flat single-hue bar is
+  // correct here since there's only one thing being measured: count).
+  async function loadOverview(){
+    if (!adminSession) return;
+    const totalsRow = document.getElementById('overview-totals');
+    const eventBars = document.getElementById('overview-event-bars');
+    const feedbackRow = document.getElementById('overview-feedback');
+    if (!totalsRow) return; // only present on the overview page
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/overview`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const t = data.totals;
+      totalsRow.innerHTML = `
+        <div class="stat-tile"><span class="k">Total users</span><span class="v">${t.users}</span></div>
+        <div class="stat-tile"><span class="k">Catalog size</span><span class="v">${t.models}</span></div>
+        <div class="stat-tile"><span class="k">Behavioral events</span><span class="v">${t.events}</span></div>
+        <div class="stat-tile"><span class="k">Recommendations generated</span><span class="v">${t.recommendations}</span></div>
+      `;
+      const counts = data.event_type_counts || {};
+      const maxCount = Math.max(1, ...Object.values(counts));
+      const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      eventBars.innerHTML = entries.length ? entries.map(([type, count]) => `
+        <div class="event-bar-row" title="${escapeHtml(type)}: ${count}">
+          <span class="event-bar-label">${escapeHtml(type)}</span>
+          <div class="compare-bar"><div class="compare-bar-fill cyan" style="width:${Math.round(count / maxCount * 100)}%"></div></div>
+          <span class="event-bar-count">${count}</span>
+        </div>
+      `).join('') : '<p class="note">No events tracked yet.</p>';
+      const up = data.feedback?.up || 0;
+      const down = data.feedback?.down || 0;
+      if (feedbackRow) {
+        feedbackRow.innerHTML = (up + down) > 0
+          ? `<div class="stat-tile"><span class="k">👍 Positive feedback</span><span class="v">${up}</span></div>
+             <div class="stat-tile"><span class="k">👎 Negative feedback</span><span class="v">${down}</span></div>`
+          : '<p class="note">No recommendation feedback recorded yet.</p>';
+      }
+    } catch (error) {
+      totalsRow.innerHTML = '<p class="note">Could not load overview metrics — check the server logs.</p>';
+    }
+  }
+
+  async function loadOverviewActivity(){
+    if (!adminSession) return;
+    const tbody = document.getElementById('overview-activity-table');
+    if (!tbody) return; // only present on the overview page
+    tbody.innerHTML = '<tr><td colspan="4">Loading recent activity…</td></tr>';
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/overview/activity?limit=30`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.events.length) {
+        tbody.innerHTML = '<tr><td colspan="4">No activity tracked yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.events.map(event => {
+        const model = event.model_id != null ? MODELS.find(item => String(item.id) === String(event.model_id)) : null;
+        const detail = event.event_type === 'model_watchlist'
+          ? `${event.metadata?.action === 'remove' ? 'Removed from' : 'Added to'} watchlist: ${model ? model.name : 'model'}`
+          : event.event_type === 'model_copy' ? `Copied identifier: ${event.metadata?.slug || (model ? model.name : '')}`
+          : model ? model.name : event.metadata?.query || '—';
+        const when = new Date(event.created_at).toLocaleString();
+        return `
+          <tr>
+            <td>${escapeHtml(event.user_email)}</td>
+            <td class="log-type" style="background:var(--amber-dim); color:var(--amber); display:inline-block;">${escapeHtml(event.event_type)}</td>
+            <td>${escapeHtml(detail)}</td>
+            <td>${escapeHtml(when)}</td>
+          </tr>
+        `;
+      }).join('');
+    } catch (error) {
+      tbody.innerHTML = '<tr><td colspan="4">Could not load activity — check the server logs.</td></tr>';
+    }
+  }
+
+  function refreshOverview(){
+    loadOverview();
+    loadOverviewActivity();
+  }
+
   // Admin users list: read-only view of who's actually registered (app/main.py
   // GET /api/admin/users) — accounts themselves are created via self-registration
   // (submitAuth) or the seed script, never from this page.
@@ -1536,7 +1622,7 @@
   const TRAY_PAGES = ['catalog', 'detail', 'compare'];
 
   function navStateFor(page){
-    if (page === 'admin' || page === 'observability' || page === 'admin-users') return 'admin';
+    if (page === 'admin-overview' || page === 'admin-models' || page === 'observability' || page === 'admin-users') return 'admin';
     if (BUILDER_PAGES.includes(page)) return 'engineer';
     return 'none'; // auth, admin-auth — logged-out screens get no app chrome
   }
@@ -1549,7 +1635,8 @@
     if (page === 'compare') return `/compare?ids=${encodeURIComponent(compareSelection.join(','))}`;
     if (page === 'dashboard') return '/dashboard';
     if (page === 'activity') return '/activity';
-    if (page === 'admin') return '/admin';
+    if (page === 'admin-overview') return '/admin';
+    if (page === 'admin-models') return '/admin/models';
     if (page === 'observability') return '/admin/observability';
     if (page === 'admin-users') return '/admin/users';
     return '/catalog';
@@ -1588,6 +1675,7 @@
     if (page === 'activity') loadActivity();
     if (page === 'observability') { loadObservabilityUserFilter().then(loadObservability); loadCostRollup(); }
     if (page === 'admin-users') loadUsers();
+    if (page === 'admin-overview') { loadOverview(); loadOverviewActivity(); }
     window.scrollTo({top:0, behavior:'instant'});
   }
 
@@ -1814,5 +1902,5 @@
       document.getElementById('admin-auth-error').classList.add('show');
       return;
     }
-    go('admin');
+    go('admin-overview');
   }

@@ -73,7 +73,9 @@ def test_admin_page_ships_admin_only_markup_not_shared_with_other_routes() -> No
         admin_client.post(
             "/api/admin/login", json={"email": email, "password": password}
         )
-        response = admin_client.get("/admin")
+        # /admin is the Overview landing page now — the model-management markup this
+        # test checks for lives at /admin/models.
+        response = admin_client.get("/admin/models")
 
     assert response.status_code == 200
     assert 'id="admin-model-table"' in response.text

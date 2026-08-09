@@ -45,6 +45,12 @@ from app.security import (
     make_role_dependency,
     verify_password,
 )
+from app.services.admin_overview import (
+    event_type_counts,
+    feedback_sentiment,
+    recent_activity,
+    usage_totals,
+)
 from app.services.catalog import (
     create_model as create_model_service,
     delete_model as delete_model_service,
@@ -254,7 +260,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/admin", include_in_schema=False)
     async def admin_page(request: Request):
-        return render_admin_page(request)
+        return render_admin_page(request, "admin-overview", "overview.html")
+
+    @app.get("/admin/models", include_in_schema=False)
+    async def admin_models_page(request: Request):
+        return render_admin_page(request, "admin-models", "admin.html")
 
     @app.get("/admin/observability", include_in_schema=False)
     async def admin_observability_page(request: Request):
@@ -595,6 +605,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     for step in detail.steps
                 ],
             },
+        }
+
+    @app.get("/api/admin/overview")
+    async def admin_overview(
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """Platform-usage summary for the admin landing page — totals, event-type
+        breakdown, and explicit-feedback sentiment. Distinct from
+        /api/admin/observability/*, which is AI-pipeline/LangSmith technical health;
+        this is business/usage metrics, computed straight from our own tables."""
+        with session_factory() as session:
+            return {
+                "totals": usage_totals(session),
+                "event_type_counts": event_type_counts(session),
+                "feedback": feedback_sentiment(session),
+            }
+
+    @app.get("/api/admin/overview/activity")
+    async def admin_overview_activity(
+        limit: int = Query(default=30, ge=1, le=100),
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """The admin-wide live activity feed — every user's events, newest first.
+        Distinct from GET /api/activity/me, which is deliberately scoped to the
+        signed-in user's own history."""
+        with session_factory() as session:
+            events = recent_activity(session, limit=limit)
+        return {
+            "events": [
+                {**event, "created_at": as_utc(event["created_at"])} for event in events
+            ]
         }
 
     @app.get("/api/admin/users", response_model=list[AdminUserResponse])
