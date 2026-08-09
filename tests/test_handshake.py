@@ -17,7 +17,19 @@ def test_health_endpoint() -> None:
 
 
 def test_handshake_serves_updated_model_catalog_ui() -> None:
-    response = client.get("/")
+    # The catalog (like every other screen except /login and /admin/login) now
+    # requires a session — sign in first so this test still exercises the actual
+    # rendered catalog markup, not just the redirect.
+    with TestClient(app) as authed_client:
+        authed_client.post(
+            "/api/auth/register",
+            json={"email": "handshake-catalog@test.dev", "password": "password123"},
+        )
+        authed_client.post(
+            "/api/auth/login",
+            json={"email": "handshake-catalog@test.dev", "password": "password123"},
+        )
+        response = authed_client.get("/")
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
@@ -73,7 +85,16 @@ def test_admin_page_ships_admin_only_markup_not_shared_with_other_routes() -> No
 
 
 def test_screen_routes_and_server_side_access_checks() -> None:
-    assert client.get("/catalog").status_code == 200
+    # The catalog (and root "/") now require a session too, same as dashboard/activity
+    # — no page except /login and /admin/login is browsable while signed out.
+    catalog = client.get("/catalog", follow_redirects=False)
+    assert catalog.status_code == 303
+    assert catalog.headers["location"] == "/login"
+
+    root = client.get("/", follow_redirects=False)
+    assert root.status_code == 303
+    assert root.headers["location"] == "/login"
+
     assert client.get("/login").status_code == 200
 
     dashboard = client.get("/dashboard", follow_redirects=False)
@@ -93,3 +114,5 @@ def test_screen_routes_and_server_side_access_checks() -> None:
         json={"email": "route-user@test.dev", "password": "password123"},
     )
     assert client.get("/dashboard").status_code == 200
+    assert client.get("/catalog").status_code == 200
+    assert client.get("/").status_code == 200

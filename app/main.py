@@ -203,17 +203,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
         return render_page(request, page, template, session_role=user.role)
 
-    def render_optional_session_page(request: Request, page: str, template: str):
-        # The catalog is browsable while signed out, but a signed-in visitor's session must
-        # still be recognized here — it's the page most view/search/compare activity starts
-        # from, and until now it silently rendered as "not signed in" even with a valid
-        # session cookie, which meant none of that activity ever got tracked.
-        try:
-            role = current_user(request).role
-        except HTTPException:
-            role = None
-        return render_page(request, page, template, session_role=role)
-
     def render_admin_page(
         request: Request, page: str = "admin", template: str = "admin.html"
     ):
@@ -227,7 +216,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def landing_page(request: Request):
-        return render_optional_session_page(request, "catalog", "catalog.html")
+        return render_user_page(request, "catalog", "catalog.html")
 
     @app.get("/login", include_in_schema=False)
     async def login_page(request: Request):
@@ -239,7 +228,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/catalog", include_in_schema=False)
     async def catalog_page(request: Request):
-        return render_optional_session_page(request, "catalog", "catalog.html")
+        return render_user_page(request, "catalog", "catalog.html")
 
     @app.get("/models/{model_id}", include_in_schema=False)
     async def model_detail_page(request: Request, model_id: int):
