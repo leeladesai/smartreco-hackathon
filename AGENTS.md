@@ -2,12 +2,12 @@
 
 ## Start here
 
-Before doing anything else, read `docs/08-Build-Status.md`. It tracks what's actually been built
-(not just planned) and has a single "Next up" pointer to the current task. Pick that up, cross-
-reference its FRD ID(s) in `docs/02-FRD.md` for acceptance criteria and `docs/06-LLD.md` for
-schema/API/node details, then implement. When done: check the box, update "Next up" to the next
-item per `docs/04-MVP-Roadmap.md`'s phase ordering, and commit the status-file change together with
-the code — it must never drift into a second, stale plan.
+TrailMind's core scope (see "Project overview" below) is complete and verified live against the
+real Mesh API — this isn't a partially-built walking skeleton. If you're picking up new work, read
+`README.md` first for the current feature set and known limitations, then the design docs listed
+under "Source of truth" for the reasoning behind them. A local-only `docs/08-Build-Status.md`
+(gitignored, not present in a fresh clone) is used as a personal task tracker in active
+development sessions — recreate it yourself if you want that workflow, but don't assume it exists.
 
 ## Project overview
 
@@ -18,11 +18,11 @@ LangGraph pipeline (analyze → retrieve → rerank → grade/refine → generat
 `docs/00-Domain-Decision.md` for why this domain (over alternatives like a grocery/quick-commerce
 catalog) was chosen.
 
-The full walking-skeleton loop is live end-to-end and verified against the real Mesh API, not
-mocked: register/login, catalog browse with dwell-aware event tracking, trigger evaluation,
-Chroma retrieval with bounded grade/refine retry, Mesh narrative generation with a grounding
-filter, and a dashboard that reflects the real recommendation state. See
-`docs/08-Build-Status.md` for exactly what's done vs. still open.
+The full loop is live end-to-end and verified against the real Mesh API, not mocked:
+register/login, catalog browse with dwell-aware event tracking, trigger evaluation, Chroma
+retrieval with bounded grade/refine retry, Mesh narrative generation with a grounding filter, and a
+dashboard that reflects the real recommendation state — plus a curator console, feedback loop,
+scheduled digest, and full pipeline observability. See `README.md` for the complete feature list.
 
 ## Source of truth
 
@@ -38,7 +38,6 @@ Read these documents before making architectural or product changes:
 6. `docs/05-HLD.md` — component boundaries and data flow.
 7. `docs/06-LLD.md` — schema, API paths, trigger logic, and LangGraph node contracts.
 8. `docs/07-Test-Strategy.md` — test cases mapped to requirements.
-9. `docs/08-Build-Status.md` — current build status and the "Next up" pointer (see Start here).
 
 When code and planning documents disagree, preserve the requirement IDs and update the relevant
 design document as part of the change.
@@ -65,17 +64,11 @@ design document as part of the change.
 
 ## Implementation order
 
-Follow the roadmap unless a task explicitly changes scope:
-
-1. MVP-0: auth, model creation plus dual-write, basic event ingestion, one real Mesh call,
-   vector retrieval, and dashboard delivery.
-2. Iteration 1: event batching/flush behavior, trigger thresholds and cooldown, activity-hash
-   caching, full model CRUD, and sync-status handling.
-3. Iteration 2: the full LangGraph pipeline, bounded grading/refinement retries, and grounded
-   “why this” metadata.
-4. Iteration 3: optional LangSmith tracing, scheduled digest delivery, and retrieval polish.
-
-Keep tickets and tests tagged with their FRD ID, for example `[AGT-4]` or `[CAT-4]`.
+The build followed `docs/04-MVP-Roadmap.md`'s phase ordering — auth and dual-write first, then
+event batching/triggers, then the full LangGraph pipeline with grounded "why this" metadata, then
+tracing/digest/retrieval polish. New work doesn't need to follow that same sequence, but should
+still keep tests tagged with their FRD ID (for example `[AGT-4]` or `[CAT-4]`) so behavior stays
+traceable back to `docs/02-FRD.md`.
 
 ## Configuration and secrets
 
