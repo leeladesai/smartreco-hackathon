@@ -261,13 +261,39 @@ def test_admin_can_list_users(client: TestClient) -> None:
 
     response = client.get("/api/admin/users")
     assert response.status_code == 200
-    emails = {user["email"] for user in response.json()}
+    body = response.json()
+    assert "has_more" in body
+    emails = {user["email"] for user in body["users"]}
     assert "listed-user@test.dev" in emails
     assert "curator@test.dev" in emails
-    listed = next(u for u in response.json() if u["email"] == "listed-user@test.dev")
+    listed = next(u for u in body["users"] if u["email"] == "listed-user@test.dev")
     assert listed["role"] == "user"
     assert listed["telegram_chat_id"] is None
     assert "created_at" in listed
+
+
+def test_admin_users_pagination(client: TestClient) -> None:
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    for i in range(3):
+        client.post(
+            "/api/auth/register",
+            json={"email": f"page-user-{i}@test.dev", "password": "password123"},
+        )
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+
+    first_page = client.get("/api/admin/users?limit=2&offset=0")
+    body = first_page.json()
+    assert len(body["users"]) == 2
+    assert body["has_more"] is True
+
+    all_seen = client.get("/api/admin/users?limit=100&offset=0").json()["users"]
+    assert len(all_seen) >= 4  # curator + the 3 registered above
 
 
 def test_non_admin_and_anonymous_cannot_list_users(client: TestClient) -> None:
@@ -313,8 +339,8 @@ def test_admin_can_delete_a_user_and_their_activity(client: TestClient) -> None:
         assert session.get(User, target_id) is None
         assert session.query(Event).filter(Event.user_id == target_id).count() == 0
 
-    assert client.get("/api/admin/users").json()
-    emails = {u["email"] for u in client.get("/api/admin/users").json()}
+    assert client.get("/api/admin/users").json()["users"]
+    emails = {u["email"] for u in client.get("/api/admin/users").json()["users"]}
     assert "deleteme@test.dev" not in emails
 
 

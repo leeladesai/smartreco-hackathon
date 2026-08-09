@@ -28,5 +28,10 @@
     <thead><tr><th>User</th><th>Event</th><th>Detail</th><th>When</th></tr></thead>
     <tbody id="overview-activity-table"></tbody>
   </table>
+  <div class="pagination" id="overview-activity-pagination">
+    <button type="button" id="overview-activity-prev-btn" onclick="overviewActivityPrevPage()">‹ Prev</button>
+    <span id="overview-activity-page-label"></span>
+    <button type="button" id="overview-activity-next-btn" onclick="overviewActivityNextPage()">Next ›</button>
+  </div>
 </div>
 {% endblock %}

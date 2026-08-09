@@ -141,10 +141,11 @@ def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
         )
         session.commit()
 
-        events = recent_activity(session, limit=10)
+        events, has_more = recent_activity(session, limit=10)
         assert [e["user_email"] for e in events] == ["b@test.dev", "a@test.dev"]
         assert events[0]["event_type"] == "search"
         assert events[0]["metadata"] == {"query": "voice"}
+        assert has_more is False
 
 
 def test_recent_activity_respects_limit(tmp_path) -> None:
@@ -161,7 +162,9 @@ def test_recent_activity_respects_limit(tmp_path) -> None:
         )
         session.commit()
 
-        assert len(recent_activity(session, limit=2)) == 2
+        events, has_more = recent_activity(session, limit=2)
+        assert len(events) == 2
+        assert has_more is True
 
 
 def test_admin_overview_endpoint_requires_admin(client: TestClient) -> None:

@@ -24,12 +24,12 @@
   <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>TRAILMIND <small id="brand-sub">/ model catalog</small></div>
   <nav class="nav-links engineer-links">
     <div class="nav-link" data-page="catalog" onclick="go('catalog')">Catalog</div>
-    <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Dashboard</div>
+    <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Recommendations</div>
     <div class="nav-link" data-page="activity" onclick="go('activity')">Your activity</div>
   </nav>
   <nav class="nav-links admin-links">
     <div class="nav-link" data-page="admin-overview" onclick="go('admin-overview')">Overview</div>
-    <div class="nav-link" data-page="admin-models" onclick="go('admin-models')">Models</div>
+    <div class="nav-link" data-page="admin-models" onclick="go('admin-models')">Catalog</div>
     <div class="nav-link" data-page="admin-users" onclick="go('admin-users')">Users</div>
     <div class="nav-link" data-page="observability" onclick="go('observability')">Observability</div>
   </nav>
@@ -73,9 +73,13 @@
         <div class="btn icon" id="drawer-watchlist-btn" style="padding:9px 0;" title="Add to watchlist" aria-label="Add to watchlist">☆</div>
         <div class="btn" id="drawer-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
       </div>
-      <div class="drawer-related">
+      <div class="drawer-related" id="drawer-related-wrap">
         <h4>You might also be interested in</h4>
         <div id="drawer-related"></div>
+      </div>
+      <div class="smart-pick" id="drawer-smart-pick" style="display:none;">
+        <h4>Smart recommendation — based on your session</h4>
+        <div id="drawer-smart-pick-body"></div>
       </div>
       <div class="tracking-panel" id="drawer-tracking" style="display:none;"></div>
       <p class="note" id="drawer-note" style="margin-top:16px;"></p>

@@ -52,25 +52,35 @@ def feedback_sentiment(session: Session) -> dict[str, int]:
     return counts
 
 
-def recent_activity(session: Session, limit: int = 30) -> list[dict]:
+def recent_activity(
+    session: Session, limit: int = 20, offset: int = 0
+) -> tuple[list[dict], bool]:
     """The admin-wide "live activity" feed — every user's events, newest first.
     Distinct from GET /api/activity/me, which is deliberately scoped to the signed-in
-    user's own history; this is the curator's cross-user view."""
+    user's own history; this is the curator's cross-user view. Returns
+    `(page, has_more)`, `has_more` computed by requesting one extra row rather than a
+    separate COUNT query."""
     rows = session.execute(
         select(Event, User.email)
         .join(User, Event.user_id == User.id)
         .order_by(Event.created_at.desc(), Event.id.desc())
-        .limit(limit)
+        .offset(offset)
+        .limit(limit + 1)
     ).all()
-    return [
-        {
-            "id": event.id,
-            "user_id": event.user_id,
-            "user_email": email,
-            "event_type": event.event_type,
-            "model_id": event.model_id,
-            "metadata": event.metadata_json,
-            "created_at": event.created_at,
-        }
-        for event, email in rows
-    ]
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    return (
+        [
+            {
+                "id": event.id,
+                "user_id": event.user_id,
+                "user_email": email,
+                "event_type": event.event_type,
+                "model_id": event.model_id,
+                "metadata": event.metadata_json,
+                "created_at": event.created_at,
+            }
+            for event, email in page
+        ],
+        has_more,
+    )

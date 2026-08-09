@@ -28,7 +28,6 @@ from app.config import Settings
 from app.db import build_session_factory
 from app.models import DemoModeSetting, Event, Model, Recommendation, User
 from app.schemas import (
-    AdminUserResponse,
     AuthCredentials,
     BulkImportResponse,
     DemoModeResponse,
@@ -624,25 +623,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/overview/activity")
     async def admin_overview_activity(
-        limit: int = Query(default=30, ge=1, le=100),
+        limit: int = Query(default=20, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
         _: User = Depends(current_admin),
     ) -> dict[str, object]:
         """The admin-wide live activity feed — every user's events, newest first.
         Distinct from GET /api/activity/me, which is deliberately scoped to the
         signed-in user's own history."""
         with session_factory() as session:
-            events = recent_activity(session, limit=limit)
+            events, has_more = recent_activity(session, limit=limit, offset=offset)
         return {
             "events": [
                 {**event, "created_at": as_utc(event["created_at"])} for event in events
-            ]
+            ],
+            "has_more": has_more,
         }
 
-    @app.get("/api/admin/users", response_model=list[AdminUserResponse])
-    async def list_users(_: User = Depends(current_admin)) -> list[AdminUserResponse]:
+    @app.get("/api/admin/users")
+    async def list_users(
+        limit: int = Query(default=500, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        _: User = Depends(current_admin),
+    ) -> dict[str, object]:
+        """Newest-registered first. `limit` defaults high enough that the
+        Observability page's "filter by user" dropdown (which wants every user, not
+        a page of them) can keep calling this with no params; the Users table page
+        passes an explicit limit=20 for real pagination."""
         with session_factory() as session:
-            users = session.scalars(select(User).order_by(User.created_at.desc())).all()
-            return [AdminUserResponse.model_validate(user) for user in users]
+            rows = session.scalars(
+                select(User)
+                .order_by(User.created_at.desc(), User.id.desc())
+                .offset(offset)
+                .limit(limit + 1)
+            ).all()
+            has_more = len(rows) > limit
+            page = rows[:limit]
+            return {
+                "users": [
+                    {
+                        "id": user.id,
+                        "email": user.email,
+                        "role": user.role,
+                        "telegram_chat_id": user.telegram_chat_id,
+                        "created_at": as_utc(user.created_at).isoformat(),
+                    }
+                    for user in page
+                ],
+                "has_more": has_more,
+            }
 
     @app.delete("/api/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
     async def delete_user(user_id: int, admin: User = Depends(current_admin)) -> None:

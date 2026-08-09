@@ -19,6 +19,11 @@
     <thead><tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr></thead>
     <tbody id="admin-model-table"></tbody>
   </table>
+  <div class="pagination" id="admin-models-pagination">
+    <button type="button" id="admin-models-prev-btn" onclick="adminModelsPrevPage()">‹ Prev</button>
+    <span id="admin-models-page-label"></span>
+    <button type="button" id="admin-models-next-btn" onclick="adminModelsNextPage()">Next ›</button>
+  </div>
 </div>
 
 <div class="modal-backdrop" id="model-modal" role="presentation" onclick="closeModelModal(event)">

@@ -87,6 +87,11 @@
     font-family:var(--mono); font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
     color:var(--amber); margin:0 0 8px;
   }
+  /* Admin zone identity is rose (nav active-tab, brand mark) — the eyebrow label on
+     every admin page previously stayed the default amber, clashing with it. Scoped
+     off the nav's own data-state rather than a per-template class, so any current or
+     future admin page picks this up automatically. */
+  #app-nav[data-state="admin"] ~ .page .eyebrow{color:var(--rose);}
   h1.page-title{font-size:26px; margin:0 0 6px; letter-spacing:-.01em;}
   .page-sub{color:var(--muted); font-size:13.5px; max-width:640px; line-height:1.5; margin:0;}
 
@@ -421,6 +426,9 @@
   .drawer-body{padding:20px 22px 28px;}
   .drawer-related{margin-top:22px; padding-top:16px; border-top:1px solid var(--line-soft);}
   .drawer-related h4{margin:0 0 10px; font-size:13px; color:var(--muted);}
+  .smart-pick{margin-top:18px; padding:14px 16px; border:1px solid color-mix(in srgb, var(--violet) 35%, var(--line)); border-left:3px solid var(--violet); border-radius:8px; background:color-mix(in srgb, var(--violet) 7%, transparent);}
+  .smart-pick h4{margin:0 0 10px; font-size:13px; color:var(--violet);}
+  .smart-pick .related-item{border-top:none; padding:0;}
   .drawer.wide{width:min(760px, 92vw);}
   @media (max-width:520px){.drawer{width:100vw;}}
   .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px;}

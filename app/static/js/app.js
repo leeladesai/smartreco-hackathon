@@ -111,6 +111,20 @@
     }[character]));
   }
 
+  // A page's server-rendered shell only proves the session was valid at that one
+  // request — if it then expires (TTL, or the cookie gets cleared) while the tab
+  // stays open, every fetch a loader makes afterward starts 401ing, but nothing in
+  // that loader's own try/catch distinguishes "you're signed out" from "the server
+  // hiccuped" — so it was rendering a generic empty-state message instead of sending
+  // the browser to the right login screen, while the nav bar kept showing stale
+  // "signed in as ..." from the initial render. This centralizes that one check:
+  // call it right after awaiting a fetch, before touching response.json().
+  function redirectIfSignedOut(response){
+    if (response.status !== 401) return false;
+    go(adminSession ? 'admin-auth' : 'auth');
+    return true;
+  }
+
   function setSessionRole(role){
     userSession = role === 'user';
     adminSession = role === 'admin';
@@ -121,7 +135,10 @@
     // user of the app sees an identical, meaningless "AI engineer" pill.
     pill.textContent = adminSession ? 'signed in as: admin' : 'signed in as: …';
     fetch(`${API_BASE}/api/auth/me`)
-      .then(response => response.ok ? response.json() : null)
+      .then(response => {
+        if (redirectIfSignedOut(response)) return null;
+        return response.ok ? response.json() : null;
+      })
       .then(data => {
         if (data && data.email) {
           pill.textContent = adminSession ? `signed in as: ${data.email} (admin)` : `signed in as: ${data.email}`;
@@ -313,9 +330,25 @@
     `).join('');
   }
 
+  // GET /api/models stays unpaginated on purpose — the AI-engineer catalog page's
+  // search/modality/provider filters all run client-side against the full MODELS
+  // array already preloaded for every page (initPage's loadModels() call), so
+  // paginating the fetch itself would break that filtering everywhere it's used.
+  // This table alone is paginated by slicing the already-loaded array in the browser.
+  const ADMIN_MODELS_PAGE_SIZE = 20;
+  let adminModelsPage = 1;
+
   function renderAdminTable(){
     if (!adminTable) return; // admin table only exists on the admin page now
-    adminTable.innerHTML = MODELS.map(m => `
+    const pagination = document.getElementById('admin-models-pagination');
+    const prevBtn = document.getElementById('admin-models-prev-btn');
+    const nextBtn = document.getElementById('admin-models-next-btn');
+    const pageLabel = document.getElementById('admin-models-page-label');
+    const totalPages = Math.max(1, Math.ceil(MODELS.length / ADMIN_MODELS_PAGE_SIZE));
+    adminModelsPage = Math.min(Math.max(adminModelsPage, 1), totalPages);
+    const start = (adminModelsPage - 1) * ADMIN_MODELS_PAGE_SIZE;
+    const page = MODELS.slice(start, start + ADMIN_MODELS_PAGE_SIZE);
+    adminTable.innerHTML = page.map(m => `
       <tr>
         <td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.provider)}</td><td>${escapeHtml(m.mod)}</td><td>${escapeHtml(m.v2)}</td>
         <td class="${m.sync === 'indexing' ? 'sync-pending' : 'sync-ok'}">${m.sync === 'indexing' ? '⋯ indexing' : '✓ synced'}</td>
@@ -325,6 +358,23 @@
         </td>
       </tr>
     `).join('');
+    if (pagination) pagination.style.display = MODELS.length > ADMIN_MODELS_PAGE_SIZE ? 'flex' : 'none';
+    if (prevBtn) prevBtn.disabled = adminModelsPage === 1;
+    if (nextBtn) nextBtn.disabled = adminModelsPage === totalPages;
+    if (pageLabel) pageLabel.textContent = `Page ${adminModelsPage} of ${totalPages}`;
+  }
+
+  function adminModelsPrevPage(){
+    if (adminModelsPage <= 1) return;
+    adminModelsPage -= 1;
+    renderAdminTable();
+  }
+
+  function adminModelsNextPage(){
+    const totalPages = Math.max(1, Math.ceil(MODELS.length / ADMIN_MODELS_PAGE_SIZE));
+    if (adminModelsPage >= totalPages) return;
+    adminModelsPage += 1;
+    renderAdminTable();
   }
 
   // Admin Overview: platform-usage metrics (app/services/admin_overview.py) —
@@ -342,6 +392,7 @@
     if (!totalsRow) return; // only present on the overview page
     try {
       const response = await fetch(`${API_BASE}/api/admin/overview`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const t = data.totals;
@@ -374,17 +425,31 @@
     }
   }
 
+  const OVERVIEW_ACTIVITY_PAGE_SIZE = 20;
+  let overviewActivityOffset = 0;
+  let overviewActivityHasMore = false;
+
   async function loadOverviewActivity(){
     if (!adminSession) return;
     const tbody = document.getElementById('overview-activity-table');
+    const prevBtn = document.getElementById('overview-activity-prev-btn');
+    const nextBtn = document.getElementById('overview-activity-next-btn');
+    const pageLabel = document.getElementById('overview-activity-page-label');
+    const pagination = document.getElementById('overview-activity-pagination');
     if (!tbody) return; // only present on the overview page
     tbody.innerHTML = '<tr><td colspan="4">Loading recent activity…</td></tr>';
     try {
-      const response = await fetch(`${API_BASE}/api/admin/overview/activity?limit=30`);
+      const response = await fetch(`${API_BASE}/api/admin/overview/activity?limit=${OVERVIEW_ACTIVITY_PAGE_SIZE}&offset=${overviewActivityOffset}`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
+      overviewActivityHasMore = Boolean(data.has_more);
+      if (pagination) pagination.style.display = (overviewActivityOffset > 0 || overviewActivityHasMore) ? 'flex' : 'none';
+      if (prevBtn) prevBtn.disabled = overviewActivityOffset === 0;
+      if (nextBtn) nextBtn.disabled = !overviewActivityHasMore;
+      if (pageLabel) pageLabel.textContent = `Page ${Math.floor(overviewActivityOffset / OVERVIEW_ACTIVITY_PAGE_SIZE) + 1}`;
       if (!data.events.length) {
-        tbody.innerHTML = '<tr><td colspan="4">No activity tracked yet.</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="4">${overviewActivityOffset > 0 ? 'No more activity.' : 'No activity tracked yet.'}</td></tr>`;
         return;
       }
       tbody.innerHTML = data.events.map(event => {
@@ -410,22 +475,52 @@
 
   function refreshOverview(){
     loadOverview();
+    overviewActivityOffset = 0;
+    loadOverviewActivity();
+  }
+
+  function overviewActivityPrevPage(){
+    if (overviewActivityOffset === 0) return;
+    overviewActivityOffset = Math.max(0, overviewActivityOffset - OVERVIEW_ACTIVITY_PAGE_SIZE);
+    loadOverviewActivity();
+  }
+
+  function overviewActivityNextPage(){
+    if (!overviewActivityHasMore) return;
+    overviewActivityOffset += OVERVIEW_ACTIVITY_PAGE_SIZE;
     loadOverviewActivity();
   }
 
   // Admin users list: read-only view of who's actually registered (app/main.py
   // GET /api/admin/users) — accounts themselves are created via self-registration
-  // (submitAuth) or the seed script, never from this page.
+  // (submitAuth) or the seed script, never from this page. Newest-joined first,
+  // paginated 20/page (matches the Observability page's Prev/Next pattern).
+  const USERS_PAGE_SIZE = 20;
+  let usersOffset = 0;
+  let usersHasMore = false;
+
   async function loadUsers(){
     if (!adminSession) return;
     const tbody = document.getElementById('admin-users-table');
     const empty = document.getElementById('admin-users-empty');
+    const prevBtn = document.getElementById('users-prev-btn');
+    const nextBtn = document.getElementById('users-next-btn');
+    const pageLabel = document.getElementById('users-page-label');
+    const pagination = document.getElementById('users-pagination');
     if (!tbody) return; // only present on the admin users page
     try {
-      const response = await fetch(`${API_BASE}/api/admin/users`);
+      const response = await fetch(`${API_BASE}/api/admin/users?limit=${USERS_PAGE_SIZE}&offset=${usersOffset}`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const users = await response.json();
+      const data = await response.json();
+      const users = data.users;
+      usersHasMore = Boolean(data.has_more);
+      if (pagination) pagination.style.display = (usersOffset > 0 || usersHasMore) ? 'flex' : 'none';
+      if (prevBtn) prevBtn.disabled = usersOffset === 0;
+      if (nextBtn) nextBtn.disabled = !usersHasMore;
+      if (pageLabel) pageLabel.textContent = `Page ${Math.floor(usersOffset / USERS_PAGE_SIZE) + 1}`;
       empty.style.display = users.length ? 'none' : 'block';
+      empty.textContent = users.length ? '' : (usersOffset > 0 ? 'No more users.' : 'No users yet.');
       tbody.innerHTML = users.map(user => {
         const joined = new Date(user.created_at).toLocaleDateString([], {day:'numeric', month:'short', year:'numeric'});
         const roleClass = user.role === 'admin' ? 'sync-ok' : '';
@@ -445,6 +540,23 @@
       empty.style.display = 'block';
       empty.textContent = 'Could not load users. Try refreshing.';
     }
+  }
+
+  function refreshUsers(){
+    usersOffset = 0;
+    loadUsers();
+  }
+
+  function usersPrevPage(){
+    if (usersOffset === 0) return;
+    usersOffset = Math.max(0, usersOffset - USERS_PAGE_SIZE);
+    loadUsers();
+  }
+
+  function usersNextPage(){
+    if (!usersHasMore) return;
+    usersOffset += USERS_PAGE_SIZE;
+    loadUsers();
   }
 
   async function deleteUser(id, email){
@@ -472,6 +584,7 @@
     if (!wrap) return; // only present on the observability page
     try {
       const response = await fetch(`${API_BASE}/api/admin/observability/costs`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const latency = data.avg_latency_ms != null ? `${Math.round(data.avg_latency_ms)}<small>ms</small>` : '—';
@@ -503,9 +616,14 @@
     const select = document.getElementById('observability-user-filter');
     if (!select) return;
     try {
+      // No limit/offset — this wants every user for the dropdown, not one page of
+      // them; the endpoint's default limit (500) is comfortably above any realistic
+      // user count here.
       const response = await fetch(`${API_BASE}/api/admin/users`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const users = await response.json();
+      const data = await response.json();
+      const users = data.users;
       observabilityUsersById = Object.fromEntries(users.map(user => [String(user.id), user.email]));
       const previousValue = select.value;
       select.innerHTML = '<option value="">All users</option>' + users.map(user =>
@@ -544,6 +662,7 @@
     try {
       const userParam = observabilityUserFilter ? `&user_id=${encodeURIComponent(observabilityUserFilter)}` : '';
       const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}${userParam}`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (!data.available) {
@@ -729,7 +848,7 @@
     document.getElementById(`${prefix}tags`).innerHTML = (model.tags || '').split(',').map(tag => tag.trim()).filter(Boolean)
       .map(tag => `<span class="use-tag">${escapeHtml(tag)}</span>`).join('');
     document.getElementById(`${prefix}related`).innerHTML = '<p class="note">Finding similar models…</p>';
-    loadRelatedModels(model.id, prefix);
+    loadRecommendationSection(model.id, prefix);
     // Accurate regardless of dwell state: the view event only actually ships once you leave
     // this model (dwell_seconds needs a real end time — see finalizeDwell), so claiming it's
     // already "recorded" the instant the drawer opens was misleading.
@@ -765,6 +884,57 @@
         container.innerHTML = '<p class="note">Could not load related models.</p>';
       }
     }
+  }
+
+  const SMART_PICK_MAX = 3;
+
+  // Personalized, unlike loadRelatedModels' content-based similarity: reuses the same
+  // latest Recommendation the Dashboard renders (GET /api/recommendations/me), just
+  // filtered down to the candidates that aren't the model already open in this drawer.
+  // Returns [] (rather than throwing) whenever there's nothing to show — signed-out
+  // sessions, users with no recommendation yet, or a recommendation whose only candidate
+  // is the model already open — so the caller can fall back to content-based related
+  // models.
+  async function fetchSmartPicks(modelId){
+    if (!userSession) return [];
+    try {
+      const response = await fetch(`${API_BASE}/api/recommendations/me`);
+      if (!response.ok) return [];
+      const data = await response.json();
+      return (data.models || [])
+        .filter(item => String(item.id) !== String(modelId))
+        .slice(0, SMART_PICK_MAX);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  // Smart pick and "You might also be interested in" both answer the same question —
+  // what else should I look at? — so only one shows at a time rather than stacking two
+  // recommendation lists. Smart pick (personalized) wins whenever it has something to
+  // show; content-based related models is the fallback for signed-out/no-activity cases.
+  async function loadRecommendationSection(modelId, prefix){
+    const relatedWrap = document.getElementById(`${prefix}related-wrap`);
+    const smartWrap = document.getElementById(`${prefix}smart-pick`);
+    const smartBody = document.getElementById(`${prefix}smart-pick-body`);
+    if (smartWrap) smartWrap.style.display = 'none';
+    if (relatedWrap) relatedWrap.style.display = '';
+
+    const picks = await fetchSmartPicks(modelId);
+    if (String(selectedModelId) !== String(modelId)) return; // user already moved on
+
+    if (picks.length && smartWrap && smartBody) {
+      smartBody.innerHTML = picks.map(pick => `
+        <div class="related-item" style="cursor:pointer;" onclick="openModel('${pick.id}')">
+          <div class="related-item-top"><span>${escapeHtml(pick.title)}</span><span class="rlt">${escapeHtml(pick.price)}</span></div>
+          <p class="related-why">${escapeHtml(pick.why_this || 'Matches your recent session activity.')}</p>
+        </div>`).join('') +
+        `<div class="flow-link" style="margin-top:10px; font-size:11.5px;" onclick="go('dashboard')">See your full recommendations →</div>`;
+      smartWrap.style.display = '';
+      if (relatedWrap) relatedWrap.style.display = 'none';
+      return;
+    }
+    loadRelatedModels(modelId, prefix);
   }
 
   function updateCompareButton(buttonId, modelId){
@@ -946,6 +1116,7 @@
     if (!userSession) return;
     try {
       const response = await fetch(`${API_BASE}/api/recommendations/me`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) return;
       const recommendation = await response.json();
       dashboardRecId = recommendation.id ?? null;
@@ -990,6 +1161,7 @@
     if (!userSession) return;
     try {
       const response = await fetch(`${API_BASE}/api/recommendations/me`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) return;
       const recommendation = await response.json();
       if ((recommendation.id ?? null) !== dashboardRecId) loadDashboard();
@@ -1020,6 +1192,7 @@
     }
     try {
       const response = await fetch(`${API_BASE}/api/activity/me`);
+      if (redirectIfSignedOut(response)) return;
       if (!response.ok) return;
       const payload = await response.json();
       activityEvents = payload.events;
