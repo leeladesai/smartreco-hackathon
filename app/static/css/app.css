@@ -427,8 +427,12 @@
   .drawer-related{margin-top:22px; padding-top:16px; border-top:1px solid var(--line-soft);}
   .drawer-related h4{margin:0 0 10px; font-size:13px; color:var(--muted);}
   .smart-pick{margin-top:18px; padding:14px 16px; border:1px solid color-mix(in srgb, var(--violet) 35%, var(--line)); border-left:3px solid var(--violet); border-radius:8px; background:color-mix(in srgb, var(--violet) 7%, transparent);}
-  .smart-pick h4{margin:0 0 10px; font-size:13px; color:var(--violet);}
-  .smart-pick .related-item{border-top:none; padding:0;}
+  .smart-pick h4{margin:0 0 4px; font-size:13px; color:var(--violet);}
+  .smart-pick .related-item{padding:10px 0; border-top:1px solid color-mix(in srgb, var(--violet) 20%, var(--line-soft));}
+  .smart-pick .related-item:first-child{border-top:none; padding-top:8px;}
+  .smart-pick .related-item:last-child{padding-bottom:6px;}
+  .smart-pick .flow-link{margin:6px 0 0; padding-top:12px; border-top:1px solid color-mix(in srgb, var(--violet) 20%, var(--line-soft)); color:var(--violet); display:block;}
+  .smart-pick .flow-link:hover{color:var(--text);}
   .drawer.wide{width:min(760px, 92vw);}
   @media (max-width:520px){.drawer{width:100vw;}}
   .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:16px;}
