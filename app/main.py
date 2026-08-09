@@ -318,7 +318,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 token,
                 httponly=True,
                 samesite="lax",
-                secure=False,
+                secure=app_settings.session_cookie_secure,
                 max_age=60 * 60 * 12,
             )
             return UserResponse.model_validate(user)
@@ -519,6 +519,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/observability/runs")
     async def observability_runs(
+        limit: int = Query(default=25, ge=1, le=100),
+        offset: int = Query(default=0, ge=0),
         _: User = Depends(current_admin),
     ) -> dict[str, object]:
         """OBS-2: surfaces recent agent-pipeline traces inside the admin portal
@@ -527,19 +529,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         LangSmith API — this app never writes trace data, `@traceable` (OBS-1)
         already does that."""
         try:
-            runs = fetch_recent_runs(app_settings)
+            runs, has_more = fetch_recent_runs(app_settings, limit=limit, offset=offset)
         except ObservabilityUnavailable as exc:
-            return {"available": False, "message": str(exc), "runs": []}
+            return {
+                "available": False,
+                "message": str(exc),
+                "runs": [],
+                "has_more": False,
+            }
         return {
             "available": True,
             "message": None,
+            "has_more": has_more,
             "runs": [
                 {
                     "id": run.id,
                     "name": run.name,
                     "run_type": run.run_type,
                     "status": run.status,
-                    "start_time": run.start_time.isoformat()
+                    "start_time": as_utc(run.start_time).isoformat()
                     if run.start_time
                     else None,
                     "latency_ms": run.latency_ms,
@@ -568,7 +576,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "id": detail.id,
                 "name": detail.name,
                 "status": detail.status,
-                "start_time": detail.start_time.isoformat()
+                "start_time": as_utc(detail.start_time).isoformat()
                 if detail.start_time
                 else None,
                 "latency_ms": detail.latency_ms,
@@ -578,7 +586,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "name": step.name,
                         "run_type": step.run_type,
                         "status": step.status,
-                        "start_time": step.start_time.isoformat()
+                        "start_time": as_utc(step.start_time).isoformat()
                         if step.start_time
                         else None,
                         "latency_ms": step.latency_ms,
@@ -639,7 +647,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "recent": [
                 {
                     "id": row["id"],
-                    "created_at": row["created_at"].isoformat()
+                    "created_at": as_utc(row["created_at"]).isoformat()
                     if row["created_at"]
                     else None,
                     "latency_ms": row["latency_ms"],

@@ -5,6 +5,7 @@ isn't, or the API call fails, callers get ObservabilityUnavailable with a UI-saf
 message.
 """
 
+import itertools
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -131,10 +132,18 @@ def _collect_steps(run, depth: int) -> list["TraceStep"]:
     return steps
 
 
-def fetch_recent_runs(settings: Settings, limit: int = 25) -> list[TraceRun]:
+def fetch_recent_runs(
+    settings: Settings, limit: int = 25, offset: int = 0
+) -> tuple[list[TraceRun], bool]:
     """The top-level `agent_pipeline` run per trigger, newest first — not every child
     node, which would bury the signal a curator actually wants ("did the last few runs
     succeed, how long did they take") under 5x as many rows.
+
+    Returns `(page, has_more)`. The pinned SDK's `list_runs` has no server-side offset
+    param, so pagination is done by pulling `offset + limit + 1` items from its lazy
+    iterator (itself paging against the LangSmith API under the hood, so this stays
+    bounded rather than fetching the whole project) and slicing locally — the "+1"
+    lets us detect a next page exists without a separate count query.
     """
     if not settings.langsmith_api_key:
         raise ObservabilityUnavailable(
@@ -144,10 +153,12 @@ def fetch_recent_runs(settings: Settings, limit: int = 25) -> list[TraceRun]:
     client = Client(api_key=settings.langsmith_api_key)
     try:
         runs = list(
-            client.list_runs(
-                project_name=settings.langsmith_project,
-                execution_order=1,
-                limit=limit,
+            itertools.islice(
+                client.list_runs(
+                    project_name=settings.langsmith_project,
+                    execution_order=1,
+                ),
+                offset + limit + 1,
             )
         )
     except Exception as exc:  # network error, bad key, project doesn't exist yet, etc.
@@ -160,19 +171,24 @@ def fetch_recent_runs(settings: Settings, limit: int = 25) -> list[TraceRun]:
         key=lambda run: run.start_time or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    return [
-        TraceRun(
-            id=str(run.id),
-            name=run.name,
-            run_type=run.run_type,
-            status=run.status or ("error" if run.error else "success"),
-            start_time=run.start_time,
-            latency_ms=_latency_ms(run),
-            error=run.error,
-            url=_run_url(client, run),
-        )
-        for run in runs[:limit]
-    ]
+    has_more = len(runs) > offset + limit
+    page = runs[offset : offset + limit]
+    return (
+        [
+            TraceRun(
+                id=str(run.id),
+                name=run.name,
+                run_type=run.run_type,
+                status=run.status or ("error" if run.error else "success"),
+                start_time=run.start_time,
+                latency_ms=_latency_ms(run),
+                error=run.error,
+                url=_run_url(client, run),
+            )
+            for run in page
+        ],
+        has_more,
+    )
 
 
 def fetch_run_detail(settings: Settings, run_id: str) -> TraceDetail:

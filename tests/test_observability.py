@@ -98,6 +98,60 @@ def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
     assert body["runs"][0]["url"] == "https://smith.langchain.com/fake/1"
 
 
+def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
+    class FakeRun:
+        def __init__(self, id_, name, status, start_time):
+            self.id = id_
+            self.name = name
+            self.run_type = "chain"
+            self.status = status
+            self.error = None
+            self.start_time = start_time
+            self.end_time = start_time + timedelta(seconds=2)
+            self.session_id = "fake-session"
+
+    t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.api_key = api_key
+
+        def list_runs(self, **kwargs):
+            # Deliberately yielded oldest-first (run "1" has the earliest start_time)
+            # — fetch_recent_runs must sort newest-first itself before paging, so the
+            # page order can't just be trusting this iterator's own order.
+            return iter(
+                [
+                    FakeRun("1", "agent_pipeline", "success", t0),
+                    FakeRun(
+                        "2", "agent_pipeline", "success", t0 + timedelta(minutes=1)
+                    ),
+                    FakeRun(
+                        "3", "agent_pipeline", "success", t0 + timedelta(minutes=2)
+                    ),
+                ]
+            )
+
+        def get_run_url(self, *, run):
+            return f"https://smith.langchain.com/fake/{run.id}"
+
+    import app.services.observability as observability_module
+
+    monkeypatch.setattr(observability_module, "Client", FakeClient)
+
+    admin_client = _admin_client(tmp_path, monkeypatch, langsmith_api_key="fake-key")
+
+    first_page = admin_client.get("/api/admin/observability/runs?limit=2&offset=0")
+    body = first_page.json()
+    assert [run["id"] for run in body["runs"]] == ["3", "2"]
+    assert body["has_more"] is True
+
+    second_page = admin_client.get("/api/admin/observability/runs?limit=2&offset=2")
+    body = second_page.json()
+    assert [run["id"] for run in body["runs"]] == ["1"]
+    assert body["has_more"] is False
+
+
 def test_observability_reports_api_failure(tmp_path, monkeypatch) -> None:
     class FailingClient:
         def __init__(self, api_key=None):

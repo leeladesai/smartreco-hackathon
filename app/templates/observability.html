@@ -7,7 +7,7 @@
       <h1 class="page-title">Pipeline observability</h1>
       <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
     </div>
-    <button class="btn" type="button" onclick="loadObservability(); loadCostRollup();">Refresh</button>
+    <button class="btn" type="button" onclick="refreshObservability()">Refresh</button>
   </div>
   <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
@@ -15,6 +15,11 @@
     <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>Latency</th><th>Error</th></tr></thead>
     <tbody id="observability-run-table"></tbody>
   </table>
+  <div class="pagination" id="observability-pagination">
+    <button type="button" id="observability-prev-btn" onclick="observabilityPrevPage()">‹ Newer</button>
+    <span id="observability-page-label"></span>
+    <button type="button" id="observability-next-btn" onclick="observabilityNextPage()">Older ›</button>
+  </div>
   <p class="note" style="margin-top:10px;">Click a run to see its step-by-step trace.</p>
 </div>
 
