@@ -186,7 +186,30 @@
     if (adding) watchlist.push(modelId); else watchlist.splice(index, 1);
     localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlist));
     trackEvent('model_watchlist', modelId, {action: adding ? 'add' : 'remove'});
-    renderCatalog();
+    refreshWatchlistButtons(modelId);
+  }
+
+  // A model's watchlist star can be toggled from up to three places at once (the
+  // catalog grid, a dashboard recommendation card, and the model detail drawer/page),
+  // and all of them need to agree — toggling from the drawer was previously only
+  // refreshing the catalog grid behind it, leaving the drawer's own star stale.
+  function refreshWatchlistButtons(modelId){
+    const model = MODELS.find(item => String(item.id) === String(modelId));
+    if (!model) return;
+    if (grid) renderCatalog(); // catalog grid is rebuilt wholesale, same as before
+    // Dashboard recommendation cards have no cheap full-rebuild without a network
+    // refetch, so swap just the one card's star in place via its data-model-id.
+    document.querySelectorAll(`#recommendation-grid .card[data-model-id="${modelId}"] .card-actions .btn.icon:not(.feedback-btn)`).forEach(el => {
+      el.outerHTML = watchlistButtonHtml(model);
+    });
+    // Drawer ('drawer-') and standalone detail page ('detail-') — only the one
+    // currently showing this exact model, never a drawer open on a different model.
+    if (String(selectedModelId) === String(modelId)) {
+      ['drawer-', 'detail-'].forEach(prefix => {
+        const btn = document.getElementById(`${prefix}watchlist-btn`);
+        if (btn) btn.outerHTML = watchlistButtonHtml(model).replace('class="btn icon', `id="${prefix}watchlist-btn" class="btn icon`);
+      });
+    }
   }
 
   function watchlistButtonHtml(model){
@@ -379,26 +402,47 @@
     }
   }
 
+  const OBSERVABILITY_PAGE_SIZE = 25;
+  let observabilityOffset = 0;
+  let observabilityHasMore = false;
+
   async function loadObservability(){
     if (!adminSession) return;
     const unavailableBox = document.getElementById('observability-unavailable');
     const tableWrap = document.getElementById('observability-table-wrap');
     const tbody = document.getElementById('observability-run-table');
+    const prevBtn = document.getElementById('observability-prev-btn');
+    const nextBtn = document.getElementById('observability-next-btn');
+    const pageLabel = document.getElementById('observability-page-label');
+    const pagination = document.getElementById('observability-pagination');
     if (!tbody) return; // only present on the observability page
     try {
-      const response = await fetch(`${API_BASE}/api/admin/observability/runs`);
+      const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (!data.available) {
         tableWrap.style.display = 'none';
         unavailableBox.style.display = 'block';
         unavailableBox.textContent = data.message || 'LangSmith observability is not available.';
+        if (pagination) pagination.style.display = 'none';
         return;
       }
       unavailableBox.style.display = 'none';
       tableWrap.style.display = '';
+      observabilityHasMore = Boolean(data.has_more);
+      if (pagination) pagination.style.display = (observabilityOffset > 0 || observabilityHasMore) ? 'flex' : 'none';
+      if (prevBtn) prevBtn.disabled = observabilityOffset === 0;
+      if (nextBtn) nextBtn.disabled = !observabilityHasMore;
+      // LangSmith doesn't cheaply expose a total run count, so this can only show the
+      // current page — unlike the Activity page's "Page X of Y" (a locally-known total).
+      if (pageLabel) {
+        const page = Math.floor(observabilityOffset / OBSERVABILITY_PAGE_SIZE) + 1;
+        pageLabel.textContent = `Page ${page}`;
+      }
       if (!data.runs.length) {
-        tbody.innerHTML = '<tr><td colspan="5">No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.</td></tr>';
+        tbody.innerHTML = observabilityOffset === 0
+          ? '<tr><td colspan="5">No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.</td></tr>'
+          : '<tr><td colspan="5">No more runs.</td></tr>';
         return;
       }
       tbody.innerHTML = data.runs.map(run => {
@@ -420,6 +464,24 @@
       unavailableBox.style.display = 'block';
       unavailableBox.textContent = 'Could not load observability data — check the server logs.';
     }
+  }
+
+  function refreshObservability(){
+    observabilityOffset = 0;
+    loadObservability();
+    loadCostRollup();
+  }
+
+  function observabilityPrevPage(){
+    if (observabilityOffset === 0) return;
+    observabilityOffset = Math.max(0, observabilityOffset - OBSERVABILITY_PAGE_SIZE);
+    loadObservability();
+  }
+
+  function observabilityNextPage(){
+    if (!observabilityHasMore) return;
+    observabilityOffset += OBSERVABILITY_PAGE_SIZE;
+    loadObservability();
   }
 
   // Brings a single run's step-by-step trace into the admin portal itself (rather than
@@ -640,7 +702,10 @@
     none: 'Waiting on your first tracked actions — browse or search the catalog to start the pipeline.',
     no_candidates: 'Retrieval ran but found no close catalog match for your activity yet — keep browsing to sharpen the signal.',
     retrieval_ready: 'Delivered from retrieval only — generation was skipped because no narrative generator (Mesh) is configured.',
-    ready: 'Delivered with a generated narrative — the full pipeline ran end to end.',
+    // No note for 'ready' — that's the normal, fully-successful state, and "the full
+    // pipeline ran end to end" is internal implementation detail with no meaning to
+    // a real user; the recommendation itself is the confirmation.
+    ready: '',
   };
 
   function renderStepper(recommendation){
@@ -674,7 +739,11 @@
       else if (state === 'skipped') { el.classList.add('skipped'); numEl.textContent = '–'; }
       else { numEl.textContent = el.dataset.n; }
     });
-    if (note) note.textContent = STEPPER_NOTES[noteKey] || '';
+    if (note) {
+      const text = STEPPER_NOTES[noteKey] || '';
+      note.textContent = text;
+      note.style.display = text ? '' : 'none';
+    }
   }
 
   function timeAgo(isoString){
@@ -703,7 +772,7 @@
           <p class="narrative-para">${escapeHtml(parsed.understanding)}</p>
         </div>` : '',
         points.length ? `<div class="narrative-section">
-          <p class="narrative-label">Why these recommendations</p>
+          <p class="narrative-label">Why below recommendations</p>
           <ul class="narrative-list">${points.map(point => `<li>${escapeHtml(point)}</li>`).join('')}</ul>
         </div>` : ''
       ].join('');
@@ -748,19 +817,22 @@
         const candidates = recommendation.models.map(fromApiModel);
         const hasNarrative = Boolean(recommendation.narrative);
         document.getElementById('dashboard-tags').innerHTML = hasNarrative
-          ? '<span class="badge reason">status: generated</span><span class="badge conf">grounded candidates</span>'
-          : '<span class="badge reason">status: retrieval ready</span><span class="badge conf">grounded candidates</span>';
+          ? '<span class="badge reason">status: generated</span>'
+          : '<span class="badge reason">status: retrieval ready</span>';
         renderNarrative(recommendation.narrative || 'These candidates were retrieved from the catalog using your recent activity. A generated explanation will appear when Mesh is configured.');
         document.getElementById('recommendation-grid').innerHTML = candidates.map((model, index) => `
-          <div class="card" onclick="openModel('${model.id}')">
+          <div class="card" data-model-id="${model.id}" onclick="openModel('${model.id}')">
             <div class="stripe" style="background:${modelColor(model)}"></div>
             <div class="card-body">
-              <div class="card-top"><span class="part-id">Match ${index + 1}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
+              <div class="card-top"><span class="part-id">Recommendation ${index + 1}</span><span class="modality-tag" style="background:color-mix(in srgb, ${modelColor(model)} 22%, transparent); color:${modelColor(model)};">${escapeHtml(model.mod)}</span></div>
               <h3>${escapeHtml(model.name)}</h3><p class="provider">${escapeHtml(model.provider)}</p>
               ${slugRowHtml(model)}
-              ${model.whyThis ? `<p class="why-tag">${escapeHtml(model.whyThis)}</p>` : ''}
               <div class="spec-row"><span>${escapeHtml(model.s1)}</span><b>${escapeHtml(model.v1)}</b></div>
               <div class="spec-row"><span>${escapeHtml(model.s2)}</span><b>${escapeHtml(model.v2)}</b></div>
+              ${model.whyThis ? `<div class="why-this">
+                <p class="why-this-label">Why this?</p>
+                <p class="why-this-text">${escapeHtml(model.whyThis)}</p>
+              </div>` : ''}
               <div class="card-actions">${watchlistButtonHtml(model)}${feedbackButtonsHtml(model)}</div>
             </div>
           </div>`).join('');
