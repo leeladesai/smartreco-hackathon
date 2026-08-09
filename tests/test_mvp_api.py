@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi.testclient import TestClient
 
-from app.models import User
+from app.models import Event, User
 
 
 def test_events_batch_skips_retrigger_while_pipeline_already_in_flight(
@@ -236,6 +236,74 @@ def test_non_admin_and_anonymous_cannot_list_users(client: TestClient) -> None:
         "/api/auth/login", json={"email": "nosee@test.dev", "password": "password123"}
     )
     response = client.get("/api/admin/users")
+    assert response.status_code == 403
+
+
+def test_admin_can_delete_a_user_and_their_activity(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "deleteme@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "deleteme@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/events/batch",
+        json={"events": [{"event_type": "search", "metadata": {"query": "voice"}}]},
+    )
+    with client.app.state.session_factory() as session:
+        target = session.query(User).filter(User.email == "deleteme@test.dev").one()
+        target_id = target.id
+
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    response = client.delete(f"/api/admin/users/{target_id}")
+    assert response.status_code == 204
+
+    with client.app.state.session_factory() as session:
+        assert session.get(User, target_id) is None
+        assert session.query(Event).filter(Event.user_id == target_id).count() == 0
+
+    assert client.get("/api/admin/users").json()
+    emails = {u["email"] for u in client.get("/api/admin/users").json()}
+    assert "deleteme@test.dev" not in emails
+
+
+def test_admin_cannot_delete_own_account(client: TestClient) -> None:
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    with client.app.state.session_factory() as session:
+        curator = session.query(User).filter(User.email == "curator@test.dev").one()
+        curator_id = curator.id
+
+    response = client.delete(f"/api/admin/users/{curator_id}")
+    assert response.status_code == 400
+
+
+def test_delete_user_returns_404_for_unknown_id(client: TestClient) -> None:
+    client.post(
+        "/api/admin/login",
+        json={"email": "curator@test.dev", "password": "password123"},
+    )
+    response = client.delete("/api/admin/users/999999")
+    assert response.status_code == 404
+
+
+def test_non_admin_cannot_delete_users(client: TestClient) -> None:
+    client.post(
+        "/api/auth/register",
+        json={"email": "nodelete@test.dev", "password": "password123"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "nodelete@test.dev", "password": "password123"},
+    )
+    response = client.delete("/api/admin/users/1")
     assert response.status_code == 403
 
 

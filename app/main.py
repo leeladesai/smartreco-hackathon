@@ -598,6 +598,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             users = session.scalars(select(User).order_by(User.created_at.desc())).all()
             return [AdminUserResponse.model_validate(user) for user in users]
 
+    @app.delete("/api/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_user(user_id: int, admin: User = Depends(current_admin)) -> None:
+        if user_id == admin.id:
+            raise HTTPException(
+                status_code=400, detail="Cannot delete the account you're signed in as"
+            )
+        with session_factory() as session:
+            user = session.get(User, user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            # No ORM cascade is configured for Event/Recommendation.user_id (plain FK
+            # columns, not relationships) and SQLite doesn't enforce FKs by default —
+            # deleting the row alone would leave that user's behavioral history and
+            # past recommendations orphaned rather than actually gone.
+            session.query(Event).filter(Event.user_id == user_id).delete()
+            session.query(Recommendation).filter(
+                Recommendation.user_id == user_id
+            ).delete()
+            session.delete(user)
+            session.commit()
+
     @app.get("/api/admin/observability/costs")
     async def observability_costs(
         _: User = Depends(current_admin),

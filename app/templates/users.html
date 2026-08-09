@@ -5,12 +5,12 @@
     <div>
       <p class="eyebrow">Curator console</p>
       <h1 class="page-title">Users</h1>
-      <p class="page-sub">Everyone who has registered an AI-engineer account, plus curator/admin accounts. Read-only — accounts are provisioned via self-registration or the seed script, not created here.</p>
+      <p class="page-sub">Everyone who has registered an AI-engineer account, plus curator/admin accounts. Accounts are provisioned via self-registration or the seed script, not created here — but can be removed from here if needed.</p>
     </div>
     <button class="btn" type="button" onclick="loadUsers()">Refresh</button>
   </div>
   <table class="admin-table">
-    <thead><tr><th>Email</th><th>Role</th><th>Joined</th><th>Telegram</th></tr></thead>
+    <thead><tr><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
     <tbody id="admin-users-table"></tbody>
   </table>
   <p class="empty-state" id="admin-users-empty" style="display:none;">No users yet.</p>

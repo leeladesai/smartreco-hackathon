@@ -115,8 +115,19 @@
     userSession = role === 'user';
     adminSession = role === 'admin';
     const pill = document.getElementById('persona-pill');
-    if (pill && userSession) pill.textContent = 'signed in as: AI engineer';
-    if (pill && adminSession) pill.textContent = 'signed in as: curator (admin)';
+    if (!pill || (!userSession && !adminSession)) return;
+    // A role label ("AI engineer") is a fine placeholder while the real profile loads,
+    // but the persistent label should be the actual account — otherwise every real
+    // user of the app sees an identical, meaningless "AI engineer" pill.
+    pill.textContent = adminSession ? 'signed in as: admin' : 'signed in as: …';
+    fetch(`${API_BASE}/api/auth/me`)
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (data && data.email) {
+          pill.textContent = adminSession ? `signed in as: ${data.email} (admin)` : `signed in as: ${data.email}`;
+        }
+      })
+      .catch(() => {});
   }
 
   const grid = document.getElementById('catalog-grid');
@@ -314,7 +325,9 @@
             <td>${escapeHtml(user.email)}</td>
             <td class="${roleClass}">${escapeHtml(user.role)}</td>
             <td>${joined}</td>
-            <td>${user.telegram_chat_id ? '✓ connected' : '—'}</td>
+            <td class="admin-actions">
+              <button type="button" class="delete" onclick="deleteUser(${user.id}, '${escapeHtml(user.email)}')">Delete</button>
+            </td>
           </tr>
         `;
       }).join('');
@@ -322,6 +335,21 @@
       tbody.innerHTML = '';
       empty.style.display = 'block';
       empty.textContent = 'Could not load users. Try refreshing.';
+    }
+  }
+
+  async function deleteUser(id, email){
+    if (!window.confirm(`Delete ${email}? This also removes their tracked activity and recommendation history.`)) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/users/${id}`, {method:'DELETE'});
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        window.alert((body && body.detail) || 'Could not delete this user.');
+        return;
+      }
+      await loadUsers();
+    } catch (error) {
+      window.alert('Could not delete this user. Check your connection and try again.');
     }
   }
 
@@ -701,44 +729,6 @@
           <p class="sub">${escapeHtml(item.action)} · ${timeAgo(item.created_at)}</p>
         </div>`).join('')
       : '<div class="evidence-chip"><p class="sub">Nothing tracked yet this session — browse a model to get started.</p></div>';
-  }
-
-  // Self-serve per-user Telegram digest delivery (DLV-3 bonus follow-up) — replaces
-  // the old single shared broadcast chat with each user setting their own chat ID,
-  // read back by TelegramNotifier (app/services/digest.py) on the next cron run.
-  async function loadTelegramChatId(){
-    if (!userSession) return;
-    const input = document.getElementById('telegram-chat-id-input');
-    if (!input) return;
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/me`);
-      if (!response.ok) return;
-      const data = await response.json();
-      input.value = data.telegram_chat_id || '';
-    } catch (error) {
-      // Leave the field blank if the profile can't be loaded — not fatal.
-    }
-  }
-
-  async function saveTelegramChatId(){
-    const input = document.getElementById('telegram-chat-id-input');
-    const status = document.getElementById('telegram-chat-id-status');
-    if (!input) return;
-    try {
-      const response = await fetch(`${API_BASE}/api/auth/me/telegram-chat-id`, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({telegram_chat_id: input.value.trim() || null}),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      input.value = data.telegram_chat_id || '';
-      if (status) {
-        status.textContent = data.telegram_chat_id ? 'Saved.' : 'Cleared — digest falls back to email/log.';
-      }
-    } catch (error) {
-      if (status) status.textContent = 'Could not save — try again.';
-    }
   }
 
   async function loadDashboard(){
@@ -1466,7 +1456,7 @@
       refreshTrackingPanels();
     }
     if (page === 'compare') restoreCompareFromUrl();
-    if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); loadTelegramChatId(); }
+    if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
     if (page === 'activity') loadActivity();
     if (page === 'observability') { loadObservability(); loadCostRollup(); }
     if (page === 'admin-users') loadUsers();
