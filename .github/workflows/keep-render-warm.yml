@@ -1,0 +1,20 @@
+name: Keep Render instance warm
+
+# Render's free plan spins the service down after ~15 minutes idle, and the next visitor
+# sees Render's own generic wake-up screen while it restarts. Pinging /health well inside
+# that idle window keeps the instance from ever spinning down, so real visitors don't hit it.
+#
+# GitHub only fires `schedule` triggers from workflow files on the default branch, and
+# scheduled workflows are auto-disabled after 60 days with no repository activity — a
+# genuine push (or manually re-enabling the workflow in the Actions tab) resets that clock.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: curl -fsS --max-time 30 https://trailmind.onrender.com/health
