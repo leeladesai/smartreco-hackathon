@@ -152,6 +152,56 @@ def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
     assert body["has_more"] is False
 
 
+def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
+    tmp_path, monkeypatch
+) -> None:
+    """Each agent_pipeline run is tagged user:<id> at trace time
+    (prepare_retrieval_recommendation) — a user_id query param must turn into a real
+    server-side LangSmith filter (has(tags, "user:<id>")), not a client-side filter
+    over the unscoped run list, so this only asserts on what list_runs was actually
+    called with."""
+
+    class FakeRun:
+        def __init__(self, id_):
+            self.id = id_
+            self.name = "agent_pipeline"
+            self.run_type = "chain"
+            self.status = "success"
+            self.error = None
+            self.start_time = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+            self.end_time = self.start_time + timedelta(seconds=1)
+            self.session_id = "fake-session"
+
+    captured_kwargs = {}
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            pass
+
+        def list_runs(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return iter([FakeRun("only-this-users-run")])
+
+        def get_run_url(self, *, run):
+            return f"https://smith.langchain.com/fake/{run.id}"
+
+    import app.services.observability as observability_module
+
+    monkeypatch.setattr(observability_module, "Client", FakeClient)
+
+    admin_client = _admin_client(tmp_path, monkeypatch, langsmith_api_key="fake-key")
+
+    response = admin_client.get("/api/admin/observability/runs?user_id=42")
+    assert response.status_code == 200
+    assert captured_kwargs.get("filter") == 'has(tags, "user:42")'
+    assert [run["id"] for run in response.json()["runs"]] == ["only-this-users-run"]
+
+    # Without user_id, no filter is sent at all — the unscoped "all users" view.
+    captured_kwargs.clear()
+    admin_client.get("/api/admin/observability/runs")
+    assert "filter" not in captured_kwargs
+
+
 def test_observability_reports_api_failure(tmp_path, monkeypatch) -> None:
     class FailingClient:
         def __init__(self, api_key=None):

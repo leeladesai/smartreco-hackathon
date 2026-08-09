@@ -1,3 +1,4 @@
+import inspect
 from datetime import datetime
 
 from app.config import Settings
@@ -495,3 +496,60 @@ def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() ->
         contextual_reason(candidate, 0.5, False, evidence)
         == "Strong match to your recent activity"
     )
+
+
+def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
+    tmp_path, monkeypatch
+) -> None:
+    """Regression test for a real credential leak: LangSmith's @traceable serializes
+    every one of a decorated function's own bound arguments as that run's "inputs" —
+    confirmed live that a mesh_generator object passed directly put a real Mesh
+    api_key in plaintext into every agent_pipeline trace. session/vector_store/
+    mesh_generator must never be parameters of the traced function; only user_id/
+    trigger_reason (safe primitives) may be, and the run must be tagged user:<id>."""
+    captured: dict = {}
+
+    def fake_traceable(*_args, **kwargs):
+        def decorator(func):
+            if kwargs.get("name") == "agent_pipeline":
+                captured["params"] = list(inspect.signature(func).parameters)
+                captured["tags"] = kwargs.get("tags")
+            return func
+
+        return decorator
+
+    import app.services.agent_graph as agent_graph_module
+
+    monkeypatch.setattr(agent_graph_module, "traceable", fake_traceable)
+
+    session_factory = _make_session_factory(tmp_path)
+    with session_factory() as session:
+        user = User(
+            email="secret-check@test.dev", password_hash=hash_password("x"), role="user"
+        )
+        session.add(user)
+        session.commit()
+        user_id = user.id  # captured before the session closes below
+
+        class LeakyMeshGenerator:
+            enabled = False
+            api_key = "sentinel-should-never-be-traced"
+
+            def generate(self, *args, **kwargs):
+                # Never actually called (enabled=False short-circuits before this) —
+                # LangGraph's own static analysis of _generate_narrative's closure
+                # (get_function_nonlocals) needs this attribute to exist regardless.
+                raise AssertionError("should not be called when enabled=False")
+
+        prepare_retrieval_recommendation(
+            session,
+            FakeVectorStore(1, 1),
+            user_id,
+            mesh_generator=LeakyMeshGenerator(),
+        )
+
+    assert captured["params"] == ["user_id", "trigger_reason"]
+    assert "session" not in captured["params"]
+    assert "vector_store" not in captured["params"]
+    assert "mesh_generator" not in captured["params"]
+    assert captured["tags"] == [f"user:{user_id}"]

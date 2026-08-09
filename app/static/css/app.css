@@ -368,6 +368,11 @@
   .form-status.error{color:var(--rose);}
   .admin-head-row{display:flex; align-items:flex-end; justify-content:space-between; gap:20px;}
   .admin-head-row .btn{flex:none; padding:10px 16px;}
+  #observability-user-filter{
+    background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:9px 12px;
+    color:var(--text); font-family:var(--sans); font-size:13px; outline:none; cursor:pointer;
+  }
+  #observability-user-filter:focus{border-color:var(--amber);}
   .modal-backdrop{
     position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center; padding:24px;
     background:rgba(8,10,14,.76); backdrop-filter:blur(8px);

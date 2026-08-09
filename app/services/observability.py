@@ -133,11 +133,16 @@ def _collect_steps(run, depth: int) -> list["TraceStep"]:
 
 
 def fetch_recent_runs(
-    settings: Settings, limit: int = 25, offset: int = 0
+    settings: Settings, limit: int = 25, offset: int = 0, user_id: int | None = None
 ) -> tuple[list[TraceRun], bool]:
     """The top-level `agent_pipeline` run per trigger, newest first — not every child
     node, which would bury the signal a curator actually wants ("did the last few runs
     succeed, how long did they take") under 5x as many rows.
+
+    `user_id`, when given, scopes this to one user's own runs via LangSmith's native
+    tag filter — every `agent_pipeline` run is tagged `user:<id>` at trace time
+    (`prepare_retrieval_recommendation`), so this is a real server-side LangSmith query
+    (`has(tags, "user:<id>")`), not a client-side filter over the full run list.
 
     Returns `(page, has_more)`. The pinned SDK's `list_runs` has no server-side offset
     param, so pagination is done by pulling `offset + limit + 1` items from its lazy
@@ -151,13 +156,16 @@ def fetch_recent_runs(
             "tracing and this dashboard."
         )
     client = Client(api_key=settings.langsmith_api_key)
+    list_runs_kwargs: dict = {
+        "project_name": settings.langsmith_project,
+        "execution_order": 1,
+    }
+    if user_id is not None:
+        list_runs_kwargs["filter"] = f'has(tags, "user:{user_id}")'
     try:
         runs = list(
             itertools.islice(
-                client.list_runs(
-                    project_name=settings.langsmith_project,
-                    execution_order=1,
-                ),
+                client.list_runs(**list_runs_kwargs),
                 offset + limit + 1,
             )
         )

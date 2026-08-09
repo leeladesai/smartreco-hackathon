@@ -551,7 +551,6 @@ def build_agent_graph(
     return graph.compile()
 
 
-@traceable(run_type="chain", name="agent_pipeline")
 def prepare_retrieval_recommendation(
     session: Session,
     vector_store: ModelVectorStore,
@@ -559,16 +558,38 @@ def prepare_retrieval_recommendation(
     mesh_generator=None,
     trigger_reason: str = "event_threshold",
 ) -> Recommendation | None:
-    graph = build_agent_graph(session, vector_store, mesh_generator)
-    # LangGraph's internal step-counting consumes recursion budget faster than the
-    # visible node count suggests (each named node compiles to several internal
-    # supersteps) — the default limit of 25 was tight enough that adding the 6th node
-    # (rerank_candidates) into the bounded retry loop (MAX_RETRIES=2, so up to 3 full
-    # retrieve->rerank->grade_refine cycles) blew past it even with tracing off.
-    # Sized with real headroom rather than the exact minimum so a future node addition
-    # doesn't reintroduce this.
-    result = graph.invoke(
-        {"user_id": user_id, "trigger_reason": trigger_reason},
-        {"recursion_limit": 60},
+    # `session`/`vector_store`/`mesh_generator` are deliberately NOT parameters of the
+    # @traceable-decorated function below — LangSmith's traceable wrapper serializes
+    # every one of a traced function's *own* bound arguments (via inspect.signature,
+    # never closure variables) as that run's "inputs". mesh_generator in particular
+    # carries a live MeshNarrativeGenerator with a real `api_key` attribute; passed
+    # directly, that key would land in plaintext in every agent_pipeline trace sent to
+    # LangSmith (confirmed live — caught via a real trace's raw "inputs" JSON showing
+    # the key). Closing over them here instead of passing them as traced params means
+    # they're used by the pipeline but never introspected/serialized into the trace.
+    # `user_id`/`trigger_reason` stay as real params — safe, and useful to see per run.
+    @traceable(
+        run_type="chain",
+        name="agent_pipeline",
+        # Tags a run's owner natively in LangSmith (queryable via
+        # `list_runs(filter='has(tags, "user:<id>")')`, verified live against the real
+        # API) rather than only being visible by re-reading raw trace inputs — powers
+        # the admin observability page's per-user filter.
+        tags=[f"user:{user_id}"],
     )
-    return result.get("recommendation")
+    def _run(user_id: int, trigger_reason: str) -> Recommendation | None:
+        graph = build_agent_graph(session, vector_store, mesh_generator)
+        # LangGraph's internal step-counting consumes recursion budget faster than the
+        # visible node count suggests (each named node compiles to several internal
+        # supersteps) — the default limit of 25 was tight enough that adding the 6th
+        # node (rerank_candidates) into the bounded retry loop (MAX_RETRIES=2, so up to
+        # 3 full retrieve->rerank->grade_refine cycles) blew past it even with tracing
+        # off. Sized with real headroom rather than the exact minimum so a future node
+        # addition doesn't reintroduce this.
+        result = graph.invoke(
+            {"user_id": user_id, "trigger_reason": trigger_reason},
+            {"recursion_limit": 60},
+        )
+        return result.get("recommendation")
+
+    return _run(user_id, trigger_reason)

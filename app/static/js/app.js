@@ -405,6 +405,36 @@
   const OBSERVABILITY_PAGE_SIZE = 25;
   let observabilityOffset = 0;
   let observabilityHasMore = false;
+  let observabilityUserFilter = '';
+
+  // Populates the "All users" dropdown from the same admin users list already used on
+  // /admin/users — every agent_pipeline run is tagged user:<id> at trace time
+  // (prepare_retrieval_recommendation), so filtering here is a real server-side
+  // LangSmith query, not a client-side filter over an already-fetched run list.
+  async function loadObservabilityUserFilter(){
+    if (!adminSession) return;
+    const select = document.getElementById('observability-user-filter');
+    if (!select) return;
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/users`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const users = await response.json();
+      const previousValue = select.value;
+      select.innerHTML = '<option value="">All users</option>' + users.map(user =>
+        `<option value="${user.id}">${escapeHtml(user.email)}</option>`
+      ).join('');
+      select.value = previousValue;
+    } catch (error) {
+      // Leave just "All users" if the list can't load — not fatal to the page.
+    }
+  }
+
+  function observabilityFilterByUser(){
+    const select = document.getElementById('observability-user-filter');
+    observabilityUserFilter = select ? select.value : '';
+    observabilityOffset = 0;
+    loadObservability();
+  }
 
   async function loadObservability(){
     if (!adminSession) return;
@@ -417,7 +447,8 @@
     const pagination = document.getElementById('observability-pagination');
     if (!tbody) return; // only present on the observability page
     try {
-      const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}`);
+      const userParam = observabilityUserFilter ? `&user_id=${encodeURIComponent(observabilityUserFilter)}` : '';
+      const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}${userParam}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       if (!data.available) {
@@ -440,9 +471,12 @@
         pageLabel.textContent = `Page ${page}`;
       }
       if (!data.runs.length) {
-        tbody.innerHTML = observabilityOffset === 0
-          ? '<tr><td colspan="5">No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.</td></tr>'
-          : '<tr><td colspan="5">No more runs.</td></tr>';
+        const emptyMessage = observabilityOffset > 0
+          ? 'No more runs.'
+          : observabilityUserFilter
+            ? 'No pipeline runs yet for this user.'
+            : 'No pipeline runs yet — browse the catalog and compare a couple of models to trigger one.';
+        tbody.innerHTML = `<tr><td colspan="5">${emptyMessage}</td></tr>`;
         return;
       }
       tbody.innerHTML = data.runs.map(run => {
@@ -1530,7 +1564,7 @@
     if (page === 'compare') restoreCompareFromUrl();
     if (page === 'dashboard') { loadDashboard(); startDashboardPolling(); }
     if (page === 'activity') loadActivity();
-    if (page === 'observability') { loadObservability(); loadCostRollup(); }
+    if (page === 'observability') { loadObservability(); loadCostRollup(); loadObservabilityUserFilter(); }
     if (page === 'admin-users') loadUsers();
     window.scrollTo({top:0, behavior:'instant'});
   }

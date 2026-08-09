@@ -510,15 +510,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def observability_runs(
         limit: int = Query(default=25, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
+        user_id: int | None = Query(default=None),
         _: User = Depends(current_admin),
     ) -> dict[str, object]:
         """OBS-2: surfaces recent agent-pipeline traces inside the admin portal
         itself, so a curator never needs their own LangSmith login to see whether
         recent runs succeeded and how long they took. Read-only proxy over the
         LangSmith API — this app never writes trace data, `@traceable` (OBS-1)
-        already does that."""
+        already does that. Optional `user_id` scopes this to one user's own runs
+        (each is tagged `user:<id>` at trace time — see
+        `prepare_retrieval_recommendation`)."""
         try:
-            runs, has_more = fetch_recent_runs(app_settings, limit=limit, offset=offset)
+            runs, has_more = fetch_recent_runs(
+                app_settings, limit=limit, offset=offset, user_id=user_id
+            )
         except ObservabilityUnavailable as exc:
             return {
                 "available": False,

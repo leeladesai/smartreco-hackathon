@@ -7,7 +7,12 @@
       <h1 class="page-title">Pipeline observability</h1>
       <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
     </div>
-    <button class="btn" type="button" onclick="refreshObservability()">Refresh</button>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <select id="observability-user-filter" onchange="observabilityFilterByUser()">
+        <option value="">All users</option>
+      </select>
+      <button class="btn" type="button" onclick="refreshObservability()">Refresh</button>
+    </div>
   </div>
   <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
