@@ -12,6 +12,10 @@ dependencies = [
     "openai==1.10.0",
     "langgraph==0.0.20",
     "langsmith==0.0.87",
+    # Pinned explicitly (not left to transitive resolution via chromadb) — see the
+    # matching comment in requirements.txt for why: chromadb 0.4.24 breaks under
+    # NumPy 2.x.
+    "numpy==1.26.4",
     "chromadb==0.4.24",
     "sqlalchemy==2.0.23",
     "python-jose[cryptography]==3.3.0",

@@ -11,6 +11,12 @@ langgraph==0.0.20
 langsmith==0.0.87
 
 # Vector Database
+# Pinned explicitly, not left to transitive resolution: chromadb==0.4.24 (2023) still
+# uses the now-removed np.float_/np.int_ aliases, which break under NumPy 2.x. Local
+# dev never hit this because uv.lock happened to have resolved numpy 1.26.4 already;
+# `pip install -r requirements.txt` (used by the Render deploy) has no such lock to
+# fall back on and would otherwise pull latest NumPy 2.x.
+numpy==1.26.4
 chromadb==0.4.24
 
 # Database
