@@ -134,6 +134,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     current_admin = make_role_dependency(
         session_factory, app_settings, required_role="admin"
     )
+    # Distinct from `current_user`: scoped to the AI-engineer role specifically, so an
+    # authenticated curator/admin session can't fall through onto engineer-only pages
+    # and APIs (catalog browsing, activity, recommendations) just by having any valid
+    # session cookie.
+    current_engineer = make_role_dependency(
+        session_factory, app_settings, required_role="user"
+    )
 
     # DLV-3: a real cron scheduler, not a manual trigger — `/api/admin/digest/run` below
     # exists only so the sprint-review demo doesn't have to wait for the next cron fire.
@@ -203,8 +210,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def render_user_page(request: Request, page: str, template: str):
         try:
-            user = current_user(request)
-        except HTTPException:
+            user = current_engineer(request)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_403_FORBIDDEN:
+                # A valid session exists, just not an engineer one (e.g. a curator/admin
+                # cookie) — send them to their own console instead of bouncing back to
+                # the engineer login page they're not meant to sign into.
+                return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
         return render_page(request, page, template, session_role=user.role)
 
@@ -238,8 +250,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/models/{model_id}", include_in_schema=False)
     async def model_detail_page(request: Request, model_id: int):
         try:
-            current_user(request)
-        except HTTPException:
+            current_engineer(request)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_403_FORBIDDEN:
+                return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
             return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
         return render_page(
             request, "detail", "model_detail.html", model_id, session_role="user"
@@ -766,7 +780,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def ingest_events(
         batch: EventBatch,
         background_tasks: BackgroundTasks,
-        user: User = Depends(current_user),
+        user: User = Depends(current_engineer),
     ) -> dict[str, object]:
         with session_factory() as session:
             events = [
@@ -802,7 +816,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/recommendations/me")
     async def latest_recommendation(
-        user: User = Depends(current_user),
+        user: User = Depends(current_engineer),
     ) -> dict[str, object]:
         with session_factory() as session:
             latest = session.scalar(
@@ -894,7 +908,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
 
     @app.get("/api/activity/me")
-    async def activity(user: User = Depends(current_user)) -> dict[str, object]:
+    async def activity(user: User = Depends(current_engineer)) -> dict[str, object]:
         with session_factory() as session:
             events = session.scalars(
                 select(Event)

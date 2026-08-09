@@ -17,8 +17,10 @@ Originally built for the Krish Naik Hackathon 2026.
 
 | Role | Email | Password |
 |---|---|---|
-| AI engineer | `engineer@trailmind.dev` | `engineer@123` |
 | Curator / admin | `curator@trailmind.dev` | `admin@123` |
+
+AI engineers aren't seeded with a shared demo login — use the **Register** tab on the login page to
+create your own account.
 
 Hosted on Render's free tier, which spins the service down after ~15 minutes idle — the first hit
 after idle can take 30–60s to wake up.
@@ -58,7 +60,7 @@ link back to the full picture — falling back to content-based similarity when 
 personalized yet.
 
 **A scheduled digest**, not just an on-demand read — a real cron (APScheduler) re-runs the pipeline
-per user and delivers via email or Telegram, with a logging fallback if neither is configured.
+per user and delivers via email, with a logging fallback if it's not configured.
 
 **Full observability.** Every pipeline run traces through LangSmith, with the admin console
 separating our own step latency from LangGraph's internal tracing overhead, filtering by user, and
@@ -91,7 +93,7 @@ flowchart TB
 
     mesh["Mesh API"]
     trace["LangSmith"]
-    notify["Email / Telegram"]
+    notify["Email digest"]
 
     user --> app
     app --> ui
@@ -144,7 +146,7 @@ retries the grading step takes.
 ## Quick start
 
 ```bash
-git clone <this repo>
+git clone https://github.com/leeladesai/smartreco-hackathon.git
 cd smartreco-hackathon
 uv sync
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -184,8 +186,8 @@ ready-to-use [Blueprint](https://render.com/docs/blueprint-spec):
 2. Render dashboard → **New → Blueprint** → select this repo. Render reads `render.yaml` and
    proposes the service.
 3. Fill in the env vars marked `sync: false` — at minimum `MESH_API_KEY`. Leave
-   `SMTP_*`/`TELEGRAM_*`/`LANGSMITH_API_KEY` blank and those features gracefully degrade (logged-
-   only digest, no tracing) exactly like they do locally.
+   `SMTP_*`/`LANGSMITH_API_KEY` blank and those features gracefully degrade (logged-only digest, no
+   tracing) exactly like they do locally.
 4. Deploy. `startCommand` re-runs `seed_data.py` on every boot, so the demo catalog and demo
    accounts are always present — even after a redeploy wipes the disk (see below).
 
@@ -232,8 +234,8 @@ smartreco-hackathon/
 ## Known limitations
 
 - **Free-tier hosting.** Ephemeral disk and idle spin-down — see [Deploying](#deploying).
-- **Telegram digest** is per-user (set from the dashboard); falls back to a single shared broadcast
-  chat if configured, or is skipped (logged, not silently dropped) if neither exists.
+- **Digest delivery** is email-only in this deployment; if `SMTP_*` isn't configured it's skipped
+  (logged, not silently dropped) rather than failing.
 - **Embeddings** use real semantic vectors via Mesh when configured; a deterministic hashed
   bag-of-words fallback keeps the app fully functional without a key, at weaker paraphrase recall.
 - **`recommendation_triggered`** in the events API reflects whether the pipeline was queued, not
