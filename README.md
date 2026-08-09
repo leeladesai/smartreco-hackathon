@@ -1,90 +1,150 @@
-# TrailMind — Behavioral AI Recommendation Agent
-## Krish Naik Hackathon 2026 Submission
+# TrailMind
 
-TrailMind is a smart recommendation ("smart reco") agent: it watches the trail an AI engineer
-leaves — searches, model views, comparisons — and reasons about where they're headed next. It
-retrieves relevant models from a catalog via RAG + vector search, and generates grounded,
-persuasive, comparison-driven recommendations that refresh as behavior evolves — with a
-cron-scheduled digest and full pipeline tracing on top.
+**A behavioral AI recommendation agent for an AI model & tool catalog.**
 
-**Status: MVP-0 through Iteration 3 (all bonus scope) are complete and verified live against the
-real Mesh API.** See "Known limitations" below for what's deliberately out of scope or descoped.
+TrailMind watches the trail an AI engineer leaves through a model catalog — searches, views,
+comparisons — and reasons about where they're headed next. It retrieves relevant models via RAG +
+vector search, then generates a grounded, comparison-driven recommendation that refreshes as
+behavior evolves, with a scheduled digest and full pipeline tracing on top.
 
----
-
-## 🏗️ Architecture summary
-
-Single FastAPI process serves both the JSON API and the server-rendered frontend (Jinja2 templates
-+ vanilla JS) — one container, no separate frontend build/deploy. No client-side framework, no
-separate frontend service.
-
-- **Auth**: two independent modules — AI-engineer (`/api/auth/*`) and admin/curator
-  (`/api/admin/login`), server-side role checks on every admin route, no admin self-registration.
-- **Catalog**: SQLite (via SQLAlchemy) is the system of record; every create/edit/delete
-  dual-writes into a Chroma vector store in the same request, with a `vector_synced` flag so a
-  partial failure is visible, never silent.
-- **Behavioral tracking**: events batch client-side (size/timer/`sendBeacon`-on-unload), never one
-  network call per click, and ingestion never blocks on the agent pipeline.
-- **Agent pipeline**: a 6-node LangGraph graph — `analyze → retrieve → rerank → grade/refine →
-  generate → store` — triggered by a cheap event-count/cooldown check (`AGT-1`), not per-event. Grading
-  bounds retries at 2 on weak retrieval; generation never runs more than once per trigger
-  regardless of retries. The pipeline runs in a FastAPI background task, not inline on the
-  ingestion request (see NFR-1 below).
-- **Delivery**: dashboard shows the latest recommendation, with a "Because you looked at these"
-  evidence row (itemized, deduped, current-session activity) and a per-model "why this" tag
-  computed deterministically from that same evidence — a latency win against models the user
-  actually compared/viewed, or a search-term match on the candidate's own use-case tags — falling
-  back to a retrieval-distance label only when neither applies. Polls for freshness so a stale
-  recommendation is never shown after a new background run completes. A cron-scheduled digest
-  (APScheduler) re-runs the pipeline per user and delivers via email/Telegram/log-fallback.
-- **Observability**: every agent run persists `trigger_reason` + timestamps regardless of
-  LangSmith; LangSmith tracing wraps every graph node plus the Mesh call itself, opt-in via
-  `LANGSMITH_API_KEY`.
-
-See `docs/06-LLD.md` for the full schema/API/node contracts and `docs/05-architecture-diagram.md`
-for the component diagram.
+Originally built for the Krish Naik Hackathon 2026.
 
 ---
 
-## 📋 SDLC Documentation (complete planning phase)
+## Live demo
 
-Read in order:
+**[trailmind.onrender.com](https://trailmind.onrender.com)**
 
-1. **[docs/00-Domain-Decision.md](docs/00-Domain-Decision.md)** — Domain decision record: options
-   considered, scoring, and why the AI model/tool catalog was chosen
-2. **[docs/01-BRD.md](docs/01-BRD.md)** — Business Requirements: objectives, scope, success metrics
-3. **[docs/02-FRD.md](docs/02-FRD.md)** — Functional Requirements: AUTH, CAT, TRK, AGT, DLV, OBS modules
-4. **[docs/03-UX-Flows.md](docs/03-UX-Flows.md)** — UX Design: personas, flows, screen specs
-5. **[docs/03-mockups.html](docs/03-mockups.html)** — Wireframes (open in a browser) — design
-   reference only; not served as live app code
-6. **[docs/04-MVP-Roadmap.md](docs/04-MVP-Roadmap.md)** — Agile sprint plan: MVP-0 → Iteration 3 → submission
-7. **[docs/05-HLD.md](docs/05-HLD.md)** — High-level architecture, components, tech choices
-8. **[docs/05-architecture-diagram.md](docs/05-architecture-diagram.md)** — component diagram: deployment boundary, both loops, agent pipeline, SQL/vector DBs, external LLM call
-9. **[docs/06-LLD.md](docs/06-LLD.md)** — DB schema, API contracts, LangGraph node contracts
-10. **[docs/07-Test-Strategy.md](docs/07-Test-Strategy.md)** — TDD test plan mapped to FRD IDs
+| Role | Email | Password |
+|---|---|---|
+| AI engineer | `engineer@trailmind.dev` | `engineer@123` |
+| Curator / admin | `curator@trailmind.dev` | `admin@123` |
+
+Hosted on Render's free tier, which spins the service down after ~15 minutes idle — the first hit
+after idle can take 30–60s to wake up.
 
 ---
 
-## 🎯 Key decisions
+## What's inside
 
-| Decision | Choice |
-|---|---|
-| Backend | FastAPI (async, non-blocking) |
-| Frontend | Jinja2 server-rendered templates + vanilla JS — no React/TS/Streamlit, one container |
-| LLM integration | Mesh API only (mandatory) — `MeshNarrativeGenerator`, no direct OpenAI/Anthropic/Gemini SDK calls |
-| Vector database | Chroma (local, zero external deps) |
-| Agent framework | LangGraph (5 named, independently testable nodes) |
-| Scheduling | APScheduler (real cron, not a manual trigger) |
-| Observability | LangSmith, opt-in via env var |
-| Domain | AI model & tool catalog (comparison-based recs) — see `docs/00-Domain-Decision.md` |
-| Database | SQLite (dev) / Postgres-shaped schema (prod) |
-| Testing | pytest, TDD-driven |
+**Two-role platform.** Independent auth for AI engineers and curators — no admin
+self-registration, server-side role checks on every admin route.
+
+**A real catalog.** Full CRUD, dual-written to SQL and a Chroma vector store in the same request,
+with a visible sync flag so a partial failure is never silent. Curators can also bulk-provision the
+catalog from a CSV/JSON file instead of one row at a time.
+
+**Behavioral tracking that doesn't spam the LLM.** Views, searches, comparisons, and dwell time
+batch client-side and never call an LLM directly. A cheap event-count/cooldown check decides when
+there's enough signal to actually run the agent.
+
+**A real 6-node LangGraph pipeline** — `analyze → retrieve → rerank → grade/refine → generate →
+store` — not a single prompt. Retrieval gets a bounded retry (max 2) when it comes back weak, and
+generation still fires at most once per trigger regardless of how many retries that takes.
+
+**Grounded, not generic, recommendations.** A "Because you looked at these" evidence row shows the
+exact session activity behind a recommendation, and each candidate's "why this" tag is computed
+deterministically from that evidence — never canned text. The current session dominates over older,
+diluted history via geometric decay.
+
+**A feedback loop that actually closes.** 👍/👎 on any recommendation re-ranks future retrieval
+with an asymmetric penalty — but only carries forward to a future query that's genuinely similar to
+the one the rating was given under, so one bad match can't wrongly suppress a model that's right for
+a different query.
+
+**Personalized picks inside the browsing flow.** The model detail drawer surfaces up to 3
+alternatives from your live recommendation, filtered to exclude whatever's already open, with a
+link back to the full picture — falling back to content-based similarity when there's nothing
+personalized yet.
+
+**A scheduled digest**, not just an on-demand read — a real cron (APScheduler) re-runs the pipeline
+per user and delivers via email or Telegram, with a logging fallback if neither is configured.
+
+**Full observability.** Every pipeline run traces through LangSmith, with the admin console
+separating our own step latency from LangGraph's internal tracing overhead, filtering by user, and
+rolling up real Mesh cost/token/latency straight from stored data.
+
+**A curator console** beyond the catalog: a usage-metrics overview (totals, event mix, feedback
+sentiment, live activity), a Users list, and bulk catalog upload — all paginated.
 
 ---
 
-## 🚀 Quick start
+## Architecture
+
+One FastAPI process serves both the JSON API and the server-rendered frontend (Jinja2 + vanilla
+JS) — no separate frontend build, no client framework. Two decoupled loops share the same storage:
+a synchronous interaction loop that never calls an LLM, and an asynchronous recommendation loop
+that does, exactly once per trigger.
+
+```mermaid
+flowchart TB
+    user(["AI Engineer / Curator"])
+    app["TrailMind\nsingle FastAPI process"]
+
+    ui["Track & browse\nsync, no LLM"]
+    trigger{{"Trigger check"}}
+    pipeline["Recommendation pipeline\nLangGraph — async"]
+
+    sql[("SQLite")]
+    vector[("Chroma")]
+    cron["Scheduler"]
+
+    mesh["Mesh API"]
+    trace["LangSmith"]
+    notify["Email / Telegram"]
+
+    user --> app
+    app --> ui
+    app --> trigger
+    ui --> sql
+    ui --> vector
+    trigger -- fires --> pipeline
+    trigger -. no fire .-> app
+    pipeline --> sql
+    pipeline --> vector
+    cron -. daily sweep .-> pipeline
+    pipeline --> mesh
+    pipeline -.-> trace
+    pipeline -.-> notify
+    app --> user
+```
+
+The recommendation pipeline itself is a real LangGraph graph — six independently testable nodes,
+with a bounded retry loop when retrieval comes back weak:
+
+```mermaid
+flowchart LR
+    A["Analyze\nsession activity"] --> B["Retrieve\nsemantic search"]
+    B --> C["Rerank\nlexical + dense"]
+    C --> D{"Grade /\nRefine"}
+    D -- weak, retry ≤2 --> B
+    D -- strong enough --> E["Generate\nnarrative"]
+    E --> F["Store &\nDeliver"]
+```
+
+`Generate` is the only node that calls Mesh — at most once per trigger, regardless of how many
+retries the grading step takes.
+
+---
+
+## Key decisions & trade-offs
+
+| Decision | Choice | Trade-off |
+|---|---|---|
+| Frontend | Jinja2 + vanilla JS | One container, no build step — simpler ops, less flexibility than a component framework. |
+| Background work | FastAPI `BackgroundTasks` | Right-sized for this scale; a real queue (Celery/Redis) is the upgrade path once traffic demands it. |
+| LLM cost control | ≤1 Mesh call per trigger, never blocking | Ingestion stays ~50ms even under load — enforced by the graph's structure, not a convention. |
+| Vector store | Chroma, local file | Zero external account/API key needed — removes setup friction for anyone running the repo. |
+| Hosting | Render over Vercel | This app needs a persistent disk and an always-on cron — Vercel's serverless model has neither without a re-architecture. |
+| Observability | Pipeline time reported separately from tracing overhead | A more honest latency number, at the cost of one extra aggregation query per page load. |
+| Feedback | Context-scoped, not global | A bad match on one query can't wrongly suppress a model that's right for a different one. |
+
+---
+
+## Quick start
 
 ```bash
+git clone <this repo>
 cd smartreco-hackathon
 uv sync
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -93,31 +153,20 @@ uv run python seed_data.py
 uv run uvicorn app.asgi:app --reload --port 8001
 ```
 
-Open http://localhost:8001
-
-Seeded demo logins:
-- AI engineer: `engineer@trailmind.dev` / `engineer@123`
-- Curator/admin: `curator@trailmind.dev` / `admin@123`
-
-Without a `MESH_API_KEY`, the app still runs end to end — the dashboard honestly stays in
+Open <http://localhost:8001> — seeded demo logins are the same as the [live demo](#live-demo)
+above. Without a `MESH_API_KEY`, the app still runs end to end — the dashboard honestly stays in
 retrieval-ready mode (real Chroma retrieval, no fabricated narrative) instead of faking output.
 
-### One-command development startup
+**One-command dev server:**
 
 ```bash
 ./scripts/start_dev.sh          # start (detached) and tail the log
-./scripts/start_dev.sh stop     # stop it
+./scripts/start_dev.sh stop
 ./scripts/start_dev.sh restart
 ./scripts/start_dev.sh status
-./scripts/start_dev.sh logs     # just tail, without starting/stopping anything
 ```
 
-Uses port `8001` by default. Override with `PORT=8002 ./scripts/start_dev.sh`. The server runs
-detached — Ctrl-C only stops the log tail, not the server itself; use `stop` (or `restart`) for
-that. TrailMind is one FastAPI process serving both the API and the server-rendered frontend, so
-there's a single log stream, not separate frontend/backend logs.
-
-### Running tests
+**Tests:**
 
 ```bash
 pytest
@@ -125,235 +174,78 @@ pytest
 
 ---
 
-## 🌐 Deploying (public URL)
+## Deploying
 
-**Vercel doesn't fit this app** — it's serverless/edge (no persistent disk, no
-always-on process), and this app depends on both: SQLite and Chroma are local files
-that need durable writes across requests, and the DLV-3 daily digest runs via an
-in-process APScheduler cron that needs a continuously running process to live in.
-Making it Vercel-compatible would mean swapping SQLite→hosted Postgres,
-Chroma→hosted vector DB, and APScheduler→Vercel Cron Jobs — a re-architecture, not a
-deploy config.
+[Render](https://render.com) is the target this repo is configured for — a persistent disk + an
+always-on process, closest to "push this repo, get a URL." `render.yaml` (repo root) is a
+ready-to-use [Blueprint](https://render.com/docs/blueprint-spec):
 
-**[Render](https://render.com)** is the target this repo is configured for instead —
-a persistent disk + an always-on process means everything above just works unchanged,
-closest to "push this repo, get a URL." `render.yaml` (repo root) is a ready-to-use
-[Blueprint](https://render.com/docs/blueprint-spec).
+1. Push this repo to GitHub.
+2. Render dashboard → **New → Blueprint** → select this repo. Render reads `render.yaml` and
+   proposes the service.
+3. Fill in the env vars marked `sync: false` — at minimum `MESH_API_KEY`. Leave
+   `SMTP_*`/`TELEGRAM_*`/`LANGSMITH_API_KEY` blank and those features gracefully degrade (logged-
+   only digest, no tracing) exactly like they do locally.
+4. Deploy. `startCommand` re-runs `seed_data.py` on every boot, so the demo catalog and demo
+   accounts are always present — even after a redeploy wipes the disk (see below).
 
-1. Push this repo to GitHub (already done if you're reading this from the repo).
-2. In the Render dashboard: **New → Blueprint**, connect your GitHub account, and
-   select this repo. Render reads `render.yaml` and proposes the service.
-3. Before the first deploy, Render will prompt for every env var marked `sync: false`
-   in `render.yaml` — at minimum `MESH_API_KEY`. Fill in `SMTP_*`/`TELEGRAM_*`/
-   `LANGSMITH_API_KEY` too if you want email/Telegram/tracing live on the deployed
-   instance; leave any of them blank and that feature gracefully degrades exactly like
-   it does locally (logged-only digest, no tracing).
-4. Deploy. `startCommand` runs `seed_data.py` before `uvicorn` on every boot, so the
-   demo catalog and demo accounts (`curator@trailmind.dev` / `engineer@trailmind.dev`)
-   are always present — even after a redeploy wipes the disk (see below).
-5. Your public URL is `https://<service-name>.onrender.com`. The digest email's
-   "View full dashboard" link picks this up automatically via Render's own
-   `RENDER_EXTERNAL_URL`, no manual step needed.
+**Free plan limitations**, documented in `render.yaml` too:
+- **Ephemeral disk** — every redeploy wipes the database and vector store back to just the seeded
+  demo data. A persistent Disk (commented block in `render.yaml`) fixes this but requires a paid
+  instance type.
+- **Spins down after ~15 min idle**, waking on the next request in 30–60s.
 
-**Known limitations of the Free plan** (documented in `render.yaml` too):
-- **Ephemeral disk** — every redeploy wipes `trailmind.db`/`chroma_data/` back to just
-  the seeded demo data; anything a judge registers or uploads won't survive a
-  redeploy. Attaching a persistent Disk (commented block in `render.yaml`) fixes this,
-  but Disks require a paid instance type.
-- **Spins down after ~15 min idle**, waking on the next request in ~30-60s — the first
-  hit after idle will be slow, and the digest cron won't fire while asleep. An
-  always-on paid plan removes both.
-- **chromadb + old system SQLite**: if the build succeeds but the app fails at startup
-  with a SQLite-version error from `chromadb`, add `pysqlite3-binary` to
-  `requirements.txt` and see [Chroma's troubleshooting
-  guide](https://docs.trychroma.com/troubleshooting#sqlite) — a known gotcha on some
-  minimal Linux base images, not something reproducible in local dev to pre-fix here.
+We couldn't fit this app onto Vercel without a re-architecture: it's serverless/edge (no
+persistent disk, no always-on process), and this app depends on both — SQLite and Chroma as local
+files needing durable writes, and a daily digest cron that needs a continuously running process to
+live in.
 
 ---
 
-## 📁 Project structure
+## Project structure
 
 ```
 smartreco-hackathon/
-├── docs/                 # SDLC documentation (complete)
+├── docs/                  # design/planning docs — domain decision, requirements, HLD/LLD, test strategy
 ├── app/
-│   ├── main.py            # routes, app wiring, scheduler registration
-│   ├── models.py          # SQLAlchemy schema
-│   ├── vector.py          # Chroma wrapper (dual-write, metadata filtering)
+│   ├── main.py             # routes, app wiring, scheduler registration
+│   ├── models.py           # SQLAlchemy schema
+│   ├── vector.py           # Chroma wrapper (dual-write, metadata filtering)
 │   ├── services/
-│   │   ├── agent_graph.py   # the 6-node LangGraph pipeline
-│   │   ├── recommendation.py# trigger check, behavior summary, activity hash
-│   │   ├── mesh.py          # Mesh API client (the only LLM call boundary)
-│   │   ├── digest.py        # scheduled digest + notifier abstraction
-│   │   ├── tracing.py       # LangSmith opt-in wiring
-│   │   └── observability.py # admin-portal LangSmith run viewer (OBS-2)
-│   ├── templates/          # Jinja2 per-screen templates extending base.html
-│   └── static/{css,js}/    # shared styling + frontend logic
-├── tests/                # pytest suite (TDD)
-├── seed_data.py           # demo users + curated model catalog
+│   │   ├── agent_graph.py    # the 6-node LangGraph pipeline
+│   │   ├── recommendation.py # trigger check, behavior summary, activity hash
+│   │   ├── mesh.py           # Mesh API client (the only LLM call boundary)
+│   │   ├── digest.py         # scheduled digest + notifier abstraction
+│   │   ├── tracing.py        # LangSmith opt-in wiring
+│   │   └── observability.py  # admin-portal LangSmith run viewer
+│   ├── templates/           # Jinja2 per-screen templates extending base.html
+│   └── static/{css,js}/     # shared styling + frontend logic
+├── tests/                 # pytest suite
+├── seed_data.py            # demo users + curated model catalog
 ├── requirements.txt
 ├── .env.example
-├── .gitignore
-└── README.md
+└── render.yaml
 ```
 
 ---
 
-## ✅ What's implemented
+## Known limitations
 
-Every FRD module (AUTH, CAT, TRK, AGT, DLV, OBS) and every NFR is implemented and covered by
-tests. See `docs/02-FRD.md` for full acceptance criteria and `docs/08-Build-Status.md` (local-only,
-gitignored) for the live build tracker.
-
-**Core loop (MVP-0 + Iteration 1):** registration/login for two independent roles; full catalog
-CRUD with dual-write to Chroma and a visible `vector_synced` flag; client-batched behavioral
-tracking (`sendBeacon` on unload, never per-click); a trigger engine (event count + cooldown)
-instead of calling the LLM on every event; activity-hash caching so unchanged behavior never
-re-triggers generation.
-
-**Real agentic depth (Iteration 2, bonus scope):** the pipeline is a genuine 6-node LangGraph graph
-(`analyze → retrieve → rerank → grade/refine → generate → store`), not a single-shot prompt — with bounded
-retry (max 2) on weak retrieval, and per-model "why this" tags on the dashboard computed
-deterministically from the user's actual session evidence (see below), not canned text. The
-dashboard polls for a fresher recommendation rather than ever showing a stale one after a
-background run completes.
-
-**Bonus polish (Iteration 3, all three items done, not just prioritized):**
-- LangSmith trace per pipeline run, opt-in via `LANGSMITH_API_KEY` — every graph node plus the
-  Mesh call itself is instrumented.
-- A real cron-scheduled digest (APScheduler `CronTrigger`, default daily) that re-runs the
-  pipeline per user and delivers via email (per-user) or Telegram, falling back to logging if
-  neither is configured rather than silently dropping the run. A `POST /api/admin/digest/run`
-  admin endpoint exists only to demo it on demand, not as the primary delivery path.
-- Chroma metadata pre-filtering (by modality) on the first retrieval pass before any re-ranking,
-  derived from the same same-modality browsing signal already used in behavior summaries.
-
-**Non-functional requirements:** `NFR-1` (ingestion <150ms p95) required an actual fix, not just a
-measurement — the triggered pipeline's live Mesh call was originally blocking the ingestion
-response; it now runs in a `BackgroundTasks` job, verified live at ~50ms response time.
-`NFR-2` (≤1 LLM call per trigger) is guaranteed by the graph's structure and covered by a test that
-forces two retries and asserts the Mesh call still only fires once.
+- **Free-tier hosting.** Ephemeral disk and idle spin-down — see [Deploying](#deploying).
+- **Telegram digest** is per-user (set from the dashboard); falls back to a single shared broadcast
+  chat if configured, or is skipped (logged, not silently dropped) if neither exists.
+- **Embeddings** use real semantic vectors via Mesh when configured; a deterministic hashed
+  bag-of-words fallback keeps the app fully functional without a key, at weaker paraphrase recall.
+- **`recommendation_triggered`** in the events API reflects whether the pipeline was queued, not
+  whether generation will succeed — that part only resolves in the background, by design.
 
 ---
 
-## 🎁 Post-roadmap enhancements
+## Further reading
 
-Beyond the original FRD/roadmap scope, built and verified live in a follow-up hardening pass:
-
-- **Session-aware recommendation weighting** — the current browsing session dominates the
-  recommendation over older, diluted history (geometric decay per inactivity-gap session bucket)
-  instead of a flat "last 20 events" window; fixes a real bug where a 3-way modality tie across
-  sessions disabled retrieval filtering entirely.
-- **Dashboard evidence + grounded "why this" tags** — a "Because you looked at these" row shows
-  the itemized, deduped activity from the current session; each recommendation card's reason is
-  computed deterministically (a latency win against models actually compared/viewed, or a
-  search-term match on the candidate's own use-case tags) rather than a flat distance label. The
-  top narrative is now intent-framed (e.g. "building a real-time voice agent") because the Mesh
-  prompt was fixed to actually receive price/latency/context-window/use-case-tag facts it was
-  previously silently dropping.
-- **Curator "story" field wired end-to-end** — the persuasive "why this model" text captured in
-  the admin console previously never reached the database or the Mesh prompt; it's now a real
-  column, folded into both the Chroma embedding text and the narrative-generation candidate data.
-- **Catalog expansion via Mesh** — `scripts/expand_catalog_via_mesh.py` grew the seed catalog from
-  9 to 27 models using the Mesh LLM itself, validated through the existing dual-write path.
-- **Engagement features**: copy-to-clipboard on a model's identifier (tracked as its own event
-  type), a client-side watchlist/wishlist that feeds the same recommendation signal as views and
-  comparisons, and a content-similarity "you might also be interested in" endpoint
-  (`/api/models/{id}/related`) distinct from the activity-driven dashboard recommendation.
-- **Judge demo mode** — an admin-only, global toggle (`GET`/`PUT /api/settings/demo-mode`) that
-  shows a live queued→sent event-tracking overlay in the model drawer/detail page for every
-  AI-engineer session. Off by default so it never surfaces during normal use; meant only for live
-  pipeline demonstrations.
-- **Bulk catalog upload** — `POST /api/admin/models/bulk-upload` accepts a CSV or JSON file (up
-  to 500 rows) instead of requiring one-at-a-time entry. Each row validates and writes through
-  the exact same dual-write (DB + Chroma) path as the single-model admin API, dedupes
-  case-insensitively by title (skipped, not overwritten), and reports back per-row
-  inserted/skipped/invalid so one bad row never aborts the batch.
-- **Admin Users list** — a read-only `/admin/users` screen (`GET /api/admin/users`) showing every
-  registered account: email, role, join date, and whether they've connected Telegram — closing
-  the gap where accounts existed and worked but were invisible from the admin portal.
-- **Registration flow hardening** — confirm-password is now actually validated client-side
-  (previously present in the form but never read), switching between Sign-in/Register clears
-  stale field values instead of carrying the demo login email into a signup, and failures surface
-  the real reason (duplicate email, weak password) instead of one generic message.
-- **Product rebrand: SmartReco → TrailMind** — renamed throughout the app to stand apart from
-  other hackathon submissions in the same domain, while keeping the "smart recommendation"
-  framing explicit (see the intro above).
-- **Verified live email digest delivery** — real Gmail SMTP configured and the full scheduled-
-  digest path (`run_digest` → `prepare_retrieval_recommendation` → stored `Recommendation` →
-  `EmailNotifier`) confirmed to deliver an actual email end-to-end, not just a mocked test.
-- A real per-user `asyncio.Lock` fixing a genuine race condition that could produce duplicate
-  `Recommendation` rows from two near-simultaneous qualifying event batches.
-- **Admin observability dashboard** (`OBS-2`) — an admin-only `/admin/observability` screen pulls
-  recent `agent_pipeline` LangSmith runs (status, latency, error, trace link) directly into the
-  admin portal via `GET /api/admin/observability/runs`, so a curator can see whether the last few
-  pipeline runs succeeded without a separate LangSmith login. Requires `OBS-1`'s
-  `LANGSMITH_API_KEY` to be set; shows a clear "not configured" state otherwise rather than
-  erroring.
+Design and planning docs live in [`docs/`](docs/) — domain decision, business/functional
+requirements, UX flows, architecture, schema/API contracts, and test strategy, in that order.
 
 ---
 
-## ⚠️ Known limitations
-
-- **Telegram digest delivery** is per-user: each AI engineer sets their own chat ID from a
-  "Proactive digest delivery" panel on the Dashboard (`PUT /api/auth/me/telegram-chat-id`),
-  read back by `TelegramNotifier` (`app/services/digest.py`) on the next cron run. A user who
-  hasn't set one falls back to the single shared `TELEGRAM_CHAT_ID` broadcast chat if
-  configured, or is skipped (logged, not silently dropped) if neither exists. Email delivery
-  remains per-user via the existing `User.email`. Configure whichever fits your judge/demo
-  setup, or leave both unset to see the honest logging fallback.
-- **Retrieval embeddings**: real semantic embeddings via Mesh (`google/embeddinggemma-300m` by
-  default, `MESH_EMBEDDING_MODEL`) when `MESH_API_KEY` is set — this replaced the original
-  deterministic hashed bag-of-words fallback, which only captured exact/near-exact term overlap
-  (a paraphrased query like "fast realtime speech" scored poorly against catalog copy that says
-  "low-latency voice"). Verified live: that exact paraphrase now correctly surfaces 4 of 5 Voice
-  models as top matches. The hashed fallback (`DeterministicEmbeddingFunction`, `app/vector.py`)
-  still exists and is used automatically whenever Mesh isn't configured, so the app never hard-
-  depends on it — same graceful-degradation pattern as narrative generation. Retrieval failures
-  (e.g. a transient Mesh outage) degrade to "no candidates this round" rather than crashing the
-  background pipeline.
-- **Re-ranking**: a 6th LangGraph node, `rerank_candidates`, sits between retrieval and
-  grade/refine — a deterministic hybrid dense+sparse re-rank that nudges Chroma's embedding
-  distance using lexical term overlap against each candidate's own catalog text, so an exact,
-  specific term match isn't outranked by a candidate that's only broadly semantically similar.
-  Pure Python, no extra LLM/network call (`NFR-2` unaffected), and additive rather than a full
-  rescale so it stays compatible with the existing WEAK/STRONG distance thresholds.
-- **Explicit feedback loop**: a 👍/👎 on any dashboard recommendation card is tracked as its own
-  event (`recommendation_feedback`, no new endpoint — rides the same batched `/api/events/batch`
-  path as every other behavioral signal). `rerank_candidates` reads recent feedback back
-  (`recent_feedback_by_model`, 14-day lookback — longer than ordinary browsing recency, since
-  "don't show me this again" is a deliberate, longer-lived preference) and adjusts ranking
-  accordingly: a downvote is a stronger, more deliberate signal than an upvote, so its penalty
-  is larger than the upvote bonus (asymmetric on purpose). Verified live: downvoting a model
-  that had been ranked #1 dropped it to last place in the very next generated recommendation.
-  Scoped to context, not global: a rating only carries forward to a future query if it's similar
-  enough (lexical overlap against the query the rating was originally given under) — a downvote
-  on an irrelevant recommendation doesn't suppress that same model the next time it's genuinely
-  the right answer.
-- **Cost/latency rollup** in the admin observability screen: `Recommendation` now persists
-  `mesh_latency_ms`/`mesh_prompt_tokens`/`mesh_completion_tokens`/`mesh_cost_usd`, captured
-  directly from the Mesh response at generation time (`app/services/mesh.py`) — cost is priced
-  from Mesh's own `/models` catalog (fetched once, cached for the process's lifetime; a failed
-  lookup degrades to an unknown cost, never breaks latency/token capture). `GET
-  /api/admin/observability/costs` aggregates straight from our own DB, deliberately not another
-  LangSmith call, so it demonstrates the "efficiency" story with real numbers even without
-  tracing configured.
-- **No production deployment or demo video** — both were optional per the roadmap and weren't
-  prioritized over completing functional/bonus scope.
-- **`recommendation_triggered` in the `/api/events/batch` response** reflects `should_trigger`
-  (`recommendation.py`): the session-activity-count threshold *and* the same cheap SQL AGT-6
-  cooldown/hash-dedupe check the graph's `analyze` node uses (`is_recommendation_stale`), so it
-  no longer fires on every batch in an already-triggered session. It still can't know whether
-  the *generation* step will actually succeed (a real Mesh call, which only runs in the
-  background per the NFR-1 fix) — that part of the outcome genuinely isn't knowable
-  synchronously without reintroducing the latency problem NFR-1 fixes.
-
----
-
-**Status:** ✅ Planning phase complete. MVP-0 through Iteration 3, all bonus scope, and every
-post-roadmap enhancement listed above are implemented and verified live against the real Mesh API
-— including a real end-to-end email digest send (Gmail SMTP → `run_digest` → a genuine generated
-recommendation → delivered inbox). CI's critical checks all pass (compiles, requirements, Mesh
-usage, Mesh key valid) — the job only fails at the organizer's result-recording step until the
-hackathon dashboard submission form is filled in. Remaining: submit that form, and optionally a
-deployed URL + demo video.
+*TrailMind — FastAPI · LangGraph · Chroma · Mesh API*
