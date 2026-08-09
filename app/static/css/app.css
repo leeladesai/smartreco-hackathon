@@ -524,6 +524,11 @@
   .auth-switch{font-size:13px; color:var(--muted); margin:18px 0 0; text-align:center;}
   .auth-switch span{color:var(--amber); cursor:pointer; font-weight:600;}
   .auth-switch span:hover{text-decoration:underline;}
+  /* Deliberately quieter than .auth-switch above — this is a secondary escape hatch
+     for curators, not a second primary action competing with Sign in/Register. */
+  .admin-login-link{font-size:11.5px; color:var(--muted-2); margin:10px 0 0; text-align:center;}
+  .admin-login-link span{color:var(--muted); cursor:pointer;}
+  .admin-login-link span:hover{color:var(--text); text-decoration:underline;}
 
   /* ---- live comparison widget (auth pitch) — always real data, never hardcoded ---- */
   .live-compare{

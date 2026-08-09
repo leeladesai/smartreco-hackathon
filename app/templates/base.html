@@ -15,8 +15,10 @@
   catalog/detail/compare, so kept here rather than duplicated in three files). There is
   exactly ONE nav bar element (#app-nav below) and it changes shape by auth state — "none"
   (logged out), "engineer", or "admin" — instead of exposing every screen as an equal,
-  always-clickable tab. Admin login is reached by URL only; nothing in the AI engineer flow
-  links to it, mirroring the real product.
+  always-clickable tab. The AI-engineer login page has one small, deliberately muted
+  "Admin login →" link (see login.html's .admin-login-link) for judges/curators to
+  find easily — quieter than Sign in/Register so it doesn't compete with the primary
+  flow, but no longer URL-only.
 -->
 <header class="app-nav" id="app-nav" data-state="none">
   <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>TRAILMIND <small id="brand-sub">/ model catalog</small></div>
