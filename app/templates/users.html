@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-admin-users">
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">Curator console</p>
+      <h1 class="page-title">Users</h1>
+      <p class="page-sub">Everyone who has registered an AI-engineer account, plus curator/admin accounts. Accounts are provisioned via self-registration or the seed script, not created here — but can be removed from here if needed.</p>
+    </div>
+    <button class="btn" type="button" onclick="refreshUsers()">Refresh</button>
+  </div>
+  <table class="admin-table">
+    <thead><tr><th>Email</th><th>Role</th><th>Joined</th><th></th></tr></thead>
+    <tbody id="admin-users-table"></tbody>
+  </table>
+  <p class="empty-state" id="admin-users-empty" style="display:none;">No users yet.</p>
+  <div class="pagination" id="users-pagination">
+    <button type="button" id="users-prev-btn" onclick="usersPrevPage()">‹ Prev</button>
+    <span id="users-page-label"></span>
+    <button type="button" id="users-next-btn" onclick="usersNextPage()">Next ›</button>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active page-static" id="page-activity">
+  <div class="page-head">
+    <p class="eyebrow">Your activity</p>
+    <h1 class="page-title">Everything tracked, and where it went</h1>
+    <p class="page-sub">Nothing here is hidden from you. This is the same event stream the agent reads — batched client-side, never one network call per click.</p>
+  </div>
+  <div class="searchbar" style="max-width:420px;">
+    <span style="color:var(--muted-2)">⌕</span>
+    <input id="activity-search" placeholder="Search activity — model name or search query…">
+  </div>
+  <div class="filter-row" id="activity-type-filters">
+    <div class="chip" data-event-type="model_view"><span class="dot" style="background:var(--amber)"></span>Views</div>
+    <div class="chip" data-event-type="model_compare"><span class="dot" style="background:var(--cyan)"></span>Compares</div>
+    <div class="chip" data-event-type="search"><span class="dot" style="background:var(--violet)"></span>Searches</div>
+    <div class="chip" data-event-type="catalog_filter"><span class="dot" style="background:var(--teal)"></span>Filters</div>
+    <div class="chip" data-event-type="model_watchlist"><span class="dot" style="background:var(--rose)"></span>Watchlist</div>
+  </div>
+  <div class="activity-wrap">
+    <div class="panel">
+      <div id="activity-log"></div>
+      <div class="pagination" id="activity-pagination">
+        <button type="button" id="activity-prev" onclick="setActivityPage(activityPage - 1)">‹ Prev</button>
+        <span id="activity-page-label"></span>
+        <button type="button" id="activity-next" onclick="setActivityPage(activityPage + 1)">Next ›</button>
+      </div>
+      <p class="note" id="activity-note">Sign in and browse the catalog to see your persisted activity here.</p>
+    </div>
+    <div class="panel">
+      <h4 style="font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); margin:0 0 16px;">How this became your recommendation</h4>
+      <div id="activity-pipeline"><p class="pipeline-summary muted">Nothing generated yet — browse or search the catalog to give the agent something to read.</p></div>
+      <p class="note" id="activity-pipeline-note" style="margin-top:20px;">Your persisted event stream will appear here once the recommendation pipeline is connected.</p>
+    </div>
+  </div>
+</div>
+{% endblock %}

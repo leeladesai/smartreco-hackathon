@@ -1,0 +1,1 @@
+"""TrailMind application package."""

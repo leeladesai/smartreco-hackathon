@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-observability">
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">Curator console</p>
+      <h1 class="page-title">Pipeline observability</h1>
+      <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <select id="observability-user-filter" onchange="observabilityFilterByUser()">
+        <option value="">All users</option>
+      </select>
+      <button class="btn" type="button" onclick="refreshObservability()">Refresh</button>
+    </div>
+  </div>
+  <div class="stat-row" id="cost-rollup"></div>
+  <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
+  <table class="admin-table" id="observability-table-wrap">
+    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>User</th><th title="Sum of our own pipeline steps only — excludes LangGraph/tracing overhead.">Pipeline time</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
+    <tbody id="observability-run-table"></tbody>
+  </table>
+  <div class="pagination" id="observability-pagination">
+    <button type="button" id="observability-prev-btn" onclick="observabilityPrevPage()">‹ Newer</button>
+    <span id="observability-page-label"></span>
+    <button type="button" id="observability-next-btn" onclick="observabilityNextPage()">Older ›</button>
+  </div>
+  <p class="note" style="margin-top:10px;">Click a run to see its step-by-step trace. *Wall time includes LangGraph's own internal tracing overhead, not just our pipeline's actual work — the trace detail shows both separately.</p>
+</div>
+
+<!-- Trace sidecar — same drawer pattern as the model detail drawer in base.html, rather
+     than a centered modal, so a wide JSON payload has real room without feeling like a
+     popup interruption. -->
+<div class="drawer-backdrop" id="trace-drawer-backdrop" onclick="if(event.target===this) closeTraceDrawer()">
+  <div class="drawer wide" id="trace-drawer">
+    <div class="drawer-head">
+      <div>
+        <h2 id="trace-drawer-title">Trace detail</h2>
+        <p class="provider" id="trace-drawer-sub"></p>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; flex:none;">
+        <a class="btn" id="trace-drawer-link" href="#" target="_blank" rel="noopener" style="display:none; padding:9px 16px; text-decoration:none;">Open in LangSmith ↗</a>
+        <button class="modal-close" onclick="closeTraceDrawer()" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="drawer-body" id="trace-drawer-body"></div>
+  </div>
+</div>
+{% endblock %}

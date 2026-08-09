@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TrailMind — Model Catalog</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312151c'/%3E%3Crect x='1' y='1' width='30' height='30' rx='6' fill='none' stroke='%232b3240'/%3E%3Crect x='6' y='18' width='5' height='9' rx='1.5' fill='%235ec8d8'/%3E%3Crect x='13.5' y='12' width='5' height='15' rx='1.5' fill='%23e8a33d'/%3E%3Crect x='21' y='6' width='5' height='21' rx='1.5' fill='%23a78bfa'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ css_version }}">
+</head>
+<body>
+<!--
+  Each route now renders only its own screen's markup (app/templates/*.html, each extending
+  this shell and filling in the content block below) — base.html itself holds only what's genuinely shared
+  across every screen: the head, the single nav bar, and the compare tray (used across
+  catalog/detail/compare, so kept here rather than duplicated in three files). There is
+  exactly ONE nav bar element (#app-nav below) and it changes shape by auth state — "none"
+  (logged out), "engineer", or "admin" — instead of exposing every screen as an equal,
+  always-clickable tab. The AI-engineer login page has one small, deliberately muted
+  "Admin login →" link (see login.html's .admin-login-link) for judges/curators to
+  find easily — quieter than Sign in/Register so it doesn't compete with the primary
+  flow, but no longer URL-only.
+-->
+<header class="app-nav" id="app-nav" data-state="none">
+  <div class="brand"><svg class="brand-mark" viewBox="0 0 18 18" aria-hidden="true"><rect x="1" y="10" width="3.4" height="7" rx="1" fill="var(--cyan)"/><rect x="6.3" y="6" width="3.4" height="11" rx="1" fill="var(--amber)"/><rect x="11.6" y="2" width="3.4" height="15" rx="1" fill="var(--violet)"/></svg>TRAILMIND <small id="brand-sub">/ model catalog</small></div>
+  <nav class="nav-links engineer-links">
+    <div class="nav-link" data-page="catalog" onclick="go('catalog')">Catalog</div>
+    <div class="nav-link" data-page="dashboard" onclick="go('dashboard')">Recommendations</div>
+    <div class="nav-link" data-page="activity" onclick="go('activity')">Your activity</div>
+  </nav>
+  <nav class="nav-links admin-links">
+    <div class="nav-link" data-page="admin-overview" onclick="go('admin-overview')">Overview</div>
+    <div class="nav-link" data-page="admin-models" onclick="go('admin-models')">Catalog</div>
+    <div class="nav-link" data-page="admin-users" onclick="go('admin-users')">Users</div>
+    <div class="nav-link" data-page="observability" onclick="go('observability')">Observability</div>
+  </nav>
+  <div class="app-nav-spacer"></div>
+  <div class="persona-pill" id="persona-pill">not signed in</div>
+  <div class="logout-link" onclick="logout()">Log out</div>
+</header>
+
+{% block content %}{% endblock %}
+
+<!-- compare tray — starts empty; populated only by clicking "+ Compare" on a card. Shared
+     across catalog/detail/compare (three separate routes), so it lives here rather than
+     being duplicated into each of those three templates. -->
+<div class="tray" id="tray">
+  <span class="tray-note">Comparing <b id="tray-count">0</b> models — evaluation events like this drive your dashboard narrative</span>
+  <div class="tray-slots" id="tray-slots"></div>
+  <div class="btn" id="tray-compare-btn" onclick="if(compareSelection.length>=2) go('compare')" style="flex:none;">Compare →</div>
+</div>
+
+<!-- model drawer — VIEW opens this in place instead of navigating away, so browsing stays
+     fast and the catalog/dashboard grid underneath keeps its scroll + filter state. Shared
+     here (rather than per-template) since both catalog and dashboard cards open it. Dwell
+     tracking starts/stops on open/close exactly like the standalone /models/{id} page does
+     on navigation, and the URL is pushed via history so back/forward and deep links still work. -->
+<div class="drawer-backdrop" id="model-drawer-backdrop" onclick="if(event.target===this) closeModelDrawer()">
+  <div class="drawer" id="model-drawer">
+    <div class="drawer-head">
+      <div>
+        <span class="modality-tag" id="drawer-modality">Voice</span>
+        <h2 id="drawer-title">Select a model</h2>
+        <p class="provider" id="drawer-provider">Choose a model from the catalog.</p>
+        <div id="drawer-slug"></div>
+      </div>
+      <button class="modal-close" onclick="closeModelDrawer()" aria-label="Close">✕</button>
+    </div>
+    <div class="drawer-body">
+      <p class="desc" id="drawer-description">Model details will appear here.</p>
+      <table class="spec-table" id="drawer-specs"></table>
+      <div class="use-tags" id="drawer-tags"></div>
+      <div style="display:flex; gap:8px; margin-top:16px;">
+        <div class="btn icon" id="drawer-watchlist-btn" style="padding:9px 0;" title="Add to watchlist" aria-label="Add to watchlist">☆</div>
+        <div class="btn" id="drawer-compare-btn" style="flex:none; padding:9px 16px;" onclick="toggleCompareModel(selectedModelId)">+ Add to compare</div>
+      </div>
+      <div class="drawer-related" id="drawer-related-wrap">
+        <h4>You might also be interested in</h4>
+        <div id="drawer-related"></div>
+      </div>
+      <div class="smart-pick" id="drawer-smart-pick" style="display:none;">
+        <h4>Smart recommendation — based on your session</h4>
+        <div id="drawer-smart-pick-body"></div>
+      </div>
+      <div class="tracking-panel" id="drawer-tracking" style="display:none;"></div>
+      <p class="note" id="drawer-note" style="margin-top:16px;"></p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js?v={{ js_version }}"></script>
+<script>
+  window.INITIAL_PAGE = {{ initial_page|tojson }};
+  window.INITIAL_MODEL_ID = {{ model_id|tojson }};
+  if (typeof setSessionRole === 'function') setSessionRole({{ session_role|tojson }});
+  if (typeof initPage === 'function') initPage(window.INITIAL_PAGE);
+</script>
+</body>
+</html>

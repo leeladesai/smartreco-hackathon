@@ -1,30 +1,35 @@
 # FastAPI & Web
 fastapi==0.104.1
+jinja2==3.1.2
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
 pydantic-settings==2.1.0
 
 # LLM & AI (Mesh API — OpenAI-compatible)
 openai==1.10.0
-langchain==0.1.0
-langchain-openai==0.0.5
 langgraph==0.0.20
+langsmith==0.0.87
 
 # Vector Database
+# Pinned explicitly, not left to transitive resolution: chromadb==0.4.24 (2023) still
+# uses the now-removed np.float_/np.int_ aliases, which break under NumPy 2.x. Local
+# dev never hit this because uv.lock happened to have resolved numpy 1.26.4 already;
+# `pip install -r requirements.txt` (used by the Render deploy) has no such lock to
+# fall back on and would otherwise pull latest NumPy 2.x.
+numpy==1.26.4
 chromadb==0.4.24
 
 # Database
 sqlalchemy==2.0.23
-alembic==1.13.0
 
 # Auth & Security
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.6
 
 # Utilities
 python-dotenv==1.0.0
-requests==2.31.0
 httpx==0.25.2
 
 # Scheduling (bonus)
@@ -34,7 +39,6 @@ APScheduler==3.10.4
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0
-respx==0.20.2
 
 # Development
 black==23.12.0

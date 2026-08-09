@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-compare">
+  <div class="flow-link" onclick="go('catalog')">← Back to catalog</div>
+  <div class="page-head">
+    <p class="eyebrow">Compare</p>
+    <h1 class="page-title" id="compare-title">Models, side by side</h1>
+    <p class="page-sub">Only what you added to the tray appears here — nothing pre-selected.</p>
+  </div>
+  <div class="compare-table-wrap">
+    <table class="compare" id="compare-table"></table>
+  </div>
+</div>
+{% endblock %}

@@ -1,5 +1,10 @@
 # High-Level Design (HLD)
-## SmartReco
+## TrailMind
+
+A component-level architecture diagram — deployment boundary, both loops, the 6-node agent
+pipeline, SQL/vector databases, and the single external LLM call — is at
+[`05-architecture-diagram.md`](05-architecture-diagram.md). This document is the prose/tabular
+companion; the diagram is the visual one.
 
 ## 1. Architecture overview
 
@@ -18,27 +23,36 @@ system satisfy both "track everything" and "don't call the LLM on every action."
 
 | Component | Responsibility | Tech |
 |---|---|---|
-| Web frontend | Catalog browsing, product pages, dashboard, admin UI | Jinja2 templates + vanilla JS |
+| Web frontend | Catalog browsing, model detail/comparison pages, dashboard, activity view, admin UI | Jinja2 templates + vanilla JS |
 | Tracking client | Batches behavioral events, flushes via beacon/timer | JS module, no dependencies |
 | API layer | Auth, catalog CRUD, event ingestion, recommendation read | FastAPI |
 | Trigger evaluator | Decides if/when to run the agent for a user | Runs inline after event batch insert, cheap SQL check (no LLM) |
-| Agent worker | LangGraph pipeline: analyze → retrieve → grade/refine → generate → store | LangGraph + Mesh API (OpenAI-compatible client) |
-| SQL database | Source of truth: users, products, events, recommendations | SQLite (dev) / Postgres (prod-shaped) via SQLAlchemy |
-| Vector database | Semantic index of products | Chroma (local, zero external deps — good fit for a graded repo) |
+| Agent worker | LangGraph pipeline: analyze → retrieve → rerank → grade/refine → generate → store | LangGraph + Mesh API (OpenAI-compatible client) |
+| SQL database | Source of truth: users, models, events, recommendations | SQLite (dev) / Postgres (prod-shaped) via SQLAlchemy |
+| Vector database | Semantic index of AI models (provider, modality, price, latency, use-case) | Chroma (local, zero external deps — good fit for a graded repo) |
 | Scheduler (bonus) | Daily digest trigger | APScheduler, in-process |
 | Observability (bonus) | Trace agent runs | LangSmith |
 
+Domain: an AI model & tool catalog (see `docs/00-Domain-Decision.md` for why this was chosen over
+alternatives). The two-loop split below is unchanged by the domain choice — only the catalog's
+entity (`model`, not generic `product`) and its comparison-oriented attributes differ.
+
 ## 3. Data flow (see also companion diagrams already shared in chat)
 
-1. Browser batches events → `POST /api/events/batch` → bulk insert into `events`.
+1. Browser batches events (model views, searches, comparisons, dwell time) →
+   `POST /api/events/batch` → bulk insert into `events`.
 2. Same request, after insert, cheaply checks the trigger condition for that user
    (count/time/cooldown — no LLM call). If satisfied, enqueues an agent run
    (in-process background task via FastAPI `BackgroundTasks`, or a lightweight queue if the team
    wants real async decoupling — see §6).
-3. Agent worker pulls recent events, summarizes behavior, embeds a retrieval query, queries the
-   vector DB, grades results, generates narrative via Mesh API, writes to `recommendations`.
+3. Agent worker pulls recent events, summarizes behavior (e.g. "comparing low-latency voice
+   models"), embeds a retrieval query, queries the vector DB, grades results, generates a
+   comparison-driven narrative via Mesh API, writes to `recommendations`.
 4. Dashboard reads the latest row from `recommendations` for the logged-in user.
-5. (Bonus) Scheduler independently sweeps active users on a cron and reuses the same agent
+5. Activity view (DLV-4) reads raw `events` plus the `behavior_summary`/`activity_hash`/
+   `trigger_reason` already persisted on that same `recommendations` row — a second read path over
+   existing data, not a new write path.
+6. (Bonus) Scheduler independently sweeps active users on a cron and reuses the same agent
    pipeline to produce and email/Telegram a digest.
 
 ## 4. Why these tech choices
@@ -59,6 +73,8 @@ system satisfy both "track everything" and "don't call the LLM on every action."
 ## 5. Security & config
 
 - Passwords hashed (passlib/bcrypt); session via signed cookie or short-lived JWT.
+- AI engineer and admin auth are separate router modules (`/api/auth/*` vs `/api/admin/login`) — the
+  AI engineer module can never mint an `admin` role, and there is no admin self-registration endpoint.
 - Admin routes protected by a server-side dependency (`require_role("admin")`), never
   client-side-only.
 - `MESH_API_KEY` read from environment only; `.env` gitignored; CI secrets configured per submission

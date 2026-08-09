@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-admin-overview">
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">Curator console</p>
+      <h1 class="page-title">Platform overview</h1>
+      <p class="page-sub">Usage metrics computed from our own data — who's using TrailMind, and how. For AI pipeline health (traces, latency, cost), see <span class="flow-link" style="margin:0; display:inline;" onclick="go('observability')">Observability →</span>.</p>
+    </div>
+    <button class="btn" type="button" onclick="refreshOverview()">Refresh</button>
+  </div>
+
+  <div class="stat-row" id="overview-totals"></div>
+
+  <div class="narrative-card" style="margin-top:20px;">
+    <p class="eyebrow" style="margin-bottom:8px;">Event-type breakdown</p>
+    <div id="overview-event-bars"></div>
+  </div>
+
+  <div class="stat-row" id="overview-feedback" style="margin-top:20px;"></div>
+
+  <div class="page-head" style="margin-top:28px;">
+    <div>
+      <p class="eyebrow">Live activity — all users</p>
+    </div>
+  </div>
+  <table class="admin-table">
+    <thead><tr><th>User</th><th>Event</th><th>Detail</th><th>When</th></tr></thead>
+    <tbody id="overview-activity-table"></tbody>
+  </table>
+  <div class="pagination" id="overview-activity-pagination">
+    <button type="button" id="overview-activity-prev-btn" onclick="overviewActivityPrevPage()">‹ Prev</button>
+    <span id="overview-activity-page-label"></span>
+    <button type="button" id="overview-activity-next-btn" onclick="overviewActivityNextPage()">Next ›</button>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page active" id="page-admin">
+  <div class="page-head admin-head-row">
+    <div>
+      <p class="eyebrow">Curator console</p>
+      <h1 class="page-title">Model catalog</h1>
+      <p class="page-sub">Sync status is shown, not hidden — a green check means the vector store actually reflects this row.</p>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="chip" id="demo-mode-toggle" onclick="toggleDemoMode()" title="Shows a live event-tracking overlay in the model drawer for every AI-engineer session — turn on only while demoing, not for normal use.">
+        <span class="dot" id="demo-mode-dot" style="background:var(--muted-2);"></span>Judge demo mode
+      </div>
+      <button class="btn" type="button" onclick="openBulkUploadModal()">Upload catalog file</button>
+      <button class="btn primary" type="button" onclick="openModelModal()">+ Add model</button>
+    </div>
+  </div>
+  <table class="admin-table">
+    <thead><tr><th>Title</th><th>Provider</th><th>Modality</th><th>Price</th><th>Vector sync</th><th></th></tr></thead>
+    <tbody id="admin-model-table"></tbody>
+  </table>
+  <div class="pagination" id="admin-models-pagination">
+    <button type="button" id="admin-models-prev-btn" onclick="adminModelsPrevPage()">‹ Prev</button>
+    <span id="admin-models-page-label"></span>
+    <button type="button" id="admin-models-next-btn" onclick="adminModelsNextPage()">Next ›</button>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="model-modal" role="presentation" onclick="closeModelModal(event)">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="model-form-title" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h3 id="model-form-title">Add model</h3>
+        <p>Capture the model's specs, plus the story that helps an AI engineer choose it over alternatives.</p>
+      </div>
+      <button class="modal-close" type="button" aria-label="Close" onclick="closeModelModal()">×</button>
+    </div>
+    <form class="form-grid" id="model-form" onsubmit="saveModel(event)">
+      <div class="field"><label for="model-title">Title</label><input id="model-title" required placeholder="e.g. Cartesia Sonic"></div>
+      <div class="field"><label for="model-provider">Provider</label><input id="model-provider" required placeholder="e.g. Cartesia"></div>
+      <div class="field"><label for="model-modality">Modality</label><select id="model-modality"><option>LLM</option><option selected>Voice</option><option>Image</option><option>Video</option><option>Embedding</option></select></div>
+      <div class="field"><label for="model-price">Price / unit</label><input id="model-price" required placeholder="$0.00015/char"></div>
+      <div class="field"><label for="model-latency">Latency (ms)</label><input id="model-latency" placeholder="135"></div>
+      <div class="field"><label for="model-context">Context window</label><input id="model-context" placeholder="n/a for voice"></div>
+      <div class="field full"><label for="model-tags">Use-case tags</label><input id="model-tags" placeholder="real-time voice, customer support"></div>
+      <div class="field full"><label for="model-description">Description</label><textarea id="model-description" placeholder="What this model does, in plain technical terms."></textarea></div>
+      <div class="field full"><label for="model-story">Story — why this model</label><textarea id="model-story" placeholder="Who should reach for it, what trade-off it makes, and when it beats the alternatives."></textarea></div>
+      <div class="field full"><label for="model-source">Source URL</label><input id="model-source" type="url" placeholder="https://…"></div>
+      <input id="model-edit-id" type="hidden">
+      <div class="full" id="model-form-status" role="status" aria-live="polite"></div>
+    </form>
+    <div class="modal-actions">
+      <button class="btn primary" type="submit" form="model-form" style="flex:none; padding:10px 22px;">Save model</button>
+      <button class="btn" type="button" onclick="closeModelModal()" style="flex:none; padding:10px 22px;">Cancel</button>
+    </div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="bulk-upload-modal" role="presentation" onclick="closeBulkUploadModal(event)">
+  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="bulk-upload-title" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h3 id="bulk-upload-title">Upload catalog file</h3>
+        <p>CSV or JSON, up to 500 rows. Required columns: <code>title</code>, <code>provider</code>, <code>modality</code>, <code>price</code>, <code>description</code>. Optional: <code>story</code>, <code>latency_ms</code>, <code>context_window</code>, <code>use_case_tags</code> (semicolon-separated), <code>source_url</code>. Rows with a title already in the catalog are skipped, not overwritten.</p>
+      </div>
+      <button class="modal-close" type="button" aria-label="Close" onclick="closeBulkUploadModal()">×</button>
+    </div>
+    <form class="form-grid" id="bulk-upload-form" onsubmit="submitBulkUpload(event)">
+      <div class="field full"><label for="bulk-upload-file">Catalog file</label><input id="bulk-upload-file" type="file" accept=".csv,.json" required></div>
+      <div class="full" id="bulk-upload-status" role="status" aria-live="polite"></div>
+      <div class="full" id="bulk-upload-results"></div>
+    </form>
+    <div class="modal-actions">
+      <button class="btn primary" type="submit" form="bulk-upload-form" style="flex:none; padding:10px 22px;">Upload</button>
+      <button class="btn" type="button" onclick="closeBulkUploadModal()" style="flex:none; padding:10px 22px;">Close</button>
+    </div>
+  </section>
+</div>
+{% endblock %}
