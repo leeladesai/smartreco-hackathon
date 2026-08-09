@@ -574,6 +574,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if detail.start_time
                 else None,
                 "latency_ms": detail.latency_ms,
+                "pipeline_latency_ms": detail.pipeline_latency_ms,
                 "url": detail.url,
                 "steps": [
                     {

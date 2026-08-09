@@ -50,7 +50,18 @@ class TraceDetail:
     name: str
     status: str
     start_time: datetime | None
+    # Raw wall-clock time of the whole traced call (root end_time - start_time).
+    # Dominated by LangGraph 0.0.20's own internal state-channel bookkeeping spans
+    # when tracing is on (confirmed live: ~40s of a ~43s run was pure LangGraph/
+    # LangSmith overhead, not our own code) — kept here as "total wall time", with
+    # `pipeline_latency_ms` below as the honest "what our own pipeline actually spent"
+    # figure, so neither number is presented as the other.
     latency_ms: float | None
+    # Sum of each named step's own latency_ms (the same steps in `steps` below) — our
+    # actual analyze/retrieve/rerank/grade_refine/generate/store work, excluding every
+    # LangGraph-internal wrapper span. Free to compute: `steps` already required
+    # fetching the full child-run tree for the step-by-step view.
+    pipeline_latency_ms: float | None
     url: str | None
     steps: list[TraceStep]
 
@@ -230,6 +241,15 @@ def fetch_run_detail(settings: Settings, run_id: str) -> TraceDetail:
     steps.sort(
         key=lambda step: step.start_time or datetime.min.replace(tzinfo=timezone.utc)
     )
+    # Only depth-0 steps — a nested step (e.g. mesh_generate_narrative inside
+    # generate_narrative) occupies a time window already contained within its
+    # parent's own latency_ms, so summing every depth would double-count it.
+    step_latencies = [
+        step.latency_ms
+        for step in steps
+        if step.depth == 0 and step.latency_ms is not None
+    ]
+    pipeline_latency_ms = sum(step_latencies) if step_latencies else None
 
     return TraceDetail(
         id=str(run.id),
@@ -237,6 +257,7 @@ def fetch_run_detail(settings: Settings, run_id: str) -> TraceDetail:
         status=run.status or ("error" if run.error else "success"),
         start_time=run.start_time,
         latency_ms=_latency_ms(run),
+        pipeline_latency_ms=pipeline_latency_ms,
         url=_run_url(client, run),
         steps=steps,
     )

@@ -342,6 +342,12 @@ def test_observability_run_detail_filters_noise_and_orders_steps(
     assert all(step["depth"] == 0 for step in run["steps"])
     assert run["steps"][0]["outputs"] == {"behavior_summary": "x"}
     assert run["url"] == "https://smith.langchain.com/fake/root-id"
+    # analyze (1000ms) + retrieve (1000ms) = 2000ms of real pipeline work, vs the
+    # root's own 5000ms wall time (at(0) to at(5)) — the gap is exactly the kind of
+    # LangGraph-internal overhead (the skipped "LangGraph" noise wrapper here) this
+    # field exists to separate out.
+    assert run["pipeline_latency_ms"] == 2000.0
+    assert run["latency_ms"] == 5000.0
 
 
 def test_observability_run_detail_sorts_across_separate_top_level_branches(
@@ -400,6 +406,39 @@ def test_observability_run_detail_sorts_across_separate_top_level_branches(
         "analyze_activity",
         "grade_refine",
     ]
+
+
+def test_observability_run_detail_pipeline_latency_is_none_with_no_named_steps(
+    tmp_path, monkeypatch
+) -> None:
+    """A run with no recognized named steps (e.g. it short-circuited before any of our
+    own nodes ran) must report pipeline_latency_ms as None, not 0 — 0ms would falsely
+    read as "the pipeline ran instantly" rather than "we have no data"."""
+    t0 = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+    root = _FakeRun(
+        "root-id", "agent_pipeline", start_time=t0, end_time=t0 + timedelta(seconds=1)
+    )
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            pass
+
+        def read_run(self, run_id, load_child_runs=False):
+            return root
+
+        def get_run_url(self, *, run):
+            return f"https://smith.langchain.com/fake/{run.id}"
+
+    import app.services.observability as observability_module
+
+    monkeypatch.setattr(observability_module, "Client", FakeClient)
+
+    admin_client = _admin_client(tmp_path, monkeypatch, langsmith_api_key="fake-key")
+    response = admin_client.get("/api/admin/observability/runs/root-id")
+    body = response.json()
+    assert body["run"]["steps"] == []
+    assert body["run"]["pipeline_latency_ms"] is None
+    assert body["run"]["latency_ms"] == 1000.0
 
 
 def test_observability_run_detail_reports_api_failure(tmp_path, monkeypatch) -> None:

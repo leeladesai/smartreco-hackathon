@@ -561,8 +561,15 @@
       }
       const run = data.run;
       const started = run.start_time ? new Date(run.start_time).toLocaleString() : '—';
-      const latency = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
-      sub.textContent = `${run.name} · ${started} · ${latency}`;
+      // Wall time (root end_time - start_time) is dominated by LangGraph 0.0.20's own
+      // internal state-channel tracing overhead when LangSmith is on — confirmed live,
+      // ~40s of a ~43s run was that overhead, not our own code. pipeline_latency_ms
+      // (sum of just our own named steps below) is the honest "what our code actually
+      // took" figure — shown alongside, never presented as if they were the same thing.
+      const wallTime = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms wall` : null;
+      const pipelineTime = run.pipeline_latency_ms != null ? `${Math.round(run.pipeline_latency_ms)}ms pipeline` : null;
+      const latencySummary = [pipelineTime, wallTime].filter(Boolean).join(' · ') || '—';
+      sub.textContent = `${run.name} · ${started} · ${latencySummary}`;
       if (run.url) {
         link.href = run.url;
         link.style.display = '';

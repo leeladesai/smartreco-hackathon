@@ -17,7 +17,7 @@
   <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
   <table class="admin-table" id="observability-table-wrap">
-    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>Latency</th><th>Error</th></tr></thead>
+    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
     <tbody id="observability-run-table"></tbody>
   </table>
   <div class="pagination" id="observability-pagination">
@@ -25,7 +25,7 @@
     <span id="observability-page-label"></span>
     <button type="button" id="observability-next-btn" onclick="observabilityNextPage()">Older ›</button>
   </div>
-  <p class="note" style="margin-top:10px;">Click a run to see its step-by-step trace.</p>
+  <p class="note" style="margin-top:10px;">Click a run to see its step-by-step trace. *Wall time includes LangGraph's own internal tracing overhead, not just our pipeline's actual work — the trace detail shows both separately.</p>
 </div>
 
 <!-- Trace sidecar — same drawer pattern as the model detail drawer in base.html, rather
