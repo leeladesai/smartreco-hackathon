@@ -27,8 +27,9 @@ class Settings(BaseSettings):
     langsmith_project: str = "trailmind"
 
     # DLV-3: scheduled digest (bonus). Email delivers per-user via `User.email`; Telegram
-    # is a single broadcast chat (no per-user chat-id mapping exists yet). Neither configured
-    # falls back to logging the digest instead of silently dropping it.
+    # delivers per-user via `User.telegram_chat_id`, falling back to the shared
+    # `telegram_chat_id` broadcast chat below only for a user who hasn't set their own.
+    # Neither configured falls back to logging the digest instead of silently dropping it.
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_username: str | None = None
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = None
     digest_cron_hour: int = 9
     digest_cron_minute: int = 0
+    # Public URL of the deployed app, if any — used only for the "View full dashboard"
+    # link in the HTML digest email. Omitted from the email entirely when unset, rather
+    # than linking to a localhost address nobody outside the dev machine can reach.
+    app_base_url: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",

@@ -8,9 +8,11 @@ from app.services.digest import (
     EmailNotifier,
     LoggingNotifier,
     TelegramNotifier,
+    _recommendation_models,
     build_notifier,
     run_digest,
 )
+from app.services.narrative import encode_narrative
 
 
 def _make_session_factory(tmp_path):
@@ -82,7 +84,7 @@ def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
         trigger_reason="event_threshold",
         narrative="hi",
     )
-    notifier.send(user, recommendation)
+    notifier.send(user, recommendation, [])
     assert captured["chat_id"] == "personal-chat"
 
 
@@ -110,7 +112,7 @@ def test_telegram_notifier_falls_back_to_shared_chat_id(monkeypatch) -> None:
         trigger_reason="event_threshold",
         narrative="hi",
     )
-    notifier.send(user, recommendation)
+    notifier.send(user, recommendation, [])
     assert captured["chat_id"] == "shared-chat"
 
 
@@ -126,15 +128,17 @@ def test_telegram_notifier_raises_without_any_chat_id() -> None:
         narrative="hi",
     )
     with pytest.raises(ValueError):
-        notifier.send(user, recommendation)
+        notifier.send(user, recommendation, [])
 
 
 class RecordingNotifier:
     def __init__(self) -> None:
-        self.sent: list[tuple[User, Recommendation]] = []
+        self.sent: list[tuple[User, Recommendation, list[dict]]] = []
 
-    def send(self, user: User, recommendation: Recommendation) -> None:
-        self.sent.append((user, recommendation))
+    def send(
+        self, user: User, recommendation: Recommendation, models: list[dict]
+    ) -> None:
+        self.sent.append((user, recommendation, models))
 
 
 def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
@@ -201,7 +205,7 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
 
     assert summary == {"sent": 1, "skipped": 0}
     assert len(notifier.sent) == 1
-    sent_user, sent_recommendation = notifier.sent[0]
+    sent_user, sent_recommendation, _sent_models = notifier.sent[0]
     assert sent_user.email == "stable@test.dev"
     assert sent_recommendation.narrative == "You'll like this."
 
@@ -227,7 +231,9 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
         session.commit()
 
     class FailingNotifier:
-        def send(self, user: User, recommendation: Recommendation) -> None:
+        def send(
+            self, user: User, recommendation: Recommendation, models: list[dict]
+        ) -> None:
             raise RuntimeError("smtp down")
 
     summary = run_digest(
@@ -237,3 +243,173 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
         notifier=FailingNotifier(),
     )
     assert summary == {"sent": 0, "skipped": 1}
+
+
+def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) -> None:
+    session_factory = _make_session_factory(tmp_path)
+    with session_factory() as session:
+        model = Model(
+            title="Voice X",
+            provider="Test Labs",
+            modality="Voice",
+            price="$1",
+            description="d",
+            use_case_tags=[],
+        )
+        session.add(model)
+        session.commit()
+        recommendation = Recommendation(
+            user_id=1,
+            model_ids=[model.id],
+            retrieval_meta=[
+                {"model_id": model.id, "reason": "great fit", "distance": 0.2}
+            ],
+            behavior_summary="s",
+            activity_hash="h",
+            trigger_reason="event_threshold",
+        )
+        session.add(recommendation)
+        session.commit()
+
+        models = _recommendation_models(session, recommendation)
+        assert models == [
+            {
+                "title": "Voice X",
+                "provider": "Test Labs",
+                "modality": "Voice",
+                "price": "$1",
+                "why_this": "great fit",
+            }
+        ]
+
+
+def test_recommendation_models_skips_ids_with_no_matching_row(tmp_path) -> None:
+    session_factory = _make_session_factory(tmp_path)
+    with session_factory() as session:
+        recommendation = Recommendation(
+            user_id=1,
+            model_ids=[999],
+            behavior_summary="s",
+            activity_hash="h",
+            trigger_reason="event_threshold",
+        )
+        session.add(recommendation)
+        session.commit()
+
+        assert _recommendation_models(session, recommendation) == []
+
+
+class FakeSMTPServer:
+    """Stands in for smtplib.SMTP as a context manager, recording what EmailNotifier
+    actually sends rather than hitting a real mail server."""
+
+    instances: list["FakeSMTPServer"] = []
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.started_tls = False
+        self.logged_in_as = None
+        self.sent_message = None
+        FakeSMTPServer.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def starttls(self):
+        self.started_tls = True
+
+    def login(self, username, password):
+        self.logged_in_as = username
+
+    def send_message(self, message):
+        self.sent_message = message
+
+
+def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> None:
+    import app.services.digest as digest_module
+
+    FakeSMTPServer.instances = []
+    monkeypatch.setattr(digest_module.smtplib, "SMTP", FakeSMTPServer)
+
+    notifier = EmailNotifier(
+        smtp_host="smtp.test",
+        smtp_port=587,
+        smtp_username="u",
+        smtp_password="p",
+        from_email="digest@trailmind.dev",
+        app_url="https://trailmind.example/dashboard",
+    )
+    user = User(id=1, email="recipient@test.dev", role="user")
+    recommendation = Recommendation(
+        user_id=1,
+        model_ids=[1],
+        narrative=encode_narrative(
+            "You've been comparing low-latency voice models.",
+            ["ElevenLabs beats the field on latency."],
+        ),
+        behavior_summary="s",
+        activity_hash="h",
+        trigger_reason="event_threshold",
+    )
+    models = [
+        {
+            "title": "ElevenLabs Turbo v2.5",
+            "provider": "ElevenLabs",
+            "modality": "Voice",
+            "price": "$0.001/char",
+            "why_this": "beats Cartesia Sonic on latency",
+        }
+    ]
+
+    notifier.send(user, recommendation, models)
+
+    server = FakeSMTPServer.instances[-1]
+    assert server.started_tls is True
+    assert server.logged_in_as == "u"
+    message = server.sent_message
+    assert message["Subject"] == "Your TrailMind picks: 1 models based on your activity"
+    assert message.is_multipart()
+
+    html_part = message.get_body(preferencelist=("html",))
+    html_content = html_part.get_content()
+    assert "ElevenLabs Turbo v2.5" in html_content
+    assert "beats Cartesia Sonic on latency" in html_content
+    assert "https://trailmind.example/dashboard" in html_content
+
+    plain_part = message.get_body(preferencelist=("plain",))
+    assert "comparing low-latency voice models" in plain_part.get_content()
+
+
+def test_email_notifier_omits_cta_link_when_app_url_unset(monkeypatch) -> None:
+    import app.services.digest as digest_module
+
+    FakeSMTPServer.instances = []
+    monkeypatch.setattr(digest_module.smtplib, "SMTP", FakeSMTPServer)
+
+    notifier = EmailNotifier(
+        smtp_host="smtp.test",
+        smtp_port=587,
+        smtp_username=None,
+        smtp_password=None,
+        from_email="digest@trailmind.dev",
+    )
+    user = User(id=1, email="recipient@test.dev", role="user")
+    recommendation = Recommendation(
+        user_id=1,
+        model_ids=[],
+        narrative="hi",
+        behavior_summary="s",
+        activity_hash="h",
+        trigger_reason="event_threshold",
+    )
+
+    notifier.send(user, recommendation, [])
+
+    server = FakeSMTPServer.instances[-1]
+    assert server.logged_in_as is None  # no username/password -> login() never called
+    html_content = server.sent_message.get_body(preferencelist=("html",)).get_content()
+    assert "View full dashboard" not in html_content

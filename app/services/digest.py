@@ -23,16 +23,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
-from app.models import Recommendation, User
+from app.models import Model, Recommendation, User
 from app.services.agent_graph import prepare_retrieval_recommendation
-from app.services.narrative import narrative_as_plain_text
+from app.services.email_template import render_recommendation_email_html
+from app.services.narrative import decode_narrative, narrative_as_plain_text
 from app.vector import ModelVectorStore
 
 logger = logging.getLogger(__name__)
 
 
 class Notifier(Protocol):
-    def send(self, user: User, recommendation: Recommendation) -> None:
+    def send(
+        self, user: User, recommendation: Recommendation, models: list[dict]
+    ) -> None:
         ...
 
 
@@ -41,11 +44,14 @@ class LoggingNotifier:
     """Fallback when no email/Telegram credentials are configured — still proves the
     scheduled digest ran and what it would have delivered."""
 
-    def send(self, user: User, recommendation: Recommendation) -> None:
+    def send(
+        self, user: User, recommendation: Recommendation, models: list[dict]
+    ) -> None:
         logger.info(
-            "[digest:log-only] would notify user_id=%s (%s): %s",
+            "[digest:log-only] would notify user_id=%s (%s) about %s: %s",
             user.id,
             user.email,
+            [model["title"] for model in models],
             narrative_as_plain_text(
                 recommendation.narrative, recommendation.behavior_summary
             ),
@@ -59,17 +65,36 @@ class EmailNotifier:
     smtp_username: str | None
     smtp_password: str | None
     from_email: str
+    # Optional "View full dashboard" link in the HTML email — omitted when unset (no
+    # deployed URL yet) rather than pointing at a link nobody outside localhost can use.
+    app_url: str | None = None
 
-    def send(self, user: User, recommendation: Recommendation) -> None:
+    def send(
+        self, user: User, recommendation: Recommendation, models: list[dict]
+    ) -> None:
         message = EmailMessage()
-        message["Subject"] = "Your TrailMind recommendation digest"
+        subject = "Your TrailMind recommendation digest"
+        if models:
+            subject = (
+                f"Your TrailMind picks: {len(models)} models based on your activity"
+            )
+        message["Subject"] = subject
         message["From"] = self.from_email
         message["To"] = user.email
+        fallback_summary = (
+            f"Based on your recent activity: {recommendation.behavior_summary}"
+        )
         message.set_content(
-            narrative_as_plain_text(
-                recommendation.narrative,
-                f"Based on your recent activity: {recommendation.behavior_summary}",
-            )
+            narrative_as_plain_text(recommendation.narrative, fallback_summary)
+        )
+        message.add_alternative(
+            render_recommendation_email_html(
+                decode_narrative(recommendation.narrative),
+                models,
+                fallback_summary,
+                app_url=self.app_url,
+            ),
+            subtype="html",
         )
         with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
             server.starttls()
@@ -85,7 +110,9 @@ class TelegramNotifier:
     # their own User.telegram_chat_id (the per-user path this was added to support).
     fallback_chat_id: str | None = None
 
-    def send(self, user: User, recommendation: Recommendation) -> None:
+    def send(
+        self, user: User, recommendation: Recommendation, models: list[dict]
+    ) -> None:
         chat_id = user.telegram_chat_id or self.fallback_chat_id
         if not chat_id:
             raise ValueError(
@@ -96,6 +123,9 @@ class TelegramNotifier:
             recommendation.narrative, recommendation.behavior_summary
         )
         text = f"TrailMind digest for {user.email}:\n{body}"
+        if models:
+            titles = ", ".join(model["title"] for model in models)
+            text += f"\n\nRecommended: {titles}"
         response = httpx.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
             json={"chat_id": chat_id, "text": text},
@@ -112,6 +142,7 @@ def build_notifier(settings: Settings) -> Notifier:
             smtp_username=settings.smtp_username,
             smtp_password=settings.smtp_password,
             from_email=settings.smtp_from_email,
+            app_url=settings.app_base_url,
         )
     if settings.telegram_bot_token:
         return TelegramNotifier(
@@ -121,15 +152,48 @@ def build_notifier(settings: Settings) -> Notifier:
     return LoggingNotifier()
 
 
+def _recommendation_models(
+    session: Session, recommendation: Recommendation
+) -> list[dict]:
+    """Resolves the plain-dict shape both notifiers render from — title/provider/
+    modality/price plus the same deterministic `why_this` reason the dashboard shows
+    (`Recommendation.retrieval_meta`, computed in agent_graph.py, never re-derived
+    here)."""
+    if not recommendation.model_ids:
+        return []
+    models_by_id = {
+        model.id: model
+        for model in session.scalars(
+            select(Model).where(Model.id.in_(recommendation.model_ids))
+        ).all()
+    }
+    reason_by_id = {
+        entry["model_id"]: entry.get("reason")
+        for entry in recommendation.retrieval_meta or []
+    }
+    return [
+        {
+            "title": models_by_id[model_id].title,
+            "provider": models_by_id[model_id].provider,
+            "modality": models_by_id[model_id].modality,
+            "price": models_by_id[model_id].price,
+            "why_this": reason_by_id.get(model_id),
+        }
+        for model_id in recommendation.model_ids
+        if model_id in models_by_id
+    ]
+
+
 def run_digest(
     session_factory: sessionmaker[Session],
     vector_store: ModelVectorStore,
     mesh_generator,
     notifier: Notifier,
 ) -> dict[str, int]:
-    """Runs the agent pipeline for every AI-engineer user (trigger_reason=scheduled_digest,
-    subject to the same AGT-6 hash-dedupe/cooldown as an event-triggered run — cheap and
-    correct since the digest cadence is far coarser than the 15-minute cooldown), then
+    """Runs the agent pipeline for every AI-engineer user
+    (trigger_reason=scheduled_digest, subject to the same AGT-6 hash-dedupe/cooldown as
+    an event-triggered run — cheap and correct since the digest cadence is far coarser
+    than the 15-minute cooldown), then
     delivers whatever the latest stored recommendation is, new or not, so users with a
     stable recommendation still get their digest."""
     sent = skipped = 0
@@ -152,7 +216,7 @@ def run_digest(
                 skipped += 1
                 continue
             try:
-                notifier.send(user, latest)
+                notifier.send(user, latest, _recommendation_models(session, latest))
                 sent += 1
             except Exception:
                 logger.exception("Digest delivery failed for user_id=%s", user.id)
