@@ -2034,7 +2034,15 @@
         const fallback = registering
           ? 'Could not create your account. Try again.'
           : "Wrong email or password. Try again, or check you're on the right tab above.";
-        errorEl.textContent = authErrorMessage(body, fallback);
+        const message = authErrorMessage(body, fallback);
+        if (registering) {
+          errorEl.textContent = message;
+        } else {
+          // Deliberately generic (never confirms/denies whether the email is
+          // registered — avoids a user-enumeration leak) but still points
+          // unregistered users toward signing up instead of retrying forever.
+          errorEl.innerHTML = `${message}. New here? <span onclick="setAuthMode('register')">Create an account</span>.`;
+        }
         errorEl.classList.add('show');
         return;
       }
