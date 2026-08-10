@@ -1358,12 +1358,15 @@
       const categoryCount = Object.keys(countsByModality).length;
       footnoteEl.textContent = `${models.length} model${models.length === 1 ? '' : 's'} tracked across ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'} · live catalog`;
 
-      let pair = null;
-      for (const modality of modalityOrder) {
-        const group = models.filter(model => model.modality === modality);
-        if (group.length >= 2) { pair = group.slice(0, 2); break; }
-      }
-      if (!pair) { liveCompare.style.display = 'none'; return; }
+      // Random every load, not just the first two rows of whichever modality happens
+      // to sort first — otherwise "live" comparison always shows the same pair.
+      const eligibleGroups = modalityOrder
+        .map(modality => models.filter(model => model.modality === modality))
+        .filter(group => group.length >= 2);
+      if (!eligibleGroups.length) { liveCompare.style.display = 'none'; return; }
+      const group = eligibleGroups[Math.floor(Math.random() * eligibleGroups.length)];
+      const shuffled = [...group].sort(() => Math.random() - 0.5);
+      const pair = shuffled.slice(0, 2);
 
       const [a, b] = pair;
       document.getElementById('live-compare-pair').innerHTML =
@@ -1374,8 +1377,12 @@
       if (contextA != null && contextB != null) {
         rows.push({label: 'Context window', textA: a.context_window, textB: b.context_window, valueA: contextA, valueB: contextB});
       }
+      // Only bar-compare price when both models are priced against the same unit —
+      // $0.02/1K tokens next to $0.02/1M tokens would otherwise render as equal-length
+      // bars despite a 1000x price gap.
       const priceA = parsePriceValue(a.price), priceB = parsePriceValue(b.price);
-      if (priceA != null && priceB != null) {
+      const priceUnitA = parsePriceUnit(a.price), priceUnitB = parsePriceUnit(b.price);
+      if (priceA != null && priceB != null && priceUnitA && priceUnitA === priceUnitB) {
         rows.push({label: 'Price', textA: a.price, textB: b.price, valueA: priceA, valueB: priceB});
       }
       if (a.latency_ms != null && b.latency_ms != null) {
@@ -1559,6 +1566,37 @@
     renderCompare();
   }
 
+  const COMPARE_BAR_COLORS = ['cyan', 'amber', 'violet'];
+
+  // "/ 1M tokens", "/ image", "/ 1K tokens" — the part after the slash. Bar-comparing
+  // price only makes sense when every model being compared is priced against the same
+  // unit; $0.02/1K tokens next to $0.02/1M tokens look identical numerically but are a
+  // 1000x price gap, so that pair must fall back to text-only rather than equal-length
+  // bars implying they're the same.
+  function parsePriceUnit(text){
+    if (!text) return null;
+    const parts = String(text).split('/');
+    return parts.length > 1 ? parts[1].trim().toLowerCase() : null;
+  }
+
+  // Renders one metric row as a bar (like the login page's live-comparison widget) when
+  // every chosen model has a comparable numeric value for it, otherwise falls back to
+  // plain text. Bars are only meaningful within a single modality — "Context window"
+  // means token count for an LLM but "20 seconds max" for Video, so mixed-modality
+  // comparisons always render as text.
+  function compareMetricCells(chosen, values, sameModality){
+    const numeric = sameModality && values.every(v => v != null && !Number.isNaN(v));
+    if (!numeric) {
+      return chosen.map((m, i) => `<td>${escapeHtml(m.displayValue(i))}</td>`).join('');
+    }
+    const max = Math.max(...values) || 1;
+    return chosen.map((m, i) => {
+      const width = Math.max(8, Math.round(values[i] / max * 100));
+      const color = COMPARE_BAR_COLORS[i % COMPARE_BAR_COLORS.length];
+      return `<td><span class="compare-value">${escapeHtml(m.displayValue(i))}</span><div class="compare-bar"><div class="compare-bar-fill ${color}" style="width:${width}%"></div></div></td>`;
+    }).join('');
+  }
+
   function renderCompare(){
     const chosen = compareSelection.map(id => MODELS.find(m => m.id === id)).filter(Boolean);
     document.getElementById('compare-title').textContent = chosen.length
@@ -1569,24 +1607,41 @@
         '<tr><td class="note" style="border:none;">Add 2–3 models from the catalog first.</td></tr>';
       return;
     }
-    const rows = [
-      ['Provider', m => m.provider],
-      ['Modality', m => m.mod],
-      // Always pulled from the model's own latency/context fields rather than the previous
-      // s1/v1 pair — that borrowed its row *label* from chosen[0] but its row *value* from
-      // every column, so comparing e.g. a Voice model against an LLM mislabeled the LLM's
-      // context-window value as "Latency".
-      ['Latency', m => m.latency ? `~${m.latency}ms` : '—'],
-      ['Context window', m => m.context || '—'],
-      ['Price', m => m.v2],
-      ['Use cases', m => m.tags || '—'],
-      ['Description', m => m.description || '—']
-    ];
+
+    const sameModality = chosen.every(m => m.mod === chosen[0].mod);
     const head = `<tr><th>Spec</th>${chosen.map(m => `<th>${escapeHtml(m.name)}</th>`).join('')}</tr>`;
-    const body = rows.map(([label, get]) =>
-      `<tr><td class="metric">${escapeHtml(label)}</td>${chosen.map(m => `<td>${escapeHtml(get(m))}</td>`).join('')}</tr>`
-    ).join('');
-    document.getElementById('compare-table').innerHTML = head + body;
+
+    const providerRow = `<tr><td class="metric">Provider</td>${chosen.map(m => `<td>${escapeHtml(m.provider)}</td>`).join('')}</tr>`;
+    const modalityRow = `<tr><td class="metric">Modality</td>${chosen.map(m => `<td>${escapeHtml(m.mod)}</td>`).join('')}</tr>`;
+
+    const latencyValues = chosen.map(m => m.latency || null);
+    const latencyRow = `<tr><td class="metric">Latency</td>${compareMetricCells(
+      chosen.map((m, i) => ({...m, displayValue: () => latencyValues[i] ? `~${latencyValues[i]}ms` : '—'})),
+      latencyValues,
+      sameModality
+    )}</tr>`;
+
+    const contextValues = chosen.map(m => parseTokenCount(m.context));
+    const contextRow = `<tr><td class="metric">Context window</td>${compareMetricCells(
+      chosen.map((m, i) => ({...m, displayValue: () => m.context || '—'})),
+      contextValues,
+      sameModality
+    )}</tr>`;
+
+    const priceUnits = chosen.map(m => parsePriceUnit(m.v2));
+    const priceComparable = sameModality && priceUnits.every(u => u && u === priceUnits[0]);
+    const priceValues = chosen.map(m => parsePriceValue(m.v2));
+    const priceRow = `<tr><td class="metric">Price</td>${compareMetricCells(
+      chosen.map((m, i) => ({...m, displayValue: () => m.v2 || '—'})),
+      priceValues,
+      priceComparable
+    )}</tr>`;
+
+    const useCasesRow = `<tr><td class="metric">Use cases</td>${chosen.map(m => `<td>${escapeHtml(m.tags || '—')}</td>`).join('')}</tr>`;
+    const descriptionRow = `<tr><td class="metric">Description</td>${chosen.map(m => `<td>${escapeHtml(m.description || '—')}</td>`).join('')}</tr>`;
+
+    document.getElementById('compare-table').innerHTML =
+      head + providerRow + modalityRow + latencyRow + contextRow + priceRow + useCasesRow + descriptionRow;
   }
 
   function updateTrayVisibility(){
