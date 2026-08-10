@@ -16,9 +16,10 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      # A cold boot runs seed_data.py before Uvicorn even starts (see render.yaml), which
-      # pushes wake-up past 30s — the old timeout here fired before the wake finished, so
-      # this ping never landed and the instance never actually got pinned warm. 90s covers
-      # a cold boot; once warm, real responses land in well under a second.
+      # A cold boot runs seed_data.py before Uvicorn even starts (see render.yaml), and since
+      # the move to Neon Postgres that step now also pays Neon's own free-tier autosuspend
+      # wake latency on top of Render's ~30-60s spin-up — the two cold starts can stack past
+      # 90s, which was tuned for Render's spin-up alone. 150s covers both; once warm, real
+      # responses land in well under a second.
       - name: Ping /health
-        run: curl -fsS --max-time 90 https://trailmind.onrender.com/health
+        run: curl -fsS --max-time 150 https://trailmind.onrender.com/health
