@@ -1,3 +1,6 @@
+from collections.abc import Iterator
+
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -7,6 +10,27 @@ from app.security import hash_password
 
 
 client = TestClient(app)
+
+# This module hits the real app.asgi singleton (real .env DATABASE_URL), not an
+# isolated per-test db — see app/asgi.py and tests/conftest.py for why. Every email
+# these tests create/log in as must be listed here so the autouse fixture can delete
+# the rows afterward; otherwise they pile up in the real database forever, one set
+# per pytest run.
+_HANDSHAKE_TEST_EMAILS = (
+    "handshake-catalog@test.dev",
+    "handshake-admin@test.dev",
+    "route-user@test.dev",
+)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _cleanup_handshake_users() -> Iterator[None]:
+    yield
+    with app.state.session_factory() as session:
+        session.execute(
+            User.__table__.delete().where(User.email.in_(_HANDSHAKE_TEST_EMAILS))
+        )
+        session.commit()
 
 
 def test_health_endpoint() -> None:
