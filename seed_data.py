@@ -1424,14 +1424,11 @@ SEED_MODELS = [
 ]
 
 
-def main() -> None:
-    settings = Settings()
-    session_factory = build_session_factory(settings)
-    vector_store = ModelVectorStore(
-        settings.chroma_db_path,
-        collection_name=settings.chroma_collection_name,
-        embedding_function=build_embedding_function(settings),
-    )
+def seed_demo_data(session_factory, vector_store) -> None:
+    """Upserts the demo admin/engineer accounts and the seed catalog. Split out from
+    `main()` so app/main.py's lifespan can run this against the app's own already-built
+    session_factory/vector_store as a background task on boot, instead of this script
+    gating uvicorn's startup as a separate blocking process step."""
     admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@trailmind.dev").lower()
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
     engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@trailmind.dev").lower()
@@ -1480,6 +1477,17 @@ def main() -> None:
     print(f"Seeded Curator account: {admin_email}")
     print(f"Seeded AI-engineer account: {engineer_email}")
     print(f"Seeded {len(SEED_MODELS)} models into SQL and Chroma")
+
+
+def main() -> None:
+    settings = Settings()
+    session_factory = build_session_factory(settings)
+    vector_store = ModelVectorStore(
+        settings.chroma_db_path,
+        collection_name=settings.chroma_collection_name,
+        embedding_function=build_embedding_function(settings),
+    )
+    seed_demo_data(session_factory, vector_store)
 
 
 if __name__ == "__main__":

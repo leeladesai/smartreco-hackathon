@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import timezone
 from pathlib import Path
@@ -82,6 +83,7 @@ from app.services.observability import (
 )
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
+from seed_data import seed_demo_data
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -155,9 +157,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         replace_existing=True,
     )
 
+    def run_seed() -> None:
+        try:
+            seed_demo_data(session_factory, vector_store)
+        except Exception:
+            # Best-effort: demo accounts/catalog staying stale (or briefly missing)
+            # on a slow/unreachable DB is far better than taking the whole service
+            # down for it — request handlers below still work against whatever's
+            # already in the DB. Logged so a broken seed doesn't go unnoticed.
+            logging.exception("Background seed_demo_data failed")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         scheduler.start()
+        # Fire-and-forget, not awaited: uvicorn should start accepting requests
+        # (including /health) immediately rather than waiting on this — see
+        # seed_demo_data's docstring for why it used to block startup entirely.
+        app.state.seed_task = asyncio.create_task(asyncio.to_thread(run_seed))
         try:
             yield
         finally:

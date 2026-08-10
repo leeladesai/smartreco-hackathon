@@ -24,9 +24,13 @@ services:
     runtime: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    # seed_data.py is idempotent (upserts by email/title, never duplicates) — safe to
-    # run on every boot, not just the first one.
-    startCommand: "python seed_data.py && uvicorn app.asgi:app --host 0.0.0.0 --port $PORT"
+    # Seeding (idempotent — upserts by email/title, never duplicates) runs as a
+    # background task inside the app's own startup (see app/main.py's lifespan),
+    # not as a blocking step here. It used to be `python seed_data.py && uvicorn ...`,
+    # but that meant a stalled DB connection during seeding (e.g. Neon waking from
+    # autosuspend) blocked uvicorn from ever binding the port — taking /health down
+    # with it even though /health itself never touches the DB.
+    startCommand: "uvicorn app.asgi:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

@@ -49,10 +49,16 @@ def _add_missing_columns(engine) -> None:
 
 
 def build_session_factory(settings: Settings) -> sessionmaker[Session]:
+    # Postgres gets a bounded connect_timeout so a stalled TCP handshake (e.g. Neon's
+    # free-tier compute waking from autosuspend, or a transient network hiccup) fails
+    # fast instead of hanging on the OS-level default — which can run well past any
+    # sane request timeout and, since this factory is built synchronously at app
+    # startup, was blocking the whole service (including /health) from ever binding
+    # its port.
     connect_args = (
         {"check_same_thread": False}
         if settings.database_url.startswith("sqlite")
-        else {}
+        else {"connect_timeout": 10}
     )
     engine = create_engine(settings.database_url, connect_args=connect_args)
     Base.metadata.create_all(engine)
