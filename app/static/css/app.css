@@ -569,6 +569,12 @@
   .compare-bar-fill{height:100%; border-radius:3px;}
   .compare-bar-fill.cyan{background:var(--cyan);}
   .compare-bar-fill.amber{background:var(--amber);}
+  .compare-bar-fill.violet{background:var(--violet);}
+
+  /* Same .compare-value/.compare-bar markup reused inside the Compare screen's table
+     cells (table.compare td), not just the login widget's div layout. */
+  table.compare td .compare-value{margin-bottom:6px;}
+  table.compare td .compare-bar{min-width:80px;}
 
   .category-pills{display:flex; flex-wrap:wrap; gap:8px;}
   .pill{
