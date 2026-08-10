@@ -1,16 +1,17 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# Deploys TrailMind as a single web service. No separate frontend/DB/vector-DB
-# services: SQLite and Chroma both live as local files on this service's own disk,
-# matching how the app already runs locally (app/config.py's defaults).
+# Deploys TrailMind as a single web service, backed by a Neon Postgres database
+# (DATABASE_URL below) plus a local Chroma vector store on this service's own disk —
+# see the free-plan note below for why the split.
 #
 # Free plan note: Render's free web services have an EPHEMERAL filesystem — every
-# redeploy (and some restarts) wipes trailmind.db and chroma_data/ back to empty.
-# startCommand re-runs seed_data.py on every boot specifically so the demo catalog and
-# demo accounts always come back, even on a fresh/wiped disk. Anything a judge does
-# beyond that (new registrations, new catalog uploads) will NOT survive a redeploy
-# unless you attach a persistent Disk (see the commented `disk:` block below — Disks
-# require a paid instance type, not available on the Free plan).
+# redeploy (and some restarts) wipes local files back to empty. DATABASE_URL below
+# points at Neon Postgres specifically so the data that actually matters (user
+# accounts, catalog, events, recommendations) survives that — see the DATABASE_URL
+# entry for how to set it. chroma_data/ (the vector store) is left on local ephemeral
+# disk on purpose: it's just a semantic-search index derived from the catalog, cheap
+# to rebuild, and startCommand's seed_data.py already reseeds it (and the demo
+# catalog/accounts) on every boot regardless.
 #
 # Free plan also note: the service spins down after ~15 min of no traffic and takes
 # ~30-60s to wake on the next request — the first hit after idle will be slow. It also
@@ -37,6 +38,13 @@ services:
       # the local-dev default stays False so http://localhost keeps working unchanged.
       - key: SESSION_COOKIE_SECURE
         value: "true"
+      # Neon Postgres pooled connection string (postgresql://user:pass@ep-xxxx-pooler.
+      # region.aws.neon.tech/dbname?sslmode=require) — pooled, not direct, since Render
+      # makes short-lived connections per request. Falls back to local SQLite
+      # (app/config.py) if unset, which is fine for local dev but NOT for this
+      # deployment (see the free-plan note above for why).
+      - key: DATABASE_URL
+        sync: false
       # --- Secrets: set these in the Render dashboard after the blueprint is created,
       # never commit real values here. `sync: false` means "required, but not stored
       # in this file" — Render will prompt for each on first deploy. ---
@@ -74,17 +82,16 @@ services:
       # default with zero manual step. Only set this explicitly if you attach a custom
       # domain and want the email to link there instead of the onrender.com URL.
 
-    # Persistent disk (optional, requires a paid instance type — uncomment and set
-    # `plan:` above to `starter` or higher to use this). Without it, trailmind.db and
-    # chroma_data/ are ephemeral (see the free-plan note above).
+    # Persistent disk for chroma_data/ too (optional, requires a paid instance type —
+    # uncomment and set `plan:` above to `starter` or higher). Without it, the vector
+    # store stays ephemeral and reseeds from the (now-persistent) Postgres catalog on
+    # every boot, which is intentionally fine — see the free-plan note above.
     # disk:
     #   name: trailmind-data
     #   mountPath: /var/data
     #   sizeGB: 1
-    # With the disk mounted, also uncomment these two so the DB/vector store live on
-    # it instead of the ephemeral app directory:
+    # With the disk mounted, also uncomment this so the vector store lives on it
+    # instead of the ephemeral app directory:
     # envVars (add to the list above):
-    #   - key: DATABASE_URL
-    #     value: sqlite:////var/data/trailmind.db
     #   - key: CHROMA_DB_PATH
     #     value: /var/data/chroma_data
