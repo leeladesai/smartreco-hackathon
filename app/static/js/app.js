@@ -1883,14 +1883,20 @@
   // to wire up the single screen that was actually server-rendered — this replaces the part
   // of the old go() that used to also handle in-DOM page switching.
   async function initPage(page){
-    await loadModels(); // ensures MODELS is populated before any page that reads it below —
-                         // needed now that a direct load of e.g. /models/42 can't rely on the
-                         // catalog page having already warmed MODELS earlier in the session
-    loadDemoMode();
+    // Nav chrome depends only on `page`, never on the catalog — set it before the
+    // await below so the header/nav-links appear immediately even when /api/models is
+    // slow (e.g. a cold Render/Neon backend), instead of staying display:none for the
+    // whole round trip while the catalog (populated by its own separate, un-awaited
+    // loadModels() call at script load) can already be visible.
     const state = navStateFor(page);
     document.getElementById('app-nav').dataset.state = state;
     document.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.dataset.page === page));
     updateTrayVisibility();
+
+    await loadModels(); // ensures MODELS is populated before any page that reads it below —
+                         // needed now that a direct load of e.g. /models/42 can't rely on the
+                         // catalog page having already warmed MODELS earlier in the session
+    loadDemoMode();
     if (page === 'detail') {
       const modelId = window.INITIAL_MODEL_ID != null ? String(window.INITIAL_MODEL_ID) : selectedModelId;
       selectedModelId = modelId;
