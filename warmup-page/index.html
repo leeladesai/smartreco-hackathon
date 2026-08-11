@@ -5,158 +5,170 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TrailMind — starting up</title>
 <style>
-  :root {
-    --bg: #0b0b0f;
-    --panel: #131318;
-    --border: #23232b;
-    --text: #e8e8ee;
-    --muted: #7c7c8a;
-    --accent: #8b5cf6;
-    --accent-dim: #4c3a86;
-    --ok: #34d399;
+  :root{
+    --bg:#12151c;
+    --panel:#1a1f29;
+    --panel-2:#1f2530;
+    --line:#2b3240;
+    --line-soft:#232a36;
+    --text:#eceff3;
+    --muted:#8b93a3;
+    --muted-2:#5c6472;
+    --amber:#e8a33d;
+    --amber-dim:#e8a33d33;
+    --cyan:#5ec8d8;
+    --mono: ui-monospace, "SF Mono", "IBM Plex Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
   }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0;
-    height: 100%;
-    background: var(--bg);
-    color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    background-image: radial-gradient(circle at 1px 1px, var(--line-soft) 1px, transparent 1px);
+    background-size: 28px 28px;
+    min-height:100vh;
+    display:flex; align-items:center; justify-content:center;
+    padding:24px;
   }
-  body {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
+  .card{
+    width:100%; max-width:560px;
+    border:1px solid var(--line); background:var(--panel);
+    border-radius:14px; padding:40px 36px;
   }
-  .card {
-    width: 100%;
-    max-width: 560px;
-    border: 1px solid var(--border);
-    background: var(--panel);
-    border-radius: 12px;
-    padding: 36px 32px;
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--muted-2); margin:0 0 10px;
   }
-  .brand {
-    font-size: 14px;
-    letter-spacing: 0.08em;
-    color: var(--muted);
-    text-transform: uppercase;
-    margin-bottom: 4px;
+  h1{
+    font-size:25px; line-height:1.32; font-weight:650; letter-spacing:-.01em;
+    margin:0 0 12px;
   }
-  h1 {
-    font-size: 22px;
-    margin: 0 0 20px;
-    font-weight: 600;
+  .sub{
+    font-size:14px; color:var(--muted); line-height:1.55; margin:0 0 30px;
+    max-width:46ch;
   }
-  .spinner {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid var(--accent-dim);
-    border-top-color: var(--accent);
-    animation: spin 0.8s linear infinite;
-    display: inline-block;
-    vertical-align: middle;
-    margin-right: 10px;
+  .row{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.03em; text-transform:uppercase;
+    color:var(--muted); margin-bottom:6px;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .status-line {
-    display: flex;
-    align-items: center;
-    font-size: 15px;
-    margin-bottom: 22px;
-    min-height: 22px;
+  .row .metric{ color:var(--text); font-size:12px; text-transform:none; letter-spacing:0; }
+  .bar-track{
+    height:7px; border-radius:4px; background:var(--panel-2);
+    border:1px solid var(--line-soft); overflow:hidden; margin-bottom:22px;
   }
-  .status-line.ready .spinner { display: none; }
-  .status-line.ready::before {
-    content: "✓";
-    color: var(--ok);
-    margin-right: 10px;
-    font-weight: bold;
+  .bar-fill{
+    height:100%; width:4%; border-radius:4px;
+    background:var(--amber);
+    transition:width .5s ease, background .4s ease;
   }
-  .log {
-    font-size: 12.5px;
-    color: var(--muted);
-    line-height: 1.9;
-    border-top: 1px solid var(--border);
-    padding-top: 16px;
+  .bar-fill.ready{ background:var(--cyan); }
+  .bar-fill.reference{ width:96%; background:var(--cyan); opacity:.55; }
+  .status{
+    display:flex; align-items:center; gap:10px;
+    font-size:14px; color:var(--text);
+    padding-top:18px; margin-top:4px; border-top:1px solid var(--line-soft);
   }
-  .log div span.t { color: #4a4a58; margin-right: 10px; }
-  .hint {
-    margin-top: 22px;
-    font-size: 12.5px;
-    color: var(--muted);
+  .dot{
+    width:7px; height:7px; border-radius:50%; background:var(--amber);
+    animation:pulse 1.1s ease-in-out infinite;
+    flex:none;
   }
-  .hint a { color: var(--accent); text-decoration: none; }
-  .hint a:hover { text-decoration: underline; }
-  progress {
-    width: 100%;
-    height: 4px;
-    -webkit-appearance: none;
-    appearance: none;
-    border: none;
-    border-radius: 2px;
-    overflow: hidden;
-    margin-bottom: 22px;
+  .status.ready .dot{ background:var(--cyan); animation:none; }
+  @keyframes pulse{
+    0%,100%{ opacity:1; transform:scale(1); }
+    50%{ opacity:.35; transform:scale(.72); }
   }
-  progress::-webkit-progress-bar { background: var(--border); }
-  progress::-webkit-progress-value { background: var(--accent); transition: width 0.4s ease; }
-  progress::-moz-progress-bar { background: var(--accent); }
+  .facts{
+    display:flex; gap:18px; flex-wrap:wrap;
+    font-family:var(--mono); font-size:11px; color:var(--muted-2);
+    margin-top:26px; padding-top:20px; border-top:1px dashed var(--line-soft);
+  }
+  .facts b{ color:var(--muted); font-weight:600; }
+  .hint{
+    margin-top:22px; font-size:12px; color:var(--muted-2); line-height:1.6;
+  }
+  .hint a{ color:var(--amber); text-decoration:none; font-family:var(--mono); }
+  .hint a:hover{ text-decoration:underline; }
+  @media (prefers-reduced-motion: reduce){
+    .dot{ animation:none; }
+    .bar-fill{ transition:none; }
+  }
 </style>
 </head>
 <body>
   <div class="card">
-    <div class="brand">TrailMind</div>
-    <h1>Getting the app ready for you</h1>
-    <progress id="bar" max="100" value="5"></progress>
-    <div class="status-line" id="statusLine">
-      <span class="spinner"></span>
-      <span id="statusText">Waking up the backend&hellip;</span>
+    <p class="eyebrow">TrailMind · Model catalog</p>
+    <h1>The slowest model in the catalog right now is this app.</h1>
+    <p class="sub">
+      TrailMind compares AI models by real spec — latency, price, context window —
+      not marketing pages. Right now it's demonstrating its own latency the hard way:
+      the instance napped from inactivity and is stretching awake.
+    </p>
+
+    <div class="row"><span>This instance</span><span class="metric" id="elapsed">0s awake</span></div>
+    <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
+
+    <div class="row"><span>Warm &amp; ready</span><span class="metric">&lt;200ms</span></div>
+    <div class="bar-track"><div class="bar-fill reference"></div></div>
+
+    <div class="status" id="status">
+      <span class="dot"></span>
+      <span id="statusText">Waking the backend&hellip;</span>
     </div>
-    <div class="log" id="log"></div>
-    <div class="hint">
-      Free-tier hosting spins the app down after inactivity, so first load can take
-      up to a minute. You'll be redirected automatically —
-      or <a id="skipLink" href="#">go there now</a>.
+
+    <div class="facts">
+      <span><b>100</b> models tracked</span>
+      <span><b>6</b> categories</span>
+      <span>Live behavioral recommendations</span>
     </div>
+
+    <p class="hint">
+      First load after a break can take a little while — you'll be dropped straight
+      into TrailMind once it's up, or <a id="skipLink" href="#">open it now</a>.
+    </p>
   </div>
 
 <script>
-  // Where the real app lives once it's awake.
   var APP_URL = "https://trailmind.onrender.com";
   var HEALTH_URL = APP_URL + "/health";
   var POLL_INTERVAL_MS = 2000;
   var REQUEST_TIMEOUT_MS = 6000;
 
-  var messages = [
-    "Waking up the backend…",
-    "Still warming up — hang tight…",
-    "Almost there, spinning up the server…",
-    "This can take up to a minute on first load…",
-    "Just a little longer…"
+  var phases = [
+    { after: 0,  text: "Waking the backend…" },
+    { after: 8,  text: "Instance is starting up…" },
+    { after: 20, text: "Almost there…" },
+    { after: 40, text: "Still going — this one's just slow to rise…" }
   ];
 
-  var statusText = document.getElementById("statusText");
-  var statusLine = document.getElementById("statusLine");
   var bar = document.getElementById("bar");
-  var log = document.getElementById("log");
+  var elapsedEl = document.getElementById("elapsed");
+  var statusEl = document.getElementById("status");
+  var statusText = document.getElementById("statusText");
   var skipLink = document.getElementById("skipLink");
   skipLink.href = APP_URL;
 
-  var attempt = 0;
   var startedAt = Date.now();
+  var ready = false;
 
-  function logLine(text) {
-    var row = document.createElement("div");
-    var t = document.createElement("span");
-    t.className = "t";
-    var elapsed = Math.round((Date.now() - startedAt) / 1000);
-    t.textContent = "+" + elapsed + "s";
-    row.appendChild(t);
-    row.appendChild(document.createTextNode(text));
-    log.appendChild(row);
-    log.scrollTop = log.scrollHeight;
+  function currentPhaseText(elapsedSeconds) {
+    var text = phases[0].text;
+    for (var i = 0; i < phases.length; i++) {
+      if (elapsedSeconds >= phases[i].after) text = phases[i].text;
+    }
+    return text;
+  }
+
+  function tick() {
+    if (ready) return;
+    var elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    elapsedEl.textContent = elapsedSeconds + "s awake";
+    statusText.textContent = currentPhaseText(elapsedSeconds);
+    // Asymptotic growth so the bar keeps creeping forward without ever
+    // visually "finishing" before the health check actually succeeds.
+    var pct = Math.min(92, 4 + 88 * (1 - Math.exp(-elapsedSeconds / 18)));
+    bar.style.width = pct + "%";
   }
 
   function fetchWithTimeout(url, ms) {
@@ -167,35 +179,23 @@
   }
 
   function markReady() {
-    statusLine.classList.add("ready");
-    statusText.textContent = "App is ready — redirecting…";
-    bar.value = 100;
-    logLine("Health check passed. Redirecting to the app.");
-    setTimeout(function () { window.location.href = APP_URL; }, 600);
+    ready = true;
+    bar.classList.add("ready");
+    bar.style.width = "100%";
+    statusEl.classList.add("ready");
+    statusText.textContent = "Ready — opening TrailMind…";
+    setTimeout(function () { window.location.href = APP_URL; }, 500);
   }
 
   function poll() {
-    attempt += 1;
-    statusText.textContent = messages[Math.min(attempt - 1, messages.length - 1)];
-    bar.value = Math.min(90, 5 + attempt * 8);
-    logLine("Checking backend status (attempt " + attempt + ")…");
-
+    if (ready) return;
     fetchWithTimeout(HEALTH_URL, REQUEST_TIMEOUT_MS)
-      .then(function (res) {
-        if (res.ok) {
-          logLine("Backend responded (HTTP " + res.status + ").");
-          markReady();
-        } else {
-          logLine("Backend responded with HTTP " + res.status + ", still waking up.");
-          setTimeout(poll, POLL_INTERVAL_MS);
-        }
-      })
-      .catch(function () {
-        logLine("No response yet (instance still starting).");
-        setTimeout(poll, POLL_INTERVAL_MS);
-      });
+      .then(function (res) { if (res.ok) markReady(); else setTimeout(poll, POLL_INTERVAL_MS); })
+      .catch(function () { setTimeout(poll, POLL_INTERVAL_MS); });
   }
 
+  setInterval(tick, 1000);
+  tick();
   poll();
 </script>
 </body>
