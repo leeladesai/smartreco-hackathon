@@ -13,7 +13,8 @@ Originally built for the Krish Naik Hackathon 2026.
 
 ## Live demo
 
-**[trailmind.onrender.com](https://trailmind.onrender.com)**
+**[trailmind-eta.vercel.app](https://trailmind-eta.vercel.app)** — use this link, not the
+`onrender.com` one directly.
 
 | Role | Email | Password |
 |---|---|---|
@@ -22,8 +23,10 @@ Originally built for the Krish Naik Hackathon 2026.
 AI engineers aren't seeded with a shared demo login — use the **Register** tab on the login page to
 create your own account.
 
-Hosted on Render's free tier, which spins the service down after ~15 minutes idle — the first hit
-after idle can take 30–60s to wake up.
+The app is hosted on Render's free tier, which spins the service down after ~15 minutes idle — the
+first hit after idle can take 30–60s to wake up. The Vercel link above is a lightweight warm-up page
+(see `warmup-page/`) that pings the backend and auto-redirects once it's awake, so judges land on a
+clear loading state instead of Render's own generic boot screen.
 
 ---
 
