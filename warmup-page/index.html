@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TrailMind — starting up</title>
+<style>
+  :root {
+    --bg: #0b0b0f;
+    --panel: #131318;
+    --border: #23232b;
+    --text: #e8e8ee;
+    --muted: #7c7c8a;
+    --accent: #8b5cf6;
+    --accent-dim: #4c3a86;
+    --ok: #34d399;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 560px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 36px 32px;
+  }
+  .brand {
+    font-size: 14px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0 0 20px;
+    font-weight: 600;
+  }
+  .spinner {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-dim);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 10px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status-line {
+    display: flex;
+    align-items: center;
+    font-size: 15px;
+    margin-bottom: 22px;
+    min-height: 22px;
+  }
+  .status-line.ready .spinner { display: none; }
+  .status-line.ready::before {
+    content: "✓";
+    color: var(--ok);
+    margin-right: 10px;
+    font-weight: bold;
+  }
+  .log {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.9;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+  .log div span.t { color: #4a4a58; margin-right: 10px; }
+  .hint {
+    margin-top: 22px;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .hint a { color: var(--accent); text-decoration: none; }
+  .hint a:hover { text-decoration: underline; }
+  progress {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    border: none;
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 22px;
+  }
+  progress::-webkit-progress-bar { background: var(--border); }
+  progress::-webkit-progress-value { background: var(--accent); transition: width 0.4s ease; }
+  progress::-moz-progress-bar { background: var(--accent); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">TrailMind</div>
+    <h1>Getting the app ready for you</h1>
+    <progress id="bar" max="100" value="5"></progress>
+    <div class="status-line" id="statusLine">
+      <span class="spinner"></span>
+      <span id="statusText">Waking up the backend&hellip;</span>
+    </div>
+    <div class="log" id="log"></div>
+    <div class="hint">
+      Free-tier hosting spins the app down after inactivity, so first load can take
+      up to a minute. You'll be redirected automatically —
+      or <a id="skipLink" href="#">go there now</a>.
+    </div>
+  </div>
+
+<script>
+  // Where the real app lives once it's awake.
+  var APP_URL = "https://trailmind.onrender.com";
+  var HEALTH_URL = APP_URL + "/health";
+  var POLL_INTERVAL_MS = 2000;
+  var REQUEST_TIMEOUT_MS = 6000;
+
+  var messages = [
+    "Waking up the backend…",
+    "Still warming up — hang tight…",
+    "Almost there, spinning up the server…",
+    "This can take up to a minute on first load…",
+    "Just a little longer…"
+  ];
+
+  var statusText = document.getElementById("statusText");
+  var statusLine = document.getElementById("statusLine");
+  var bar = document.getElementById("bar");
+  var log = document.getElementById("log");
+  var skipLink = document.getElementById("skipLink");
+  skipLink.href = APP_URL;
+
+  var attempt = 0;
+  var startedAt = Date.now();
+
+  function logLine(text) {
+    var row = document.createElement("div");
+    var t = document.createElement("span");
+    t.className = "t";
+    var elapsed = Math.round((Date.now() - startedAt) / 1000);
+    t.textContent = "+" + elapsed + "s";
+    row.appendChild(t);
+    row.appendChild(document.createTextNode(text));
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function fetchWithTimeout(url, ms) {
+    var controller = new AbortController();
+    var id = setTimeout(function () { controller.abort(); }, ms);
+    return fetch(url, { signal: controller.signal, cache: "no-store" })
+      .finally(function () { clearTimeout(id); });
+  }
+
+  function markReady() {
+    statusLine.classList.add("ready");
+    statusText.textContent = "App is ready — redirecting…";
+    bar.value = 100;
+    logLine("Health check passed. Redirecting to the app.");
+    setTimeout(function () { window.location.href = APP_URL; }, 600);
+  }
+
+  function poll() {
+    attempt += 1;
+    statusText.textContent = messages[Math.min(attempt - 1, messages.length - 1)];
+    bar.value = Math.min(90, 5 + attempt * 8);
+    logLine("Checking backend status (attempt " + attempt + ")…");
+
+    fetchWithTimeout(HEALTH_URL, REQUEST_TIMEOUT_MS)
+      .then(function (res) {
+        if (res.ok) {
+          logLine("Backend responded (HTTP " + res.status + ").");
+          markReady();
+        } else {
+          logLine("Backend responded with HTTP " + res.status + ", still waking up.");
+          setTimeout(poll, POLL_INTERVAL_MS);
+        }
+      })
+      .catch(function () {
+        logLine("No response yet (instance still starting).");
+        setTimeout(poll, POLL_INTERVAL_MS);
+      });
+  }
+
+  poll();
+</script>
+</body>
+</html>
