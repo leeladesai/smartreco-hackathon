@@ -304,7 +304,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render_admin_page(request, "admin-users", "users.html")
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
+    async def health(response: Response) -> dict[str, str]:
+        # Allows the standalone Vercel warm-up page (see warmup-page/) to poll this
+        # cross-origin while the Render free-tier instance wakes from sleep.
+        response.headers["Access-Control-Allow-Origin"] = "*"
         return {"status": "ok", "service": "trailmind"}
 
     @app.post(
