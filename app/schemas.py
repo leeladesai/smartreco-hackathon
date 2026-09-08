@@ -57,3 +57,23 @@ class BulkImportResponse(BaseModel):
     skipped_duplicate: int
     invalid: int
     rows: list[BulkImportRowResult]
+
+
+class TrackEventInput(BaseModel):
+    event_type: str = Field(
+        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
+        "|model_copy|model_watchlist|recommendation_feedback)$"
+    )
+    model_id: int | None = None
+    metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class TrackEventBatch(BaseModel):
+    # The tenant key travels in the body, not a header — navigator.sendBeacon (used
+    # for the on-unload flush, app/static/js/tracker.js) can't set custom headers, so
+    # a header-only scheme would silently lose every beacon-flushed batch.
+    tenant_key: str = Field(min_length=1)
+    visitor_id: str = Field(min_length=1, max_length=64)
+    events: list[TrackEventInput] = Field(min_length=1, max_length=100)

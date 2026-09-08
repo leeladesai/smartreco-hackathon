@@ -8,16 +8,14 @@
       <p class="page-sub">Recent recommendation-pipeline runs, pulled live from LangSmith — no separate LangSmith login needed.</p>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
-      <select id="observability-user-filter" onchange="observabilityFilterByUser()">
-        <option value="">All users</option>
-      </select>
+      <input type="text" id="observability-visitor-filter" placeholder="Filter by visitor id…" onchange="observabilityFilterByVisitor()">
       <button class="btn" type="button" onclick="refreshObservability()">Refresh</button>
     </div>
   </div>
   <div class="stat-row" id="cost-rollup"></div>
   <div id="observability-unavailable" class="empty-state" style="display:none;"></div>
   <table class="admin-table" id="observability-table-wrap">
-    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>User</th><th title="Sum of our own pipeline steps only — excludes LangGraph/tracing overhead.">Pipeline time</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
+    <thead><tr><th>Status</th><th>Run</th><th>Started</th><th>Visitor</th><th title="Sum of our own pipeline steps only — excludes LangGraph/tracing overhead.">Pipeline time</th><th title="Total wall time including LangGraph/tracing overhead — open a run for the pure pipeline latency.">Wall time*</th><th>Error</th></tr></thead>
     <tbody id="observability-run-table"></tbody>
   </table>
   <div class="pagination" id="observability-pagination">

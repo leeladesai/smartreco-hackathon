@@ -117,7 +117,7 @@ def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id="personal-chat")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -145,7 +145,7 @@ def test_telegram_notifier_falls_back_to_shared_chat_id(monkeypatch) -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -160,7 +160,7 @@ def test_telegram_notifier_raises_without_any_chat_id() -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id=None)
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -204,7 +204,7 @@ def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
         session.add(
             Event(
                 tenant_id=tenant.id,
-                user_id=with_history.id,
+                visitor_id=str(with_history.id),
                 event_type="search",
                 metadata_json={"query": "voice"},
             )
@@ -241,7 +241,7 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=str(user.id),
                 narrative="You'll like this.",
                 model_ids=[],
                 behavior_summary="prior activity",
@@ -278,7 +278,7 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=str(user.id),
                 narrative="hi",
                 model_ids=[],
                 behavior_summary="s",
@@ -320,7 +320,7 @@ def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) ->
         session.commit()
         recommendation = Recommendation(
             tenant_id=tenant.id,
-            user_id=1,
+            visitor_id="v1",
             model_ids=[model.id],
             retrieval_meta=[
                 {"model_id": model.id, "reason": "great fit", "distance": 0.2}
@@ -348,7 +348,7 @@ def test_recommendation_models_skips_ids_with_no_matching_row(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         recommendation = Recommendation(
-            user_id=1,
+            visitor_id="v1",
             model_ids=[999],
             behavior_summary="s",
             activity_hash="h",
@@ -406,7 +406,7 @@ def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> 
     )
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[1],
         narrative=encode_narrative(
             "You've been comparing low-latency voice models.",
@@ -460,7 +460,7 @@ def test_email_notifier_omits_cta_link_when_app_url_unset(monkeypatch) -> None:
     )
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         narrative="hi",
         behavior_summary="s",

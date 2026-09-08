@@ -1,11 +1,12 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -16,6 +17,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,12 +26,13 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, User
+from app.models import Event, Model, Recommendation, Tenant, User
 from app.schemas import (
     AuthCredentials,
     BulkImportResponse,
     ModelCreate,
     ModelResponse,
+    TrackEventBatch,
     UserResponse,
 )
 from app.security import (
@@ -53,15 +56,28 @@ from app.services.catalog_import import (
     import_catalog_rows,
     parse_catalog_file,
 )
-from app.services.agent_graph import STRONG_RETRIEVAL_DISTANCE, WEAK_RETRIEVAL_DISTANCE
+from app.services.agent_graph import (
+    STRONG_RETRIEVAL_DISTANCE,
+    WEAK_RETRIEVAL_DISTANCE,
+    contextual_reason,
+    prepare_retrieval_recommendation,
+)
 from app.services.digest import build_notifier
-from app.services.recommendation import mesh_cost_rollup
+from app.services.recommendation import (
+    activity_summary,
+    mesh_cost_rollup,
+    recent_events,
+    session_evidence,
+    should_trigger,
+    tenant_rate_limited,
+)
 from app.services.mesh import MeshNarrativeGenerator
 from app.services.observability import (
     ObservabilityUnavailable,
     fetch_recent_runs,
     fetch_run_detail,
 )
+from app.services.tenants import resolve_tenant_by_api_key
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
 from seed_data import seed_demo_data
@@ -156,6 +172,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.pipeline_locks = {}
     app.state.pipeline_locks_guard = asyncio.Lock()
+    # Permissive at the CORSMiddleware layer on purpose — the tracker SDK runs on
+    # arbitrary tenant domains we can't enumerate in advance, and per-tenant origin
+    # scoping (`Tenant.allowed_origins`) is checked inside the handler instead (see
+    # POST /api/track/events below). CORS itself is a browser-only, spoofable
+    # convenience; the tenant API key is the real boundary
+    # (docs/design/09-Platform-Pivot-Decision.md §5).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
     app.mount(
         "/static",
         StaticFiles(directory=PROJECT_ROOT / "app" / "static"),
@@ -407,7 +435,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def observability_runs(
         limit: int = Query(default=25, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
-        user_id: int | None = Query(default=None),
+        visitor_id: str | None = Query(default=None),
         _: User = Depends(current_admin),
     ) -> dict[str, object]:
         """OBS-2: surfaces recent agent-pipeline traces inside the admin portal
@@ -417,7 +445,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         already does that."""
         try:
             runs, has_more = fetch_recent_runs(
-                app_settings, limit=limit, offset=offset, user_id=user_id
+                app_settings, limit=limit, offset=offset, visitor_id=visitor_id
             )
         except ObservabilityUnavailable as exc:
             return {
@@ -441,7 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else None,
                     "latency_ms": run.latency_ms,
                     "pipeline_latency_ms": run.pipeline_latency_ms,
-                    "user_id": run.user_id,
+                    "visitor_id": run.visitor_id,
                     "error": run.error,
                     "url": run.url,
                 }
@@ -569,14 +597,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             user = session.get(User, user_id)
             if not user or user.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="User not found")
-            # No ORM cascade is configured for Event/Recommendation.user_id (plain FK
-            # columns, not relationships) and SQLite doesn't enforce FKs by default —
-            # deleting the row alone would leave that user's behavioral history and
-            # past recommendations orphaned rather than actually gone.
-            session.query(Event).filter(Event.user_id == user_id).delete()
-            session.query(Recommendation).filter(
-                Recommendation.user_id == user_id
-            ).delete()
+            # Admin accounts (User rows) are no longer linked to Event/Recommendation
+            # at all — those are keyed by anonymous visitor_id, not a User's id — so
+            # there's nothing left to cascade-clean here (see the visitor_id rename,
+            # docs/design/09-Platform-Pivot-Decision.md).
             session.delete(user)
             session.commit()
 
@@ -611,5 +635,227 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for row in rollup["recent"]
             ],
         }
+
+    def _origin_allowed(tenant: Tenant, request: Request) -> bool:
+        """Soft, browser-only defense (docs/design/09-Platform-Pivot-Decision.md §5)
+        — an empty `allowed_origins` (no tenant-onboarding UI exists yet to set it,
+        see TEN-1) means "not configured", so every origin is allowed rather than
+        every request being rejected. A non-browser client can always spoof
+        `Origin`/`Referer`; the tenant key is the real boundary, this only stops the
+        most naive cross-site misuse from a real browser."""
+        if not tenant.allowed_origins:
+            return True
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        return any(origin.startswith(allowed) for allowed in tenant.allowed_origins)
+
+    async def _get_visitor_lock(tenant_id: int, visitor_id: str) -> asyncio.Lock:
+        key = (tenant_id, visitor_id)
+        async with app.state.pipeline_locks_guard:
+            lock = app.state.pipeline_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                app.state.pipeline_locks[key] = lock
+            return lock
+
+    async def run_tracker_pipeline_in_background(
+        tenant_id: int, visitor_id: str
+    ) -> None:
+        """Same shape/reasoning as the retired cookie-session
+        run_pipeline_in_background (NFR-1: keep the Mesh round trip off the ingestion
+        request path; per-(tenant, visitor) asyncio.Lock to prevent a duplicate
+        Recommendation row from two near-simultaneous qualifying batches)."""
+        lock = await _get_visitor_lock(tenant_id, visitor_id)
+        async with lock:
+            with session_factory() as session:
+                await asyncio.to_thread(
+                    prepare_retrieval_recommendation,
+                    session,
+                    vector_store,
+                    tenant_id,
+                    visitor_id,
+                    app.state.mesh_generator,
+                )
+
+    # No explicit OPTIONS handler needed: CORSMiddleware intercepts and answers every
+    # preflight request itself, before it ever reaches route dispatch.
+    @app.post("/api/track/events")
+    async def track_events(
+        batch: TrackEventBatch,
+        background_tasks: BackgroundTasks,
+        request: Request,
+    ) -> dict[str, object]:
+        """TRK-4: the tracker SDK's ingestion endpoint. Authenticated by tenant API
+        key (`tenant_key`, travels in the body — see TrackEventBatch), not a cookie
+        session; identity is an anonymous, client-generated `visitor_id`, not a
+        `User` row."""
+        with session_factory() as session:
+            tenant = resolve_tenant_by_api_key(session, batch.tenant_key)
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Invalid tenant key")
+            if not _origin_allowed(tenant, request):
+                raise HTTPException(status_code=403, detail="Origin not allowed")
+
+            # A model_id that doesn't belong to this tenant is dropped rather than
+            # stored — an event referencing another tenant's catalog item id must
+            # never let that item's title/modality leak into this visitor's behavior
+            # summary later (TEN-3/NFR-8).
+            model_ids = {event.model_id for event in batch.events if event.model_id}
+            valid_model_ids = (
+                set(
+                    session.scalars(
+                        select(Model.id).where(
+                            Model.id.in_(model_ids), Model.tenant_id == tenant.id
+                        )
+                    ).all()
+                )
+                if model_ids
+                else set()
+            )
+            events = [
+                Event(
+                    tenant_id=tenant.id,
+                    visitor_id=batch.visitor_id,
+                    event_type=event.event_type,
+                    model_id=event.model_id
+                    if event.model_id in valid_model_ids
+                    else None,
+                    metadata_json=event.metadata,
+                )
+                for event in batch.events
+            ]
+            session.add_all(events)
+            if tenant.first_event_at is None:
+                # Client-side timestamp, not an Event's own server-generated
+                # created_at — that column is a server_default (func.now()), so it's
+                # not populated on the Python object until after commit/refresh.
+                tenant.first_event_at = datetime.utcnow()
+            session.commit()
+
+            triggered = should_trigger(session, tenant.id, batch.visitor_id)
+            if triggered and tenant_rate_limited(session, tenant):
+                # TEN-6: the tenant-aggregate ceiling wins over an individually
+                # qualifying visitor — see tenant_rate_limited's docstring for why a
+                # per-visitor check alone isn't enough (the key is public).
+                triggered = False
+            if triggered:
+                lock = app.state.pipeline_locks.get((tenant.id, batch.visitor_id))
+                if lock is not None and lock.locked():
+                    triggered = False
+        if triggered:
+            background_tasks.add_task(
+                run_tracker_pipeline_in_background, tenant.id, batch.visitor_id
+            )
+        return {
+            "accepted": len(events),
+            "recommendation_triggered": triggered,
+        }
+
+    @app.get("/api/recommendations/latest")
+    async def latest_recommendation_for_visitor(
+        tenant_key: str = Query(...),
+        visitor_id: str = Query(...),
+    ) -> dict[str, object]:
+        """Read fallback for when no real-time push connection is open (the widget
+        phase's `GET /api/widget/stream` doesn't exist yet) — same tenant-key
+        authentication as ingestion, no separate widget-session mechanism yet."""
+        with session_factory() as session:
+            tenant = resolve_tenant_by_api_key(session, tenant_key)
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Invalid tenant key")
+
+            latest = session.scalar(
+                select(Recommendation)
+                .where(
+                    Recommendation.tenant_id == tenant.id,
+                    Recommendation.visitor_id == visitor_id,
+                )
+                .order_by(Recommendation.created_at.desc())
+            )
+            current_events = recent_events(session, tenant.id, visitor_id)
+            evidence = session_evidence(session, tenant.id, current_events)
+            evidence_payload = [
+                {
+                    "label": item["label"],
+                    "action": item["action"],
+                    "created_at": as_utc(item["created_at"]),
+                }
+                for item in evidence
+            ]
+
+            if latest:
+                models = session.scalars(
+                    select(Model).where(
+                        Model.id.in_(latest.model_ids), Model.tenant_id == tenant.id
+                    )
+                ).all()
+                models_by_id = {model.id: model for model in models}
+                reason_by_id = {
+                    entry["model_id"]: entry["reason"]
+                    for entry in latest.retrieval_meta or []
+                }
+                return {
+                    "id": latest.id,
+                    "status": "ready" if latest.narrative else "retrieval_ready",
+                    "narrative": latest.narrative,
+                    "models": [
+                        {
+                            **model_response(models_by_id[model_id]).model_dump(
+                                mode="json"
+                            ),
+                            "why_this": reason_by_id.get(model_id),
+                        }
+                        for model_id in latest.model_ids
+                        if model_id in models_by_id
+                    ],
+                    "behavior_summary": latest.behavior_summary,
+                    "activity_hash": latest.activity_hash,
+                    "trigger_reason": latest.trigger_reason,
+                    "created_at": as_utc(latest.created_at),
+                    "evidence": evidence_payload,
+                }
+            if not current_events:
+                return {
+                    "status": "pending",
+                    "narrative": None,
+                    "models": [],
+                    "evidence": [],
+                }
+
+            summary = activity_summary(session, tenant.id, current_events)
+            scored = vector_store.query_scored(summary, tenant.id)
+            if not scored:
+                return {
+                    "status": "pending",
+                    "narrative": None,
+                    "models": [],
+                    "trigger_reason": "no_retrieval_candidates",
+                    "evidence": evidence_payload,
+                }
+            candidate_ids = [model_id for model_id, _ in scored]
+            models_by_id = {
+                model.id: model
+                for model in session.scalars(
+                    select(Model).where(
+                        Model.id.in_(candidate_ids), Model.tenant_id == tenant.id
+                    )
+                ).all()
+            }
+            candidates = [
+                {
+                    **model_response(models_by_id[model_id]).model_dump(mode="json"),
+                    "why_this": contextual_reason(
+                        models_by_id[model_id], distance, False, evidence
+                    ),
+                }
+                for model_id, distance in scored
+                if model_id in models_by_id
+            ]
+            return {
+                "status": "retrieval_ready",
+                "narrative": None,
+                "models": candidates,
+                "trigger_reason": "activity_retrieval",
+                "evidence": evidence_payload,
+            }
 
     return app

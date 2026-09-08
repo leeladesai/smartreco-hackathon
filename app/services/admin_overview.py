@@ -70,14 +70,13 @@ def feedback_sentiment(session: Session, tenant_id: int) -> dict[str, int]:
 def recent_activity(
     session: Session, tenant_id: int, limit: int = 20, offset: int = 0
 ) -> tuple[list[dict], bool]:
-    """The admin-wide "live activity" feed — every user's events, newest first.
-    Distinct from GET /api/activity/me, which is deliberately scoped to the signed-in
-    user's own history; this is the curator's cross-user view. Returns
-    `(page, has_more)`, `has_more` computed by requesting one extra row rather than a
-    separate COUNT query."""
+    """The admin-wide "live activity" feed — every visitor's events for this tenant,
+    newest first. Visitors are anonymous tracker-assigned ids, not `User` rows, so
+    there's no account/email to join against — the raw `visitor_id` is the identity
+    shown. Returns `(page, has_more)`, `has_more` computed by requesting one extra row
+    rather than a separate COUNT query."""
     rows = session.execute(
-        select(Event, User.email)
-        .join(User, Event.user_id == User.id)
+        select(Event)
         .where(Event.tenant_id == tenant_id)
         .order_by(Event.created_at.desc(), Event.id.desc())
         .offset(offset)
@@ -89,14 +88,13 @@ def recent_activity(
         [
             {
                 "id": event.id,
-                "user_id": event.user_id,
-                "user_email": email,
+                "visitor_id": event.visitor_id,
                 "event_type": event.event_type,
                 "model_id": event.model_id,
                 "metadata": event.metadata_json,
                 "created_at": event.created_at,
             }
-            for event, email in page
+            for (event,) in page
         ],
         has_more,
     )

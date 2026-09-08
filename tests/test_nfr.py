@@ -7,8 +7,7 @@ endpoint then, scoped to tenant+visitor ingestion instead of a logged-in user.
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Tenant, User
-from app.security import hash_password
+from app.models import Event, Model, Tenant
 from app.services.agent_graph import prepare_retrieval_recommendation
 
 
@@ -36,12 +35,7 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="nfr2@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-nfr2"
         model = Model(
             tenant_id=tenant.id,
             title="Eventually Found",
@@ -51,12 +45,12 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add(model)
         session.commit()
         session.add(
             Event(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": "test"},
             )
@@ -93,7 +87,7 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
         store = RetryForcingStore()
         mesh = CountingMeshGenerator()
         recommendation = prepare_retrieval_recommendation(
-            session, store, tenant.id, user.id, mesh
+            session, store, tenant.id, visitor_id, mesh
         )
 
         assert store.calls == 3, "expected the initial attempt plus 2 bounded retries"

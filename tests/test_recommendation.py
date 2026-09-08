@@ -4,8 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant, User
-from app.security import hash_password
+from app.models import Event, Model, Recommendation, Tenant
 from app.services.recommendation import (
     SESSION_COOLDOWN,
     SESSION_GAP,
@@ -39,12 +38,7 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="evidence@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-evidence"
         old_model = Model(
             tenant_id=tenant.id,
             title="Old Model",
@@ -63,7 +57,7 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, old_model, new_model])
+        session.add_all([old_model, new_model])
         session.commit()
 
         now = datetime.utcnow()
@@ -72,7 +66,7 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
                 # Older session, well outside SESSION_GAP of the events below.
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=old_model.id,
                     metadata_json={},
@@ -81,7 +75,7 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
                 # Current session.
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=new_model.id,
                     metadata_json={},
@@ -103,12 +97,7 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="dedupe@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-dedupe"
         model = Model(
             tenant_id=tenant.id,
             title="Cartesia Sonic",
@@ -118,7 +107,7 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add(model)
         session.commit()
 
         now = datetime.utcnow()
@@ -126,14 +115,14 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "multilingual"},
                     created_at=now - timedelta(minutes=2),
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=model.id,
                     metadata_json={},
@@ -141,7 +130,7 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=model.id,
                     metadata_json={},
@@ -159,18 +148,13 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
         assert evidence[1]["label"] == '"multilingual"'
 
 
-def _make_user_with_events(session, tenant_id, email, event_count=2):
-    user = User(
-        tenant_id=tenant_id, email=email, password_hash=hash_password("x"), role="user"
-    )
-    session.add(user)
-    session.commit()
+def _make_visitor_with_events(session, tenant_id, visitor_id, event_count=2):
     now = datetime.utcnow()
     session.add_all(
         [
             Event(
                 tenant_id=tenant_id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": f"query {i}"},
                 created_at=now - timedelta(seconds=event_count - i),
@@ -179,27 +163,27 @@ def _make_user_with_events(session, tenant_id, email, event_count=2):
         ]
     )
     session.commit()
-    return user
+    return visitor_id
 
 
 def test_should_trigger_false_below_session_threshold(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = _make_user_with_events(
-            session, tenant.id, "below@test.dev", event_count=1
+        visitor_id = _make_visitor_with_events(
+            session, tenant.id, "v-below", event_count=1
         )
-        assert should_trigger(session, tenant.id, user.id) is False
+        assert should_trigger(session, tenant.id, visitor_id) is False
 
 
 def test_should_trigger_true_with_no_prior_recommendation(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = _make_user_with_events(
-            session, tenant.id, "fresh@test.dev", event_count=2
+        visitor_id = _make_visitor_with_events(
+            session, tenant.id, "v-fresh", event_count=2
         )
-        assert should_trigger(session, tenant.id, user.id) is True
+        assert should_trigger(session, tenant.id, visitor_id) is True
 
 
 def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
@@ -211,18 +195,18 @@ def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = _make_user_with_events(
-            session, tenant.id, "unchanged@test.dev", event_count=2
+        visitor_id = _make_visitor_with_events(
+            session, tenant.id, "v-unchanged", event_count=2
         )
         events = list(
             session.query(Event)
-            .filter(Event.user_id == user.id)
+            .filter(Event.visitor_id == visitor_id)
             .order_by(Event.created_at.desc())
         )
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 model_ids=[],
                 behavior_summary="",
                 activity_hash=activity_hash(events),
@@ -231,7 +215,7 @@ def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
         )
         session.commit()
 
-        assert should_trigger(session, tenant.id, user.id) is False
+        assert should_trigger(session, tenant.id, visitor_id) is False
 
 
 def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
@@ -240,13 +224,13 @@ def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = _make_user_with_events(
-            session, tenant.id, "changed@test.dev", event_count=2
+        visitor_id = _make_visitor_with_events(
+            session, tenant.id, "v-changed", event_count=2
         )
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 model_ids=[],
                 behavior_summary="",
                 activity_hash="a-different-hash-entirely",
@@ -256,7 +240,7 @@ def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
         )
         session.commit()
 
-        assert should_trigger(session, tenant.id, user.id) is True
+        assert should_trigger(session, tenant.id, visitor_id) is True
 
 
 def test_is_recommendation_stale_true_with_no_prior_recommendation() -> None:
@@ -265,11 +249,11 @@ def test_is_recommendation_stale_true_with_no_prior_recommendation() -> None:
 
 def test_is_recommendation_stale_false_on_matching_hash() -> None:
     event = Event(
-        tenant_id=1, user_id=1, event_type="search", metadata_json={"query": "x"}
+        tenant_id=1, visitor_id="v1", event_type="search", metadata_json={"query": "x"}
     )
     recommendation = Recommendation(
         tenant_id=1,
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="",
         activity_hash=activity_hash([event]),
@@ -283,14 +267,14 @@ def test_is_recommendation_stale_false_within_cooldown_same_session() -> None:
     now = datetime.utcnow()
     event = Event(
         tenant_id=1,
-        user_id=1,
+        visitor_id="v1",
         event_type="search",
         metadata_json={"query": "x"},
         created_at=now,
     )
     recommendation = Recommendation(
         tenant_id=1,
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="",
         activity_hash="different-hash",
@@ -304,14 +288,14 @@ def test_is_recommendation_stale_true_once_cooldown_expires() -> None:
     now = datetime.utcnow()
     event = Event(
         tenant_id=1,
-        user_id=1,
+        visitor_id="v1",
         event_type="search",
         metadata_json={"query": "x"},
         created_at=now,
     )
     recommendation = Recommendation(
         tenant_id=1,
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="",
         activity_hash="different-hash",
@@ -325,29 +309,22 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="feedback@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
+        visitor_id = "v-feedback"
         now = datetime.utcnow()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="recommendation_feedback",
                     model_id=1,
                     metadata_json={"rating": "up", "recommendation_id": 10},
                     created_at=now - timedelta(minutes=5),
                 ),
-                # User changed their mind about model 1 — the newer "down" must win.
+                # Visitor changed their mind about model 1 — the newer "down" must win.
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="recommendation_feedback",
                     model_id=1,
                     metadata_json={"rating": "down", "recommendation_id": 11},
@@ -355,7 +332,7 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="recommendation_feedback",
                     model_id=2,
                     metadata_json={"rating": "up", "recommendation_id": 11},
@@ -364,7 +341,7 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
                 # Not feedback — must not pollute the result.
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=3,
                     metadata_json={},
@@ -374,7 +351,7 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
         )
         session.commit()
 
-        feedback = recent_feedback_by_model(session, tenant.id, user.id)
+        feedback = recent_feedback_by_model(session, tenant.id, visitor_id)
         assert feedback == {
             1: FeedbackRecord(rating="down", context_query=""),
             2: FeedbackRecord(rating="up", context_query=""),
@@ -387,17 +364,10 @@ def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendat
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="context@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
+        visitor_id = "v-context"
         recommendation = Recommendation(
             tenant_id=tenant.id,
-            user_id=user.id,
+            visitor_id=visitor_id,
             model_ids=[1],
             behavior_summary="rack based server model",
             activity_hash="hash-1",
@@ -408,7 +378,7 @@ def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendat
         session.add(
             Event(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 event_type="recommendation_feedback",
                 model_id=1,
                 metadata_json={
@@ -420,7 +390,7 @@ def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendat
         )
         session.commit()
 
-        feedback = recent_feedback_by_model(session, tenant.id, user.id)
+        feedback = recent_feedback_by_model(session, tenant.id, visitor_id)
         assert feedback == {
             1: FeedbackRecord(rating="down", context_query="rack based server model")
         }
@@ -430,18 +400,11 @@ def test_recent_feedback_by_model_ignores_stale_feedback(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="stale@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
+        visitor_id = "v-stale"
         session.add(
             Event(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 event_type="recommendation_feedback",
                 model_id=1,
                 metadata_json={"rating": "down"},
@@ -450,26 +413,19 @@ def test_recent_feedback_by_model_ignores_stale_feedback(tmp_path) -> None:
         )
         session.commit()
 
-        assert recent_feedback_by_model(session, tenant.id, user.id) == {}
+        assert recent_feedback_by_model(session, tenant.id, visitor_id) == {}
 
 
 def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="cost@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
+        visitor_id = "v-cost"
         session.add_all(
             [
                 Recommendation(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     model_ids=[],
                     behavior_summary="",
                     activity_hash="hash-1",
@@ -481,7 +437,7 @@ def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) ->
                 ),
                 Recommendation(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     model_ids=[],
                     behavior_summary="",
                     activity_hash="hash-2",
@@ -494,7 +450,7 @@ def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) ->
                 # Retrieval-only (no Mesh call) — must not be counted or averaged in.
                 Recommendation(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     model_ids=[],
                     behavior_summary="",
                     activity_hash="hash-3",

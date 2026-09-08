@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app.models import Event, User
+from app.models import User
 from app.security import create_session_token, hash_password
 
 
@@ -198,18 +198,8 @@ def test_non_admin_and_anonymous_cannot_list_users(client: TestClient) -> None:
     assert response.status_code == 403
 
 
-def test_admin_can_delete_a_user_and_their_activity(client: TestClient) -> None:
+def test_admin_can_delete_a_user(client: TestClient) -> None:
     target = _make_user(client, "deleteme@test.dev")
-    with client.app.state.session_factory() as session:
-        session.add(
-            Event(
-                tenant_id=1,
-                user_id=target.id,
-                event_type="search",
-                metadata_json={"query": "voice"},
-            )
-        )
-        session.commit()
 
     client.post(
         "/api/admin/login",
@@ -220,7 +210,6 @@ def test_admin_can_delete_a_user_and_their_activity(client: TestClient) -> None:
 
     with client.app.state.session_factory() as session:
         assert session.get(User, target.id) is None
-        assert session.query(Event).filter(Event.user_id == target.id).count() == 0
 
     emails = {u["email"] for u in client.get("/api/admin/users").json()["users"]}
     assert "deleteme@test.dev" not in emails

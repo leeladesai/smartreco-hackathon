@@ -42,6 +42,7 @@ def _add_missing_columns(engine) -> None:
                 "mesh_completion_tokens": "INTEGER",
                 "mesh_cost_usd": "FLOAT",
                 "tenant_id": "INTEGER",
+                "visitor_id": "VARCHAR(64)",
             },
         )
 
@@ -54,7 +55,20 @@ def _add_missing_columns(engine) -> None:
         )
 
     if "events" in table_names:
-        _add_columns_if_missing(engine, inspector, "events", {"tenant_id": "INTEGER"})
+        _add_columns_if_missing(
+            engine,
+            inspector,
+            "events",
+            {"tenant_id": "INTEGER", "visitor_id": "VARCHAR(64)"},
+        )
+
+    if "tenants" in table_names:
+        # TIMESTAMP, not SQLite's own DATETIME spelling — this ALTER TABLE runs
+        # against Postgres too (see test_handshake.py, which hits the real
+        # DATABASE_URL), and Postgres has no DATETIME type.
+        _add_columns_if_missing(
+            engine, inspector, "tenants", {"first_event_at": "TIMESTAMP"}
+        )
 
 
 def build_session_factory(settings: Settings) -> sessionmaker[Session]:

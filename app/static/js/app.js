@@ -216,7 +216,7 @@
         const when = new Date(event.created_at).toLocaleString();
         return `
           <tr>
-            <td>${escapeHtml(event.user_email)}</td>
+            <td>${escapeHtml(event.visitor_id)}</td>
             <td class="log-type" style="background:var(--amber-dim); color:var(--amber); display:inline-block;">${escapeHtml(event.event_type)}</td>
             <td>${escapeHtml(detail)}</td>
             <td>${escapeHtml(when)}</td>
@@ -357,37 +357,17 @@
   const OBSERVABILITY_PAGE_SIZE = 25;
   let observabilityOffset = 0;
   let observabilityHasMore = false;
-  let observabilityUserFilter = '';
-  let observabilityUsersById = {}; // populated alongside the filter dropdown, reused to show a real email instead of a bare id in the table's User column
+  let observabilityVisitorFilter = '';
 
-  // Populates the "All users" dropdown from the same admin users list already used on
-  // /admin/users — every agent_pipeline run is tagged user:<id> at trace time
-  // (prepare_retrieval_recommendation), so filtering here is a real server-side
-  // LangSmith query, not a client-side filter over an already-fetched run list.
-  async function loadObservabilityUserFilter(){
-    if (!adminSession) return;
-    const select = document.getElementById('observability-user-filter');
-    if (!select) return;
-    try {
-      const response = await fetch(`${API_BASE}/api/admin/users`);
-      if (redirectIfSignedOut(response)) return;
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      const users = data.users;
-      observabilityUsersById = Object.fromEntries(users.map(user => [String(user.id), user.email]));
-      const previousValue = select.value;
-      select.innerHTML = '<option value="">All users</option>' + users.map(user =>
-        `<option value="${user.id}">${escapeHtml(user.email)}</option>`
-      ).join('');
-      select.value = previousValue;
-    } catch (error) {
-      // Leave just "All users" if the list can't load — not fatal to the page.
-    }
-  }
-
-  function observabilityFilterByUser(){
-    const select = document.getElementById('observability-user-filter');
-    observabilityUserFilter = select ? select.value : '';
+  // Every agent_pipeline run is tagged visitor:<id> at trace time
+  // (prepare_retrieval_recommendation) — filtering by a typed-in visitor id is a real
+  // server-side LangSmith query, not a client-side filter over an already-fetched run
+  // list. There's no "list of visitors" endpoint to populate a dropdown from (visitors
+  // are anonymous tracker-assigned ids, not registered accounts), so this is a plain
+  // text field rather than a select.
+  function observabilityFilterByVisitor(){
+    const input = document.getElementById('observability-visitor-filter');
+    observabilityVisitorFilter = input ? input.value.trim() : '';
     observabilityOffset = 0;
     loadObservability();
   }
@@ -406,8 +386,8 @@
     unavailableBox.style.display = 'none';
     tableWrap.style.display = '';
     try {
-      const userParam = observabilityUserFilter ? `&user_id=${encodeURIComponent(observabilityUserFilter)}` : '';
-      const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}${userParam}`);
+      const visitorParam = observabilityVisitorFilter ? `&visitor_id=${encodeURIComponent(observabilityVisitorFilter)}` : '';
+      const response = await fetch(`${API_BASE}/api/admin/observability/runs?limit=${OBSERVABILITY_PAGE_SIZE}&offset=${observabilityOffset}${visitorParam}`);
       if (redirectIfSignedOut(response)) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
@@ -431,8 +411,8 @@
       if (!data.runs.length) {
         const emptyMessage = observabilityOffset > 0
           ? 'No more runs.'
-          : observabilityUserFilter
-            ? 'No pipeline runs yet for this user.'
+          : observabilityVisitorFilter
+            ? 'No pipeline runs yet for this visitor.'
             : 'No pipeline runs yet.';
         tbody.innerHTML = `<tr><td colspan="7">${emptyMessage}</td></tr>`;
         return;
@@ -442,15 +422,13 @@
         const started = run.start_time ? new Date(run.start_time).toLocaleString() : '—';
         const pipelineTime = run.pipeline_latency_ms != null ? `${Math.round(run.pipeline_latency_ms)}ms` : '—';
         const wallTime = run.latency_ms != null ? `${Math.round(run.latency_ms)}ms` : '—';
-        const userLabel = run.user_id != null
-          ? escapeHtml(observabilityUsersById[String(run.user_id)] || `user:${run.user_id}`)
-          : '—';
+        const visitorLabel = run.visitor_id != null ? escapeHtml(run.visitor_id) : '—';
         return `
           <tr class="clickable" onclick="openTraceDrawer('${run.id}')" title="View step-by-step trace">
             <td class="${ok ? 'sync-ok' : 'sync-error'}">${ok ? '✓ ' + escapeHtml(run.status) : '✕ ' + escapeHtml(run.status)}</td>
             <td>${escapeHtml(run.name)}</td>
             <td>${escapeHtml(started)}</td>
-            <td>${userLabel}</td>
+            <td>${visitorLabel}</td>
             <td>${pipelineTime}</td>
             <td>${wallTime}</td>
             <td>${run.error ? escapeHtml(run.error) : '—'}</td>
@@ -734,7 +712,7 @@
     document.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.dataset.page === page));
 
     await loadModels();
-    if (page === 'observability') { loadObservabilityUserFilter().then(loadObservability); loadCostRollup(); }
+    if (page === 'observability') { loadObservability(); loadCostRollup(); }
     if (page === 'admin-users') loadUsers();
     if (page === 'admin-overview') { loadOverview(); loadOverviewActivity(); }
     window.scrollTo({top:0, behavior:'instant'});

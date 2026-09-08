@@ -38,7 +38,7 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
             tenant_id=tenant.id,
             email="u@test.dev",
             password_hash=hash_password("x"),
-            role="user",
+            role="admin",
         )
         model = Model(
             tenant_id=tenant.id,
@@ -55,14 +55,14 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="page_view",
                     metadata_json={},
                 ),
                 # Generated (has a narrative) — counts.
                 Recommendation(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     narrative="hi",
                     model_ids=[],
                     behavior_summary="s",
@@ -73,7 +73,7 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
                 # "generated".
                 Recommendation(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     narrative=None,
                     model_ids=[],
                     behavior_summary="s",
@@ -92,31 +92,23 @@ def test_event_type_counts_groups_by_type(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="u@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="page_view",
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="page_view",
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="search",
                     metadata_json={},
                 ),
@@ -131,38 +123,30 @@ def test_feedback_sentiment_counts_up_and_down_ignoring_other_events(tmp_path) -
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="u@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "up"},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "up"},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "down"},
                 ),
                 # Not feedback — must not pollute the count.
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="model_view",
                     metadata_json={},
                 ),
@@ -173,36 +157,22 @@ def test_feedback_sentiment_counts_up_and_down_ignoring_other_events(tmp_path) -
         assert feedback_sentiment(session, tenant.id) == {"up": 2, "down": 1}
 
 
-def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
+def test_recent_activity_includes_visitor_id_newest_first(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user_a = User(
-            tenant_id=tenant.id,
-            email="a@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        user_b = User(
-            tenant_id=tenant.id,
-            email="b@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add_all([user_a, user_b])
-        session.commit()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user_a.id,
+                    visitor_id="v-a",
                     event_type="page_view",
                     metadata_json={},
                     created_at=datetime(2026, 8, 8, 12, 0, 0),
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user_b.id,
+                    visitor_id="v-b",
                     event_type="search",
                     metadata_json={"query": "voice"},
                     created_at=datetime(2026, 8, 8, 12, 5, 0),
@@ -212,7 +182,7 @@ def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
         session.commit()
 
         events, has_more = recent_activity(session, tenant.id, limit=10)
-        assert [e["user_email"] for e in events] == ["b@test.dev", "a@test.dev"]
+        assert [e["visitor_id"] for e in events] == ["v-b", "v-a"]
         assert events[0]["event_type"] == "search"
         assert events[0]["metadata"] == {"query": "voice"}
         assert has_more is False
@@ -222,19 +192,11 @@ def test_recent_activity_respects_limit(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="u@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id="v1",
                     event_type="page_view",
                     metadata_json={},
                 )
@@ -277,12 +239,11 @@ def test_admin_overview_endpoint_requires_admin(client: TestClient) -> None:
 
 
 def test_admin_overview_endpoint_returns_real_aggregates(client: TestClient) -> None:
-    user = _make_non_admin(client, "overview-user@test.dev")
     with client.app.state.session_factory() as session:
         session.add(
             Event(
                 tenant_id=1,
-                user_id=user.id,
+                visitor_id="v-overview",
                 event_type="search",
                 metadata_json={"query": "voice"},
             )
@@ -303,7 +264,7 @@ def test_admin_overview_endpoint_returns_real_aggregates(client: TestClient) -> 
     activity_response = client.get("/api/admin/overview/activity")
     assert activity_response.status_code == 200
     events = activity_response.json()["events"]
-    assert any(e["user_email"] == "overview-user@test.dev" for e in events)
+    assert any(e["visitor_id"] == "v-overview" for e in events)
 
 
 def test_admin_page_at_root_serves_overview_and_models_moved_to_subpath(

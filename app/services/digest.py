@@ -198,21 +198,28 @@ def run_digest(
     mesh_generator,
     notifier: Notifier,
 ) -> dict[str, int]:
-    """Runs the agent pipeline for every AI-engineer user
-    (trigger_reason=scheduled_digest, subject to the same AGT-6 hash-dedupe/cooldown as
-    an event-triggered run — cheap and correct since the digest cadence is far coarser
-    than the 15-minute cooldown), then
-    delivers whatever the latest stored recommendation is, new or not, so users with a
-    stable recommendation still get their digest."""
+    """Unregistered (DLV-5 bonus is disabled — see app/main.py) and not yet
+    meaningful: it was written for the retired AI-engineer `user` role, where a
+    `User` row was both the tracked identity *and* the email/Telegram delivery
+    target. Tracker-SDK visitors (docs/design/09-Platform-Pivot-Decision.md) have no
+    such row — an anonymous `visitor_id` has no email to deliver to — so there is
+    currently no `User` this can meaningfully iterate. Kept syntactically correct
+    (queries `Recommendation` by `visitor_id`, not the now-removed `user_id`) rather
+    than deleted, since the shape — resolve a recipient, run the pipeline for their
+    identity, deliver the latest recommendation — is exactly what a real
+    visitor-identity-aware digest will need; it just needs a real notion of "who to
+    deliver to" wired in before this does anything.
+    """
     sent = skipped = 0
     with session_factory() as session:
         users = session.scalars(select(User).where(User.role == "user")).all()
         for user in users:
+            visitor_id = str(user.id)
             prepare_retrieval_recommendation(
                 session,
                 vector_store,
                 user.tenant_id,
-                user.id,
+                visitor_id,
                 mesh_generator,
                 trigger_reason="scheduled_digest",
             )
@@ -220,7 +227,7 @@ def run_digest(
                 select(Recommendation)
                 .where(
                     Recommendation.tenant_id == user.tenant_id,
-                    Recommendation.user_id == user.id,
+                    Recommendation.visitor_id == visitor_id,
                 )
                 .order_by(Recommendation.created_at.desc())
             )

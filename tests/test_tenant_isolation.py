@@ -5,10 +5,10 @@ cannot see tenant B's catalog/events/recommendations, and vice versa, through th
 public API rather than by inspecting internals directly.
 
 The event-ingestion cross-tenant model_id guard (dropping a foreign-tenant model_id
-rather than storing it) has no HTTP endpoint to test against right now — POST
-/api/events/batch was removed with the AI-engineer cookie-session surface
-(docs/design/09-Platform-Pivot-Decision.md) and returns with the tracker SDK phase
-(POST /api/track/events); re-add that regression test against the new endpoint then.
+rather than storing it) is covered in tests/test_tracker.py against the tracker SDK's
+own POST /api/track/events, which replaced the old cookie-session
+POST /api/events/batch. This file's own tracker-key test below covers a different
+angle: tenant A's key must never surface tenant B's stored data.
 """
 
 from fastapi.testclient import TestClient
@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 
 from app.models import Model, Tenant, User
 from app.security import hash_password
+from app.services.tenants import create_tenant
 
 
 def _make_second_tenant(client: TestClient) -> Tenant:
@@ -109,3 +110,48 @@ def test_admin_overview_totals_exclude_another_tenants_data(client: TestClient) 
 
     assert totals["users"] == expected_users
     assert totals["models"] == expected_models
+
+
+def test_tracker_key_never_surfaces_another_tenants_recommendation(
+    client: TestClient,
+) -> None:
+    """A visitor_id is just a client-chosen string, not scoped to any tenant on its
+    own — two tenants' visitors could easily collide on the same id (e.g. both using
+    "v-1" from a fresh browser). Isolation must come entirely from the tenant key,
+    not from visitor_id happening to be unique."""
+    with client.app.state.session_factory() as session:
+        tenant_a, key_a = create_tenant(session, "Tenant A")
+        tenant_b, key_b = create_tenant(session, "Tenant B")
+        model_b = Model(
+            tenant_id=tenant_b.id,
+            title="Tenant B Secret Model",
+            provider="P",
+            modality="LLM",
+            price="$0",
+            description="Only for tenant B.",
+            use_case_tags=[],
+        )
+        session.add(model_b)
+        session.commit()
+        model_b_id = model_b.id
+
+    same_visitor_id = "v-shared"
+    client.post(
+        "/api/track/events",
+        json={
+            "tenant_key": key_b,
+            "visitor_id": same_visitor_id,
+            "events": [
+                {"event_type": "model_view", "model_id": model_b_id, "metadata": {}}
+            ],
+        },
+    )
+
+    # Tenant A, querying with the same visitor_id string, must see nothing of
+    # tenant B's — the tenant key is what scopes this, not the visitor_id value.
+    response = client.get(
+        f"/api/recommendations/latest?tenant_key={key_a}&visitor_id={same_visitor_id}"
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    assert response.json()["evidence"] == []

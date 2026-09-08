@@ -31,6 +31,10 @@ class Tenant(Base):
     status: Mapped[str] = mapped_column(String(20), default="active")
     allowed_origins: Mapped[list[str]] = mapped_column(JSON, default=list)
     max_agent_runs_per_hour: Mapped[int] = mapped_column(Integer, default=500)
+    # Set once, on the first successful tracker-SDK ingestion for this tenant (see
+    # POST /api/track/events) — the "tracker verified" half of the TEN-8 widget
+    # readiness gate. Null until then.
+    first_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -98,7 +102,10 @@ class Event(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # An anonymous, tracker-assigned identity (see app/static/js/tracker.js) — not a
+    # User row. The AI-engineer cookie-session `user_id` this replaced was removed
+    # along with that login surface (docs/design/09-Platform-Pivot-Decision.md).
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     event_type: Mapped[str] = mapped_column(String(40))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
@@ -112,7 +119,7 @@ class Recommendation(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     retrieval_meta: Mapped[list[dict]] = mapped_column(JSON, default=list)

@@ -97,7 +97,7 @@ def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
                 return iter([])
             return iter(
                 [
-                    FakeRun("1", "agent_pipeline", "success", tags=["user:7"]),
+                    FakeRun("1", "agent_pipeline", "success", tags=["visitor:v7"]),
                     FakeRun("2", "agent_pipeline", "error", error="Mesh timeout"),
                 ]
             )
@@ -117,10 +117,10 @@ def test_observability_returns_recent_runs(tmp_path, monkeypatch) -> None:
     assert len(body["runs"]) == 2
     assert body["runs"][0]["name"] == "agent_pipeline"
     assert body["runs"][0]["latency_ms"] == 2000
-    assert body["runs"][0]["user_id"] == 7
+    assert body["runs"][0]["visitor_id"] == "v7"
     assert body["runs"][0]["pipeline_latency_ms"] is None
     assert body["runs"][1]["error"] == "Mesh timeout"
-    assert body["runs"][1]["user_id"] is None
+    assert body["runs"][1]["visitor_id"] is None
     assert body["runs"][0]["url"] == "https://smith.langchain.com/fake/1"
 
 
@@ -282,14 +282,14 @@ def test_observability_paginates_runs(tmp_path, monkeypatch) -> None:
     assert body["has_more"] is False
 
 
-def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
+def test_observability_runs_scopes_to_one_visitor_via_native_tag_filter(
     tmp_path, monkeypatch
 ) -> None:
-    """Each agent_pipeline run is tagged user:<id> at trace time
-    (prepare_retrieval_recommendation) — a user_id query param must turn into a real
-    server-side LangSmith filter (has(tags, "user:<id>")), not a client-side filter
-    over the unscoped run list, so this only asserts on what list_runs was actually
-    called with."""
+    """Each agent_pipeline run is tagged visitor:<id> at trace time
+    (prepare_retrieval_recommendation) — a visitor_id query param must turn into a
+    real server-side LangSmith filter (has(tags, "visitor:<id>")), not a client-side
+    filter over the unscoped run list, so this only asserts on what list_runs was
+    actually called with."""
 
     class FakeRun:
         def __init__(self, id_):
@@ -302,7 +302,7 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
             self.start_time = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
             self.end_time = self.start_time + timedelta(seconds=1)
             self.session_id = "fake-session"
-            self.tags = ["user:42"]
+            self.tags = ["visitor:v42"]
 
     captured_calls = []
 
@@ -316,7 +316,7 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
                 return iter(
                     []
                 )  # the bulk pipeline_latency_ms lookup — not under test here
-            return iter([FakeRun("only-this-users-run")])
+            return iter([FakeRun("only-this-visitors-run")])
 
         def get_run_url(self, *, run):
             return f"https://smith.langchain.com/fake/{run.id}"
@@ -327,17 +327,17 @@ def test_observability_runs_scopes_to_one_user_via_native_tag_filter(
 
     admin_client = _admin_client(tmp_path, monkeypatch, langsmith_api_key="fake-key")
 
-    response = admin_client.get("/api/admin/observability/runs?user_id=42")
+    response = admin_client.get("/api/admin/observability/runs?visitor_id=v42")
     assert response.status_code == 200
     root_call = next(
         call for call in captured_calls if call.get("execution_order") == 1
     )
-    assert root_call.get("filter") == 'has(tags, "user:42")'
+    assert root_call.get("filter") == 'has(tags, "visitor:v42")'
     body = response.json()
-    assert [run["id"] for run in body["runs"]] == ["only-this-users-run"]
-    assert body["runs"][0]["user_id"] == 42
+    assert [run["id"] for run in body["runs"]] == ["only-this-visitors-run"]
+    assert body["runs"][0]["visitor_id"] == "v42"
 
-    # Without user_id, no filter is sent at all — the unscoped "all users" view.
+    # Without visitor_id, no filter is sent at all — the unscoped "all visitors" view.
     captured_calls.clear()
     admin_client.get("/api/admin/observability/runs")
     root_call = next(

@@ -91,6 +91,19 @@ the platform's only catalog path.
 Now the embeddable tracker SDK — runs on a host page we don't own, cross-origin, identifying an
 anonymous visitor rather than a logged-in platform user.
 
+**Implementation status:** TRK-1 through TRK-5 and TRK-7 are implemented —
+`app/static/js/tracker.js` (a `<script data-tenant-key="...">` snippet, `window.TrailMind.track()`),
+`POST /api/track/events` (tenant-key-authenticated, CORS via a permissive `CORSMiddleware` plus a
+per-tenant `allowed_origins` soft check inside the handler), `events.visitor_id` replacing the old
+`events.user_id`. Tenant API-key issuance/rotation/resolution (TEN-1/4/5) also landed as part of
+this work, ahead of the tenant-onboarding admin UI that will expose it (`app/services/tenants.py`:
+`create_tenant`, `issue_api_key`, `rotate_api_key`, `revoke_api_key`, `resolve_tenant_by_api_key`) —
+called from a script/shell for now, not a route. TEN-6 (hard per-tenant rate ceiling on
+LLM-triggering runs) is also implemented (`tenant_rate_limited`, checked in the ingestion endpoint).
+TRK-6 (an explicit host-UI "compare" action) has no home yet — it depends on host-side UI this
+platform doesn't render; the schema/event-type support exists (`item_compare` in the same allowlist
+as before), just no host-facing affordance to fire it deliberately.
+
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
 | TRK-1 | Tracker snippet captures page/item views, searches, comparisons, dwell time on the host page | Each event has type, anonymous visitor id, `tenant_id`, optional catalog-item ref, timestamp |

@@ -123,16 +123,25 @@ catalog rows after. Document id = `catalog_items.id` (string), embedding input =
 
 ## 2. API contract
 
-**Implementation status:** this table is the target contract for the full platform. As of the
-tracker-SDK-phase work in progress, the running app has *removed* the AI-engineer routes this table
-never listed as current in the first place (`POST /api/auth/register`, `POST /api/auth/login`,
-`GET /api/auth/me`, `PUT /api/auth/me/telegram-chat-id`, the old cookie-session
-`POST /api/events/batch`, `GET /api/recommendations/me`, `GET /api/activity/me`) — none of the
-tenant/tracker-SDK rows below (`/api/tenants*`, `/api/track/events`, `/api/widget/*`,
-`/api/admin/ingestion/*`) exist yet either. Currently live: `POST /api/admin/login`,
-`GET/POST/PUT/DELETE /api/admin/models*` and `GET /api/models*` (now admin-only pending a public/
-tenant-key catalog surface), `GET /api/admin/{overview,users,observability}*`. See
-`docs/design/09-Platform-Pivot-Decision.md` and the session handoff notes for exactly what's built.
+**Implementation status:** this table is the target contract for the full platform. The running app
+has *removed* the AI-engineer routes this table never listed as current in the first place
+(`POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`,
+`PUT /api/auth/me/telegram-chat-id`, the old cookie-session `POST /api/events/batch`,
+`GET /api/recommendations/me`, `GET /api/activity/me`). Currently live: `POST /api/admin/login`,
+`GET/POST/PUT/DELETE /api/admin/models*` and `GET /api/models*` (still admin-only pending a public/
+tenant-key catalog *browsing* surface — this predates and is unrelated to the tracker key below),
+`GET /api/admin/{overview,users,observability}*`, and — as of the tracker SDK phase — the anonymous
+visitor-tracking path: `POST /api/track/events` (this table's target `POST /api/events/batch`, under
+its actual implemented name and body shape — `{tenant_key, visitor_id, events}`, key in the body so
+`navigator.sendBeacon` can carry it) and `GET /api/recommendations/latest` (implemented as
+`tenant_key`+`visitor_id` query params, not yet the "visitor session (widget)" auth this table
+describes — no widget-session mechanism exists until the chat-bot-widget phase). Tenant API-key
+issuance/rotation/resolution (`create_tenant`/`issue_api_key`/`rotate_api_key`/`revoke_api_key`/
+`resolve_tenant_by_api_key`, `app/services/tenants.py`) and the TEN-6 rate cap
+(`tenant_rate_limited`) are implemented as service functions, called from a script/shell — the
+`/api/tenants*` HTTP endpoints and admin console UI this table shows are not yet built. None of
+`/api/widget/*` or `/api/admin/ingestion/*` exist yet. See `docs/design/09-Platform-Pivot-Decision.md`
+and the session handoff notes for exactly what's built.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|

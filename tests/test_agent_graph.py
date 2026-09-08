@@ -3,8 +3,7 @@ from datetime import datetime
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Tenant, User
-from app.security import hash_password
+from app.models import Event, Model, Tenant
 from app.services.agent_graph import (
     _story_snippet,
     apply_feedback_adjustment,
@@ -54,12 +53,7 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="grade@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-grade"
         weak_model = Model(
             tenant_id=tenant.id,
             title="Weak Match",
@@ -78,27 +72,27 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, weak_model, strong_model])
+        session.add_all([weak_model, strong_model])
         session.commit()
 
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "test"},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=weak_model.id,
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_compare",
                     model_id=weak_model.id,
                     metadata_json={"explicit": True},
@@ -109,7 +103,7 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
 
         fake_store = FakeVectorStore(weak_model.id, strong_model.id)
         recommendation = prepare_retrieval_recommendation(
-            session, fake_store, tenant.id, user.id, mesh_generator=None
+            session, fake_store, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert (
@@ -135,12 +129,7 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="strong@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-strong"
         model = Model(
             tenant_id=tenant.id,
             title="Immediate Match",
@@ -150,13 +139,13 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add(model)
         session.commit()
 
         session.add(
             Event(
                 tenant_id=tenant.id,
-                user_id=user.id,
+                visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": "test"},
             )
@@ -174,7 +163,7 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
                 return [(model.id, 0.4)]
 
         recommendation = prepare_retrieval_recommendation(
-            session, StrongFirstTryStore(), tenant.id, user.id, mesh_generator=None
+            session, StrongFirstTryStore(), tenant.id, visitor_id, mesh_generator=None
         )
 
         assert recommendation is not None
@@ -197,12 +186,7 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="filter@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
+        visitor_id = "v-filter"
         voice_a = Model(
             tenant_id=tenant.id,
             title="Voice A",
@@ -221,21 +205,21 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, voice_a, voice_b])
+        session.add_all([voice_a, voice_b])
         session.commit()
 
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=voice_a.id,
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=voice_b.id,
                     metadata_json={},
@@ -262,7 +246,7 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
 
         store = RecordingStore()
         recommendation = prepare_retrieval_recommendation(
-            session, store, tenant.id, user.id, mesh_generator=None
+            session, store, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert recommendation is not None
@@ -273,32 +257,25 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="empty@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
+        visitor_id = "v-empty"
 
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "a b c d e"},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "f g h"},
                 ),
                 Event(
                     tenant_id=tenant.id,
-                    user_id=user.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "i j k"},
                 ),
@@ -322,7 +299,7 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
 
         empty_store = EmptyVectorStore()
         recommendation = prepare_retrieval_recommendation(
-            session, empty_store, tenant.id, user.id, mesh_generator=None
+            session, empty_store, tenant.id, visitor_id, mesh_generator=None
         )
 
         # Initial attempt + MAX_RETRIES(=2) retries, then give up without storing anything.
@@ -562,8 +539,8 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
     confirmed live that a mesh_generator object passed directly put a real Mesh
     api_key in plaintext into every agent_pipeline trace. session/vector_store/
     mesh_generator must never be parameters of the traced function; only
-    tenant_id/user_id/trigger_reason (safe primitives) may be, and the run must be
-    tagged both user:<id> and tenant:<id>."""
+    tenant_id/visitor_id/trigger_reason (safe primitives) may be, and the run must be
+    tagged both visitor:<id> and tenant:<id>."""
     captured: dict = {}
 
     def fake_traceable(*_args, **kwargs):
@@ -582,16 +559,8 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        user = User(
-            tenant_id=tenant.id,
-            email="secret-check@test.dev",
-            password_hash=hash_password("x"),
-            role="user",
-        )
-        session.add(user)
-        session.commit()
         tenant_id = tenant.id  # captured before the session closes below
-        user_id = user.id
+        visitor_id = "v-secret-check"
 
         class LeakyMeshGenerator:
             enabled = False
@@ -607,12 +576,12 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
             session,
             FakeVectorStore(1, 1),
             tenant_id,
-            user_id,
+            visitor_id,
             mesh_generator=LeakyMeshGenerator(),
         )
 
-    assert captured["params"] == ["tenant_id", "user_id", "trigger_reason"]
+    assert captured["params"] == ["tenant_id", "visitor_id", "trigger_reason"]
     assert "session" not in captured["params"]
     assert "vector_store" not in captured["params"]
     assert "mesh_generator" not in captured["params"]
-    assert captured["tags"] == [f"user:{user_id}", f"tenant:{tenant_id}"]
+    assert captured["tags"] == [f"visitor:{visitor_id}", f"tenant:{tenant_id}"]
