@@ -169,7 +169,10 @@ def _recommendation_models(
     models_by_id = {
         model.id: model
         for model in session.scalars(
-            select(Model).where(Model.id.in_(recommendation.model_ids))
+            select(Model).where(
+                Model.id.in_(recommendation.model_ids),
+                Model.tenant_id == recommendation.tenant_id,
+            )
         ).all()
     }
     reason_by_id = {
@@ -208,13 +211,17 @@ def run_digest(
             prepare_retrieval_recommendation(
                 session,
                 vector_store,
+                user.tenant_id,
                 user.id,
                 mesh_generator,
                 trigger_reason="scheduled_digest",
             )
             latest = session.scalar(
                 select(Recommendation)
-                .where(Recommendation.user_id == user.id)
+                .where(
+                    Recommendation.tenant_id == user.tenant_id,
+                    Recommendation.user_id == user.id,
+                )
                 .order_by(Recommendation.created_at.desc())
             )
             if latest is None:

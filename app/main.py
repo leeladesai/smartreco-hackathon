@@ -81,6 +81,7 @@ from app.services.observability import (
     fetch_recent_runs,
     fetch_run_detail,
 )
+from app.services.tenants import get_or_create_reference_tenant
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
 from seed_data import seed_demo_data
@@ -317,7 +318,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     async def register(credentials: AuthCredentials) -> UserResponse:
         with session_factory() as session:
+            tenant = get_or_create_reference_tenant(session)
             user = User(
+                tenant_id=tenant.id,
                 email=credentials.email.lower(),
                 password_hash=hash_password(credentials.password),
                 role="user",
@@ -395,7 +398,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         provider: str | None = Query(default=None),
     ) -> list[ModelResponse]:
         with session_factory() as session:
-            statement = select(Model).order_by(Model.title)
+            tenant = get_or_create_reference_tenant(session)
+            statement = (
+                select(Model).where(Model.tenant_id == tenant.id).order_by(Model.title)
+            )
             if q:
                 statement = statement.where(
                     Model.title.ilike(f"%{q}%") | Model.description.ilike(f"%{q}%")
@@ -409,8 +415,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/models/{model_id}", response_model=ModelResponse)
     async def get_model(model_id: int) -> ModelResponse:
         with session_factory() as session:
+            tenant = get_or_create_reference_tenant(session)
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != tenant.id:
                 raise HTTPException(status_code=404, detail="Model not found")
             return model_response(model)
 
@@ -452,8 +459,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rather than a user's activity summary. Grounded in real similarity, not activity —
         deliberately independent of the personalized recommendation on the Dashboard."""
         with session_factory() as session:
+            tenant = get_or_create_reference_tenant(session)
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != tenant.id:
                 raise HTTPException(status_code=404, detail="Model not found")
             query_text = ModelVectorStore.document(model)
             # Prefer same-modality matches first — the deterministic hashed bag-of-words
@@ -462,7 +470,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # shared generic words. Only fall back to an unfiltered query if same-modality
             # doesn't yield enough candidates (e.g. this modality has too few catalog entries).
             same_modality = vector_store.query_scored(
-                query_text, limit=limit + 1, where={"modality": model.modality}
+                query_text,
+                tenant.id,
+                limit=limit + 1,
+                where={"modality": model.modality},
             )
             seen_ids = {model_id}
             results: list[dict[str, object]] = []
@@ -473,7 +484,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         continue
                     seen_ids.add(candidate_id)
                     candidate = session.get(Model, candidate_id)
-                    if not candidate:
+                    if not candidate or candidate.tenant_id != tenant.id:
                         continue
                     results.append(
                         {
@@ -486,7 +497,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             _add_candidates(same_modality)
             if len(results) < limit:
-                _add_candidates(vector_store.query_scored(query_text, limit=limit + 1))
+                _add_candidates(
+                    vector_store.query_scored(query_text, tenant.id, limit=limit + 1)
+                )
             return results
 
     @app.post(
@@ -495,34 +508,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
     )
     async def create_model(
-        payload: ModelCreate, _: User = Depends(current_admin)
+        payload: ModelCreate, admin: User = Depends(current_admin)
     ) -> ModelResponse:
         with session_factory() as session:
-            model = create_model_service(session, vector_store, payload)
+            model = create_model_service(
+                session, vector_store, admin.tenant_id, payload
+            )
             return model_response(model)
 
     @app.put("/api/admin/models/{model_id}", response_model=ModelResponse)
     async def update_model(
-        model_id: int, payload: ModelCreate, _: User = Depends(current_admin)
+        model_id: int, payload: ModelCreate, admin: User = Depends(current_admin)
     ) -> ModelResponse:
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
-            update_model_service(session, vector_store, model, payload)
+            update_model_service(session, vector_store, admin.tenant_id, model, payload)
             return model_response(model)
 
     @app.delete("/api/admin/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_model(model_id: int, _: User = Depends(current_admin)) -> None:
+    async def delete_model(model_id: int, admin: User = Depends(current_admin)) -> None:
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
-            delete_model_service(session, vector_store, model)
+            delete_model_service(session, vector_store, admin.tenant_id, model)
 
     @app.post("/api/admin/models/bulk-upload", response_model=BulkImportResponse)
     async def bulk_upload_models(
-        file: UploadFile = File(...), _: User = Depends(current_admin)
+        file: UploadFile = File(...), admin: User = Depends(current_admin)
     ) -> BulkImportResponse:
         content = await file.read()
         if len(content) > BULK_UPLOAD_MAX_BYTES:
@@ -532,7 +547,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except CatalogParseError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         with session_factory() as session:
-            rows = import_catalog_rows(session, vector_store, raw_rows)
+            rows = import_catalog_rows(session, vector_store, admin.tenant_id, raw_rows)
         return BulkImportResponse(
             inserted=sum(1 for row in rows if row["status"] == "inserted"),
             skipped_duplicate=sum(
@@ -641,7 +656,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/overview")
     async def admin_overview(
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Platform-usage summary for the admin landing page — totals, event-type
         breakdown, and explicit-feedback sentiment. Distinct from
@@ -649,22 +664,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         this is business/usage metrics, computed straight from our own tables."""
         with session_factory() as session:
             return {
-                "totals": usage_totals(session),
-                "event_type_counts": event_type_counts(session),
-                "feedback": feedback_sentiment(session),
+                "totals": usage_totals(session, admin.tenant_id),
+                "event_type_counts": event_type_counts(session, admin.tenant_id),
+                "feedback": feedback_sentiment(session, admin.tenant_id),
             }
 
     @app.get("/api/admin/overview/activity")
     async def admin_overview_activity(
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """The admin-wide live activity feed — every user's events, newest first.
         Distinct from GET /api/activity/me, which is deliberately scoped to the
         signed-in user's own history."""
         with session_factory() as session:
-            events, has_more = recent_activity(session, limit=limit, offset=offset)
+            events, has_more = recent_activity(
+                session, admin.tenant_id, limit=limit, offset=offset
+            )
         return {
             "events": [
                 {**event, "created_at": as_utc(event["created_at"])} for event in events
@@ -676,7 +693,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def list_users(
         limit: int = Query(default=500, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Newest-registered first. `limit` defaults high enough that the
         Observability page's "filter by user" dropdown (which wants every user, not
@@ -685,6 +702,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with session_factory() as session:
             rows = session.scalars(
                 select(User)
+                .where(User.tenant_id == admin.tenant_id)
                 .order_by(User.created_at.desc(), User.id.desc())
                 .offset(offset)
                 .limit(limit + 1)
@@ -713,7 +731,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         with session_factory() as session:
             user = session.get(User, user_id)
-            if not user:
+            if not user or user.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="User not found")
             # No ORM cascade is configured for Event/Recommendation.user_id (plain FK
             # columns, not relationships) and SQLite doesn't enforce FKs by default —
@@ -728,7 +746,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/observability/costs")
     async def observability_costs(
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Mesh cost/latency/token rollup, aggregated straight from our own DB
         (`Recommendation.mesh_*` columns, captured in app/services/mesh.py at
@@ -736,7 +754,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         available even without tracing configured, and demonstrates the "efficiency"
         story with real numbers rather than a trace count."""
         with session_factory() as session:
-            rollup = mesh_cost_rollup(session)
+            rollup = mesh_cost_rollup(session, admin.tenant_id)
         return {
             "call_count": rollup["call_count"],
             "avg_latency_ms": rollup["avg_latency_ms"],
@@ -766,7 +784,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.pipeline_locks[user_id] = lock
             return lock
 
-    async def run_pipeline_in_background(user_id: int) -> None:
+    async def run_pipeline_in_background(tenant_id: int, user_id: int) -> None:
         """NFR-1: the pipeline's Mesh call is a real network round trip (hundreds of ms to
         seconds) — running it inline on `/api/events/batch` would blow the <150ms p95
         ingestion budget every time a trigger fires. It runs here, after the response is
@@ -791,6 +809,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     prepare_retrieval_recommendation,
                     session,
                     vector_store,
+                    tenant_id,
                     user_id,
                     app.state.mesh_generator,
                 )
@@ -802,18 +821,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         user: User = Depends(current_engineer),
     ) -> dict[str, object]:
         with session_factory() as session:
+            # A model_id that doesn't belong to this user's own tenant is dropped
+            # rather than stored — an event referencing another tenant's catalog item
+            # id must never let that item's title/modality leak into this user's
+            # behavior summary later (TEN-3/NFR-8). See also the tenant_id filters
+            # added throughout app/services/recommendation.py for the read-side half
+            # of this guard.
+            model_ids = {event.model_id for event in batch.events if event.model_id}
+            valid_model_ids = (
+                set(
+                    session.scalars(
+                        select(Model.id).where(
+                            Model.id.in_(model_ids), Model.tenant_id == user.tenant_id
+                        )
+                    ).all()
+                )
+                if model_ids
+                else set()
+            )
             events = [
                 Event(
+                    tenant_id=user.tenant_id,
                     user_id=user.id,
                     event_type=event.event_type,
-                    model_id=event.model_id,
+                    model_id=event.model_id
+                    if event.model_id in valid_model_ids
+                    else None,
                     metadata_json=event.metadata,
                 )
                 for event in batch.events
             ]
             session.add_all(events)
             session.commit()
-            triggered = should_trigger(session, user.id)
+            triggered = should_trigger(session, user.tenant_id, user.id)
             if triggered:
                 # `should_trigger`'s hash/cooldown check only has something to compare
                 # against once a Recommendation row actually exists — a burst of
@@ -827,7 +867,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if lock is not None and lock.locked():
                     triggered = False
         if triggered:
-            background_tasks.add_task(run_pipeline_in_background, user.id)
+            background_tasks.add_task(
+                run_pipeline_in_background, user.tenant_id, user.id
+            )
         return {
             "accepted": len(events),
             "recommendation_triggered": triggered,
@@ -840,11 +882,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with session_factory() as session:
             latest = session.scalar(
                 select(Recommendation)
-                .where(Recommendation.user_id == user.id)
+                .where(
+                    Recommendation.tenant_id == user.tenant_id,
+                    Recommendation.user_id == user.id,
+                )
                 .order_by(Recommendation.created_at.desc())
             )
-            current_events = recent_events(session, user.id)
-            evidence = session_evidence(session, current_events)
+            current_events = recent_events(session, user.tenant_id, user.id)
+            evidence = session_evidence(session, user.tenant_id, current_events)
             evidence_payload = [
                 {
                     "label": item["label"],
@@ -856,7 +901,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             if latest:
                 models = session.scalars(
-                    select(Model).where(Model.id.in_(latest.model_ids))
+                    select(Model).where(
+                        Model.id.in_(latest.model_ids),
+                        Model.tenant_id == user.tenant_id,
+                    )
                 ).all()
                 models_by_id = {model.id: model for model in models}
                 reason_by_id = {
@@ -891,8 +939,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "evidence": [],
                 }
 
-            summary = activity_summary(session, current_events)
-            scored = app.state.vector_store.query_scored(summary)
+            summary = activity_summary(session, user.tenant_id, current_events)
+            scored = app.state.vector_store.query_scored(summary, user.tenant_id)
             if not scored:
                 return {
                     "status": "pending",
@@ -905,7 +953,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             models_by_id = {
                 model.id: model
                 for model in session.scalars(
-                    select(Model).where(Model.id.in_(candidate_ids))
+                    select(Model).where(
+                        Model.id.in_(candidate_ids), Model.tenant_id == user.tenant_id
+                    )
                 ).all()
             }
             candidates = [
@@ -931,7 +981,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with session_factory() as session:
             events = session.scalars(
                 select(Event)
-                .where(Event.user_id == user.id)
+                .where(Event.tenant_id == user.tenant_id, Event.user_id == user.id)
                 # created_at is second-resolution (SQLite CURRENT_TIMESTAMP), so a batch flush
                 # that inserts several events in one commit can tie on it — id.desc() breaks
                 # the tie by actual insertion order instead of leaving it DB-arbitrary.
@@ -940,7 +990,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).all()
             latest = session.scalar(
                 select(Recommendation)
-                .where(Recommendation.user_id == user.id)
+                .where(
+                    Recommendation.tenant_id == user.tenant_id,
+                    Recommendation.user_id == user.id,
+                )
                 .order_by(Recommendation.created_at.desc())
             )
             return {

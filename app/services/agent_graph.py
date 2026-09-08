@@ -68,6 +68,7 @@ FEEDBACK_CONTEXT_OVERLAP_THRESHOLD = 0.2
 
 
 class AgentState(TypedDict, total=False):
+    tenant_id: int
     user_id: int
     trigger_reason: str
     behavior_summary: str
@@ -176,12 +177,16 @@ def contextual_reason(
 def _analyze_activity(session: Session):
     @traceable(run_type="chain", name="analyze_activity")
     def node(state: AgentState) -> AgentState:
-        events = recent_events(session, state["user_id"])
-        summary = activity_summary(session, events)
+        tenant_id = state["tenant_id"]
+        events = recent_events(session, tenant_id, state["user_id"])
+        summary = activity_summary(session, tenant_id, events)
         event_hash = activity_hash(events)
         latest = session.scalar(
             select(Recommendation)
-            .where(Recommendation.user_id == state["user_id"])
+            .where(
+                Recommendation.tenant_id == tenant_id,
+                Recommendation.user_id == state["user_id"],
+            )
             .order_by(Recommendation.created_at.desc())
         )
         # AGT-6: unchanged behavior (hash match) or still inside the last run's cooldown
@@ -194,8 +199,8 @@ def _analyze_activity(session: Session):
         buckets = session_bucket_events(events)
         current_bucket = buckets[0] if buckets else []
         older_events = [event for bucket in buckets[1:] for event in bucket]
-        current_text = _summarize_bucket(session, current_bucket)
-        older_text = _summarize_bucket(session, older_events)
+        current_text = _summarize_bucket(session, tenant_id, current_bucket)
+        older_text = _summarize_bucket(session, tenant_id, older_events)
         # Weight the current session 2x relative to older sessions in the retrieval
         # query text (via repetition) — the deterministic hashed bag-of-words embedding
         # in app/vector.py has no real semantics to lean on, so query-text weighting via
@@ -211,8 +216,8 @@ def _analyze_activity(session: Session):
             "retrieval_query": retrieval_query,
             "activity_hash": event_hash,
             "retry_count": 0,
-            "modality_filter": dominant_modality(session, events),
-            "evidence": session_evidence(session, events),
+            "modality_filter": dominant_modality(session, tenant_id, events),
+            "evidence": session_evidence(session, tenant_id, events),
             "short_circuit": False,
         }
 
@@ -233,7 +238,9 @@ def _retrieve_models(vector_store: ModelVectorStore):
             state.get("modality_filter") if state.get("retry_count") == 0 else None
         )
         where = {"modality": modality_filter} if modality_filter else None
-        scored = vector_store.query_scored(query, limit=RETRIEVAL_TOP_K, where=where)
+        scored = vector_store.query_scored(
+            query, state["tenant_id"], limit=RETRIEVAL_TOP_K, where=where
+        )
         return {**state, "candidates_scored": scored}
 
     return node
@@ -343,7 +350,9 @@ def _rerank_candidates(session: Session):
         documents_by_id = {
             model.id: ModelVectorStore.document(model)
             for model in session.scalars(
-                select(Model).where(Model.id.in_(model_ids))
+                select(Model).where(
+                    Model.id.in_(model_ids), Model.tenant_id == state["tenant_id"]
+                )
             ).all()
         }
         query = (
@@ -352,7 +361,9 @@ def _rerank_candidates(session: Session):
             or state["behavior_summary"]
         )
         reranked = rerank_by_lexical_overlap(scored, query, documents_by_id)
-        feedback_by_model_id = recent_feedback_by_model(session, state["user_id"])
+        feedback_by_model_id = recent_feedback_by_model(
+            session, state["tenant_id"], state["user_id"]
+        )
         reranked = apply_feedback_adjustment(reranked, feedback_by_model_id, query)
         return {**state, "candidates_scored": reranked}
 
@@ -404,7 +415,9 @@ def _generate_narrative(session: Session, mesh_generator):
             {
                 model.id: model
                 for model in session.scalars(
-                    select(Model).where(Model.id.in_(model_ids))
+                    select(Model).where(
+                        Model.id.in_(model_ids), Model.tenant_id == state["tenant_id"]
+                    )
                 ).all()
             }
             if model_ids
@@ -498,6 +511,7 @@ def _store_and_deliver(session: Session):
     @traceable(run_type="chain", name="store_and_deliver")
     def node(state: AgentState) -> AgentState:
         recommendation = Recommendation(
+            tenant_id=state["tenant_id"],
             user_id=state["user_id"],
             model_ids=state.get("model_ids") or [],
             retrieval_meta=state.get("retrieval_meta") or [],
@@ -554,6 +568,7 @@ def build_agent_graph(
 def prepare_retrieval_recommendation(
     session: Session,
     vector_store: ModelVectorStore,
+    tenant_id: int,
     user_id: int,
     mesh_generator=None,
     trigger_reason: str = "event_threshold",
@@ -575,9 +590,11 @@ def prepare_retrieval_recommendation(
         # `list_runs(filter='has(tags, "user:<id>")')`, verified live against the real
         # API) rather than only being visible by re-reading raw trace inputs — powers
         # the admin observability page's per-user filter.
-        tags=[f"user:{user_id}"],
+        tags=[f"user:{user_id}", f"tenant:{tenant_id}"],
     )
-    def _run(user_id: int, trigger_reason: str) -> Recommendation | None:
+    def _run(
+        tenant_id: int, user_id: int, trigger_reason: str
+    ) -> Recommendation | None:
         graph = build_agent_graph(session, vector_store, mesh_generator)
         # LangGraph's internal step-counting consumes recursion budget faster than the
         # visible node count suggests (each named node compiles to several internal
@@ -587,9 +604,13 @@ def prepare_retrieval_recommendation(
         # off. Sized with real headroom rather than the exact minimum so a future node
         # addition doesn't reintroduce this.
         result = graph.invoke(
-            {"user_id": user_id, "trigger_reason": trigger_reason},
+            {
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "trigger_reason": trigger_reason,
+            },
             {"recursion_limit": 60},
         )
         return result.get("recommendation")
 
-    return _run(user_id, trigger_reason)
+    return _run(tenant_id, user_id, trigger_reason)

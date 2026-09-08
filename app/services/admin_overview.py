@@ -10,31 +10,43 @@ from sqlalchemy.orm import Session
 from app.models import Event, Model, Recommendation, User
 
 
-def usage_totals(session: Session) -> dict[str, int]:
+def usage_totals(session: Session, tenant_id: int) -> dict[str, int]:
     return {
-        "users": session.scalar(select(func.count(User.id))) or 0,
-        "models": session.scalar(select(func.count(Model.id))) or 0,
-        "events": session.scalar(select(func.count(Event.id))) or 0,
+        "users": session.scalar(
+            select(func.count(User.id)).where(User.tenant_id == tenant_id)
+        )
+        or 0,
+        "models": session.scalar(
+            select(func.count(Model.id)).where(Model.tenant_id == tenant_id)
+        )
+        or 0,
+        "events": session.scalar(
+            select(func.count(Event.id)).where(Event.tenant_id == tenant_id)
+        )
+        or 0,
         # "Generated" specifically — a Recommendation row can exist as retrieval-only
         # (no Mesh narrative, e.g. MESH_API_KEY unset), so counting every row would
         # overstate what the AI has actually produced.
         "recommendations": session.scalar(
             select(func.count(Recommendation.id)).where(
-                Recommendation.narrative.is_not(None)
+                Recommendation.narrative.is_not(None),
+                Recommendation.tenant_id == tenant_id,
             )
         )
         or 0,
     }
 
 
-def event_type_counts(session: Session) -> dict[str, int]:
+def event_type_counts(session: Session, tenant_id: int) -> dict[str, int]:
     rows = session.execute(
-        select(Event.event_type, func.count(Event.id)).group_by(Event.event_type)
+        select(Event.event_type, func.count(Event.id))
+        .where(Event.tenant_id == tenant_id)
+        .group_by(Event.event_type)
     ).all()
     return {event_type: count for event_type, count in rows}
 
 
-def feedback_sentiment(session: Session) -> dict[str, int]:
+def feedback_sentiment(session: Session, tenant_id: int) -> dict[str, int]:
     """Counts thumbs up/down across recommendation_feedback events. Parsed in Python
     rather than a JSON-column SQL operator (e.g. SQLite's json_extract) — the event
     volume here is small, and this stays portable/debuggable rather than depending on
@@ -42,7 +54,10 @@ def feedback_sentiment(session: Session) -> dict[str, int]:
     preference for computing in Python over DB-specific query tricks.
     """
     events = session.scalars(
-        select(Event).where(Event.event_type == "recommendation_feedback")
+        select(Event).where(
+            Event.event_type == "recommendation_feedback",
+            Event.tenant_id == tenant_id,
+        )
     ).all()
     counts = {"up": 0, "down": 0}
     for event in events:
@@ -53,7 +68,7 @@ def feedback_sentiment(session: Session) -> dict[str, int]:
 
 
 def recent_activity(
-    session: Session, limit: int = 20, offset: int = 0
+    session: Session, tenant_id: int, limit: int = 20, offset: int = 0
 ) -> tuple[list[dict], bool]:
     """The admin-wide "live activity" feed — every user's events, newest first.
     Distinct from GET /api/activity/me, which is deliberately scoped to the signed-in
@@ -63,6 +78,7 @@ def recent_activity(
     rows = session.execute(
         select(Event, User.email)
         .join(User, Event.user_id == User.id)
+        .where(Event.tenant_id == tenant_id)
         .order_by(Event.created_at.desc(), Event.id.desc())
         .offset(offset)
         .limit(limit + 1)

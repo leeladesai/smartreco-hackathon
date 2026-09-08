@@ -2,7 +2,7 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Model
+from app.models import Model, Tenant
 from app.services.catalog_import import (
     CatalogParseError,
     import_catalog_rows,
@@ -18,6 +18,14 @@ def _make_session_factory(tmp_path):
         mesh_api_key=None,
     )
     return build_session_factory(settings), settings
+
+
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
 
 
 def _make_vector_store(settings, tmp_path):
@@ -80,9 +88,11 @@ def test_import_catalog_rows_inserts_valid_rows_and_syncs_vector_store(
     session_factory, settings = _make_session_factory(tmp_path)
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         results = import_catalog_rows(
             session,
             vector_store,
+            tenant.id,
             [
                 {
                     "title": "Test Voice",
@@ -110,9 +120,11 @@ def test_import_catalog_rows_reports_invalid_rows_without_aborting_batch(
     session_factory, settings = _make_session_factory(tmp_path)
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         results = import_catalog_rows(
             session,
             vector_store,
+            tenant.id,
             [
                 {"title": "", "provider": "Test Labs"},  # missing required fields
                 {
@@ -134,8 +146,10 @@ def test_import_catalog_rows_skips_case_insensitive_duplicate_titles(tmp_path) -
     session_factory, settings = _make_session_factory(tmp_path)
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         session.add(
             Model(
+                tenant_id=tenant.id,
                 title="Existing Model",
                 description="d",
                 provider="Test Labs",
@@ -149,6 +163,7 @@ def test_import_catalog_rows_skips_case_insensitive_duplicate_titles(tmp_path) -
         results = import_catalog_rows(
             session,
             vector_store,
+            tenant.id,
             [
                 {
                     "title": "existing model",

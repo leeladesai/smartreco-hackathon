@@ -68,5 +68,48 @@ def test_query_scored_degrades_gracefully_on_embedding_failure(tmp_path) -> None
         collection_name="test-failing",
         embedding_function=DeterministicEmbeddingFunction(8),
     )
-    store.collection = _FakeFailingCollection()
-    assert store.query_scored("anything") == []
+    store._collections[1] = _FakeFailingCollection()
+    assert store.query_scored("anything", 1) == []
+
+
+class _FakeModel:
+    def __init__(self, id, title):
+        self.id = id
+        self.title = title
+        self.provider = "Test"
+        self.modality = "LLM"
+        self.description = "d"
+        self.story = None
+        self.use_case_tags = []
+        self.price = "$0"
+        self.latency_ms = None
+
+
+def test_tenants_are_isolated_in_separate_collections(tmp_path) -> None:
+    """docs/design/09-Platform-Pivot-Decision.md §5: separate Chroma collections per
+    tenant, not a shared collection with a metadata filter — a query for one tenant
+    must never return another tenant's items, even when both have a model with the
+    same id."""
+    store = ModelVectorStore(
+        str(tmp_path / "chroma"),
+        collection_name="isolation-test",
+        embedding_function=DeterministicEmbeddingFunction(8),
+    )
+    tenant_a_model = _FakeModel(1, "Tenant A Only Model")
+    tenant_b_model = _FakeModel(1, "Tenant B Only Model")
+    store.upsert(tenant_a_model, tenant_id=1)
+    store.upsert(tenant_b_model, tenant_id=2)
+
+    results_a = store.query_scored("Tenant A Only Model", tenant_id=1, limit=5)
+    results_b = store.query_scored("Tenant B Only Model", tenant_id=2, limit=5)
+
+    assert [model_id for model_id, _ in results_a] == [1]
+    assert [model_id for model_id, _ in results_b] == [1]
+    # Each tenant's collection holds only what was upserted into it — even querying
+    # tenant 1's collection with tenant 2's exact text can only ever return tenant 1's
+    # own single item, never tenant 2's, because the collections are entirely
+    # separate indexes, not filtered views of one shared index.
+    cross_tenant = store.query_scored("Tenant B Only Model", tenant_id=1, limit=5)
+    assert [model_id for model_id, _ in cross_tenant] == [1]
+    assert store._collection_for(1).count() == 1
+    assert store._collection_for(2).count() == 1

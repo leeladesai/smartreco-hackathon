@@ -8,6 +8,7 @@ from app.config import Settings
 from app.main import create_app
 from app.models import User
 from app.security import hash_password
+from app.services.tenants import get_or_create_reference_tenant
 
 # configure_langsmith (app/services/tracing.py) mutates these process-global env vars
 # with no cleanup — a test that enables tracing would otherwise leak it into every test
@@ -60,8 +61,15 @@ def client(tmp_path) -> Iterator[TestClient]:
     )
     test_app = create_app(settings)
     with test_app.state.session_factory() as session:
+        # The reference tenant is resolved get-or-create by name
+        # (app/services/tenants.py), so seeding it explicitly here — rather than
+        # relying on the app's own fire-and-forget background seed task, which hasn't
+        # necessarily run yet — keeps this fixture deterministic: the reference tenant
+        # is always id=1 in every test's fresh per-test SQLite file.
+        tenant = get_or_create_reference_tenant(session)
         session.add(
             User(
+                tenant_id=tenant.id,
                 email="curator@test.dev",
                 password_hash=hash_password("password123"),
                 role="admin",

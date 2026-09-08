@@ -1,67 +1,123 @@
 # Low-Level Design (LLD)
-## TrailMind
+## TrailMind — Embeddable Behavioral Recommendation Platform
+
+Updated per [`09-Platform-Pivot-Decision.md`](09-Platform-Pivot-Decision.md). The schema, API
+contract, and LangGraph node contracts below add a `tenants` table and `tenant_id` scoping
+throughout, plus new tables/endpoints for catalog ingestion adapters and real-time push sessions.
+Everything not shown as changed keeps its hackathon-era shape (dual-write pattern, trigger
+evaluator logic, node contracts) — the pivot generalizes it, it doesn't replace it.
 
 ## 1. Database schema (SQLAlchemy / DDL-equivalent)
 
+**Implementation status note:** the `events`/`recommendations` shape below (with
+`visitor_id TEXT NOT NULL` replacing `user_id`, an anonymous tracker-assigned identity) is the
+*target* shape once the tracker SDK ships. Phase 1 of the pivot (multi-tenant foundation —
+`tenants`, `tenant_id` scoping, per-tenant Chroma collections) deliberately kept `user_id` as the
+authenticated-engineer identity rather than also introducing anonymous visitors in the same change
+— see `docs/design/09-Platform-Pivot-Decision.md`. `catalog_items`/`category`/`subcategory`/
+`attributes` (the entity generalization beyond the AI-model domain) are similarly not yet
+implemented; the running code still uses `models`/`provider`/`modality`. Treat this section as the
+target schema, and `app/models.py` as the current one, until those phases land.
+
 ```sql
-CREATE TABLE users (
-  id            INTEGER PRIMARY KEY,
-  email         TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
-  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE tenants (                                -- new
+  id                    INTEGER PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'onboarding',  -- 'onboarding' | 'active' | 'suspended' -- readiness gate (TEN-8): widget stays dormant on the host page until 'active'
+  allowed_origins       JSON NOT NULL,       -- CORS allowlist for the tracker SDK (soft defense only -- see 09-Platform-Pivot-Decision.md §5)
+  max_agent_runs_per_hour INTEGER NOT NULL DEFAULT 500,  -- new: hard per-tenant LLM-run ceiling, independent of the per-visitor AGT-1 cooldown -- closes the fabricated-visitor-id bypass (09-Platform-Pivot-Decision.md §5)
+  created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE models (
+CREATE TABLE tenant_api_keys (                        -- new -- the key itself is public-ish (ships in tracker snippet page source, like a Stripe publishable key), so its safety is scope + rate limits, not secrecy
+  id          INTEGER PRIMARY KEY,
+  tenant_id   INTEGER NOT NULL REFERENCES tenants(id),
+  key_hash    TEXT NOT NULL,           -- raw key shown once at creation/rotation (TEN-1/TEN-5), only the hash persisted
+  status      TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'grace' | 'revoked' -- rotation keeps old key valid in 'grace' for ~24h so an already-deployed snippet doesn't break mid-rotation
+  expires_at  TIMESTAMP,               -- set when a key enters 'grace'; null for 'active'
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_tenant_api_keys_tenant ON tenant_api_keys(tenant_id, status);
+
+CREATE TABLE users (
+  id            INTEGER PRIMARY KEY,
+  tenant_id     INTEGER NOT NULL REFERENCES tenants(id),   -- new
+  email         TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'tenant_admin' | 'platform_admin'
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (tenant_id, email)              -- was UNIQUE(email); now unique per tenant, not globally
+);
+
+CREATE TABLE catalog_items (                           -- was: models
   id             INTEGER PRIMARY KEY,
+  tenant_id      INTEGER NOT NULL REFERENCES tenants(id),   -- new
   title          TEXT NOT NULL,
-  description    TEXT NOT NULL,     -- plain technical summary: what the model does
-  story          TEXT,              -- curator's pitch: who should pick it, what trade-off it makes
-  provider       TEXT NOT NULL,     -- 'OpenAI' | 'Anthropic' | 'ElevenLabs' | ...
-  modality       TEXT NOT NULL,     -- 'LLM' | 'Voice' | 'Image' | 'Video' | 'Embedding' | 'Multimodal'
-  price          NUMERIC NOT NULL,  -- cost per unit; unit documented in description (e.g. per 1M tokens, per char)
-  latency_ms     INTEGER,
-  context_window INTEGER,
-  use_case_tags  JSON,              -- e.g. ["real-time voice", "customer support"]
-  source_url     TEXT,              -- provenance for curated specs, shown to judges on request
+  description    TEXT NOT NULL,     -- plain technical summary: what the item does
+  story          TEXT,              -- pitch copy: who should pick it, what trade-off it makes
+  category       TEXT NOT NULL,     -- generalizes 'provider' — tenant-defined grouping (e.g. issuer, provider)
+  subcategory    TEXT NOT NULL,     -- generalizes 'modality' — tenant-defined type (e.g. card tier, model type)
+  price          NUMERIC,           -- optional now; not every catalog has a per-unit price (e.g. a card's fee structure lives in attributes)
+  attributes     JSON,              -- tenant-defined structured facts (e.g. {"apr": "18.99%", "annual_fee": 0} or {"latency_ms": 220, "context_window": 128000}) — the only source the bot may cite numbers from (AGT-5/AGT-8)
+  use_case_tags  JSON,
+  source_url     TEXT,              -- provenance, kept for the manual/feed adapters
+  ingestion_adapter TEXT NOT NULL,  -- new: 'feed' | 'scrape' | 'manual' (ING-1/2/3)
+  review_status  TEXT NOT NULL DEFAULT 'approved',  -- new: 'pending_review' | 'approved' -- scrape-adapter rows start 'pending_review' (ING-6) and are excluded from retrieval until a tenant admin confirms them; feed/manual rows default 'approved'
+  last_synced_at TIMESTAMP,         -- new: ING-5 staleness tracking
+  sync_stale     BOOLEAN NOT NULL DEFAULT FALSE,  -- new: ING-5
   vector_synced  BOOLEAN NOT NULL DEFAULT FALSE,
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_catalog_tenant ON catalog_items(tenant_id);
 
 CREATE TABLE events (
   id          INTEGER PRIMARY KEY,
-  user_id     INTEGER NOT NULL REFERENCES users(id),
-  event_type  TEXT NOT NULL,        -- 'page_view' | 'model_view' | 'search' | 'click' | 'model_compare' | 'dwell'
-  model_id    INTEGER REFERENCES models(id),
-  metadata    JSON,                 -- e.g. {"query": "...", "dwell_ms": 4200, "compared_model_ids": [7, 12]}
+  tenant_id   INTEGER NOT NULL REFERENCES tenants(id),   -- new
+  visitor_id  TEXT NOT NULL,          -- was user_id FK; now an anonymous tracker-assigned id, not necessarily a users row (TRK-7: no PII)
+  event_type  TEXT NOT NULL,          -- 'page_view' | 'item_view' | 'search' | 'click' | 'item_compare' | 'dwell'
+  item_id     INTEGER REFERENCES catalog_items(id),
+  metadata    JSON,                   -- e.g. {"query": "...", "dwell_ms": 4200, "compared_item_ids": [7, 12]}
   created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_events_user_time ON events(user_id, created_at);
+CREATE INDEX idx_events_tenant_visitor_time ON events(tenant_id, visitor_id, created_at);
 
 CREATE TABLE recommendations (
   id                INTEGER PRIMARY KEY,
-  user_id           INTEGER NOT NULL REFERENCES users(id),
+  tenant_id         INTEGER NOT NULL REFERENCES tenants(id),   -- new
+  visitor_id        TEXT NOT NULL,     -- was user_id FK; see events.visitor_id
   narrative         TEXT NOT NULL,
-  model_ids         JSON NOT NULL,     -- ["12", "7", "31"]
-  behavior_summary  TEXT NOT NULL,     -- the analyze_activity output that produced this rec (DLV-4)
-  activity_hash     TEXT NOT NULL,     -- hash of the event signature that produced this rec
+  item_ids          JSON NOT NULL,     -- ["12", "7", "31"]
+  grounding_facts    JSON,             -- new (OBS-3): the attributes/fields actually cited from catalog_items, for audit
+  behavior_summary  TEXT NOT NULL,
+  activity_hash     TEXT NOT NULL,
   trigger_reason    TEXT NOT NULL,     -- 'event_count' | 'time_elapsed' | 'scheduled_digest'
+  pushed_at         TIMESTAMP,         -- new (DLV-2): when real-time push to an open widget succeeded, null if none was open
   created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX idx_reco_user_time ON recommendations(user_id, created_at);
+CREATE INDEX idx_reco_tenant_visitor_time ON recommendations(tenant_id, visitor_id, created_at);
+
+CREATE TABLE widget_sessions (                          -- new (DLV-2)
+  id           INTEGER PRIMARY KEY,
+  tenant_id    INTEGER NOT NULL REFERENCES tenants(id),
+  visitor_id   TEXT NOT NULL,
+  connection_id TEXT NOT NULL,       -- opaque id for the open SSE/WebSocket connection
+  opened_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  closed_at    TIMESTAMP
+);
+CREATE INDEX idx_widget_sessions_tenant_visitor ON widget_sessions(tenant_id, visitor_id, closed_at);
 ```
 
-Vector store (Chroma) — one collection `models` (configurable via `CHROMA_COLLECTION_NAME`).
-Embeddings are real Mesh embeddings (`MESH_EMBEDDING_MODEL`, default `google/embeddinggemma-300m`,
-768-dim) whenever `MESH_API_KEY` is set, falling back to a deterministic hashed bag-of-words
-embedding (`EMBEDDING_DIMENSION`, default 64) otherwise — see `app/vector.py:build_embedding_
-function`. Switching between them (or changing `EMBEDDING_DIMENSION`) invalidates already-indexed
-vectors; re-run `seed_data.py`/re-upsert existing catalog rows after. Document
-id = `models.id` (string), embedding
-input = `f"{title}. {provider}. {modality}. {description}. {story}"` (the story field is included
-because it carries use-case/trade-off language that closely matches how builders phrase what
-they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..., "latency_ms": ...}`.
+Vector store (Chroma) — one collection per tenant (`tenant_{id}_catalog`, or a shared collection
+filtered by a `tenant_id` metadata field if tenant count grows large enough that per-tenant
+collections become unwieldy — open choice, not yet decided). Embeddings are real Mesh embeddings
+(`MESH_EMBEDDING_MODEL`, default `google/embeddinggemma-300m`, 768-dim) whenever `MESH_API_KEY` is
+set, falling back to a deterministic hashed bag-of-words embedding (`EMBEDDING_DIMENSION`, default
+64) otherwise — see `app/vector.py:build_embedding_function`. Switching between them (or changing
+`EMBEDDING_DIMENSION`) invalidates already-indexed vectors per tenant; re-sync/re-upsert existing
+catalog rows after. Document id = `catalog_items.id` (string), embedding input =
+`f"{title}. {category}. {subcategory}. {description}. {story}"`, metadata =
+`{"tenant_id": ..., "category": ..., "subcategory": ..., **attributes}`.
 
 ---
 
@@ -69,72 +125,89 @@ they're looking for), metadata = `{"provider": ..., "modality": ..., "price": ..
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/auth/register` | none | AUTH-1, AI engineer self-registration only — always creates role `user` |
-| POST | `/api/auth/login` | none | AUTH-2, AI engineer login, returns session/JWT |
-| POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, admin-only login, returns session/JWT with role `admin`; no `/api/admin/register` exists |
-| GET | `/api/auth/me` | user | Current session's own profile (includes `telegram_chat_id`) |
-| PUT | `/api/auth/me/telegram-chat-id` | user | DLV-3 bonus follow-up: self-serve per-user Telegram digest chat ID, read by `TelegramNotifier` |
-| GET | `/api/models` | none | CAT-5, list/search catalog (filter by modality/provider) |
-| GET | `/api/models/{id}` | none | model detail |
-| POST | `/api/admin/models` | admin | CAT-1 + dual-write |
-| PUT | `/api/admin/models/{id}` | admin | CAT-2 + re-sync |
-| DELETE | `/api/admin/models/{id}` | admin | CAT-3 + vector delete |
-| POST | `/api/admin/models/bulk-upload` | admin | Bonus: CSV/JSON catalog import (up to 500 rows), `multipart/form-data`. Each row validates via `ModelCreate` and writes through the same `create_model` dual-write path as `POST /api/admin/models`; deduped case-insensitively by title (skipped, not overwritten). Returns a per-row report — never aborts the batch on one bad row |
-| GET | `/api/admin/users` | admin | Read-only list of every registered account (email, role, `created_at`, `telegram_chat_id`) — admin-portal visibility into who has actually registered |
-| POST | `/api/events/batch` | user | TRK-4, body: `{events: [...]}`, triggers evaluator inline |
-| GET | `/api/recommendations/me` | user | DLV-1, latest stored recommendation |
-| GET | `/api/activity/me` | user | DLV-4, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
-| GET | `/api/admin/observability/runs` | admin | OBS-2, recent `agent_pipeline` LangSmith runs (status/latency/error/trace link), read-only proxy over the LangSmith API; returns `{"available": false, ...}` rather than an error when `LANGSMITH_API_KEY` is unset |
-| GET | `/api/admin/observability/costs` | admin | Bonus: Mesh cost/latency/token rollup aggregated straight from `Recommendation.mesh_*` columns (own DB, not another LangSmith call) |
-| POST | `/api/admin/digest/run` | admin | DLV-3 bonus: manually re-runs the scheduled digest pipeline on demand (same code path as the cron trigger), for live demos |
+| POST | `/api/tenants` | platform admin | TEN-1, onboard a tenant, issue API key (shown once) |
+| POST | `/api/tenants/{id}/rotate-key` | tenant admin | TEN-5, issues a new `active` key, flips the previous one to `grace` with `expires_at = now + 24h` |
+| POST | `/api/tenants/{id}/revoke-key/{key_id}` | tenant admin | TEN-5, immediate revoke (suspected leak) — bypasses the grace period, flips straight to `revoked` |
+| POST | `/api/auth/register` | tenant API key | AUTH-1, end-user self-registration for that tenant — always creates role `user` |
+| POST | `/api/auth/login` | tenant API key | AUTH-2, end-user login, returns session/JWT carrying `tenant_id` |
+| POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, tenant-admin login, returns session/JWT with an admin role; no `/api/admin/register` exists |
+| GET | `/api/auth/me` | user | Current session's own profile |
+| GET | `/api/catalog` | tenant API key or public (tenant-configurable) | CAT-5, list/search that tenant's catalog (filter by category/subcategory) |
+| GET | `/api/catalog/{id}` | tenant API key or public | catalog item detail |
+| POST | `/api/admin/catalog` | tenant admin | CAT-1 + dual-write, manual-entry adapter (ING-3) |
+| PUT | `/api/admin/catalog/{id}` | tenant admin | CAT-2 + re-sync |
+| DELETE | `/api/admin/catalog/{id}` | tenant admin | CAT-3 + vector delete |
+| POST | `/api/admin/catalog/bulk-upload` | tenant admin | CSV/JSON catalog import, `multipart/form-data`, same dual-write path as manual create; per-row report, never aborts the batch on one bad row |
+| POST | `/api/admin/ingestion/feed` | tenant admin | ING-1, configure a feed/API-pull adapter (URL, credentials, sync schedule) |
+| POST | `/api/admin/ingestion/scrape` | tenant admin | ING-2, enable the DOM-scrape adapter (selectors/config the tracker snippet uses) |
+| GET | `/api/admin/ingestion/status` | tenant admin | ING-5, per-adapter last-synced timestamp + staleness flag |
+| GET | `/api/admin/users` | tenant admin | Read-only list of that tenant's registered accounts — admin-portal visibility into who has registered |
+| POST | `/api/events/batch` | tenant API key, cross-origin | TRK-4, body: `{visitor_id, events: [...]}`, triggers evaluator inline, scoped to `tenant_id` + `visitor_id` |
+| GET | `/api/recommendations/latest` | visitor session (widget) | Latest stored recommendation for this tenant+visitor — read fallback when no push connection is open |
+| GET | `/api/widget/stream` | visitor session (widget), tenant API key | DLV-2, opens the SSE/WebSocket connection the real-time push service delivers on; creates a `widget_sessions` row |
+| POST | `/api/widget/ask` | visitor session (widget) | DLV-4, follow-up Q&A — routes through the same catalog-grounded retrieval path as the initial recommendation (AGT-5/AGT-8), not a separate ungrounded completion |
+| GET | `/api/activity/me` | visitor session | DLV-6, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/admin/observability/runs` | tenant admin | OBS-2, recent `agent_pipeline` LangSmith runs for that tenant only (status/latency/error/trace link); returns `{"available": false, ...}` rather than an error when `LANGSMITH_API_KEY` is unset |
+| GET | `/api/admin/observability/grounding/{recommendation_id}` | tenant admin | OBS-3, the `grounding_facts` audit trail for a given delivered recommendation |
+| POST | `/api/admin/digest/run` | tenant admin | DLV-5 bonus: manually re-runs the scheduled digest pipeline for that tenant on demand |
 
 `/api/auth/*` and `/api/admin/login` are separate router modules sharing the same `users` table and
-password-hashing logic, but not the same route or handler — the AI engineer module can never issue an
-`admin` role, and the admin module has no register counterpart. Admin accounts are created only via
-the seed script or an authenticated admin user-management action.
+password-hashing logic, but not the same route or handler — the end-user module can never issue an
+admin role, and the admin module has no register counterpart. Tenant admin accounts are created only
+at tenant onboarding or by another admin on that same tenant — never self-service, never
+cross-tenant.
 
-### 2a. Page routes (server-rendered, Jinja2)
+### 2a. Page routes (server-rendered, Jinja2 — tenant/admin console only)
 
-Separate from the JSON API above — these return HTML pages, each a real, bookmarkable route (not a
-client-side view toggle). See `docs/08-Build-Status.md`'s frontend routing migration task for the
-implementation checklist.
+The end-visitor experience now lives in the embedded chat-bot widget (a JS component the tenant's
+page loads, not a page route of ours), not a server-rendered catalog/dashboard flow. These routes
+remain for the tenant admin console and the reference AI-model-catalog tenant's own optional
+browsing UI:
 
 | Route | Template | Auth |
 |---|---|---|
-| GET `/login` | `login.html` | none |
 | GET `/admin/login` | `admin_login.html` | none |
-| GET `/` or `/catalog` | `catalog.html` | AI engineer (public browse allowed; personalized recs require login) |
-| GET `/models/{id}` | `model_detail.html` | AI engineer |
-| GET `/compare` | `compare.html` — reads selection from `?ids=12,7`, a real shareable comparison link | AI engineer |
-| GET `/dashboard` | `dashboard.html` | AI engineer |
-| GET `/activity` | `activity.html` | AI engineer |
-| GET `/admin` | `admin.html` | curator |
-| GET `/admin/observability` | `observability.html` | curator |
-| GET `/admin/users` | `users.html` | curator |
+| GET `/admin` | `admin.html` | tenant admin |
+| GET `/admin/ingestion` | `ingestion.html` — configure feed/scrape/manual adapters (ING-1..4) | tenant admin |
+| GET `/admin/observability` | `observability.html` | tenant admin |
+| GET `/admin/users` | `users.html` | tenant admin |
+| GET `/` or `/catalog` | `catalog.html` — reference-tenant-only optional browse UI, not part of the embeddable product | end user, public browse allowed |
+| GET `/models/{id}` | `model_detail.html` | end user |
+| GET `/compare` | `compare.html` — reads selection from `?ids=12,7` | end user |
+| GET `/activity` | `activity.html` | end user |
 
-Auth-gating on these routes is server-side (redirect to `/login` or `/admin/login` on a missing or
-wrong-role session cookie) — not merely a client-side nav toggle.
+Auth-gating on these routes is server-side (redirect to `/admin/login` on a missing or wrong-role
+session cookie, and scoped to that admin's own `tenant_id`) — not merely a client-side nav toggle.
 
 **POST /api/events/batch — request**
 ```json
 {
+  "visitor_id": "v_9f2a...",
   "events": [
-    {"event_type": "model_view", "model_id": 12, "metadata": {"dwell_ms": 4200}},
-    {"event_type": "search", "metadata": {"query": "real-time voice"}},
-    {"event_type": "model_compare", "metadata": {"compared_model_ids": [12, 7]}}
+    {"event_type": "item_view", "item_id": 12, "metadata": {"dwell_ms": 4200}},
+    {"event_type": "search", "metadata": {"query": "low annual fee"}},
+    {"event_type": "item_compare", "metadata": {"compared_item_ids": [12, 7]}}
   ]
 }
 ```
+Sent with the tenant API key (header), from the tracker SDK running on the tenant's own domain —
+CORS-restricted to that tenant's `allowed_origins`.
 
-**GET /api/recommendations/me — response**
+**Real-time push over `/api/widget/stream` (SSE example) — server → widget**
+```
+event: recommendation
+data: {"narrative": "You've been comparing low-fee travel cards...", "items": [{"id": 12, "title": "Voyager Card", "reason": "viewed 3 times"}, {"id": 31, "title": "Journey Card", "reason": "matched search: low annual fee"}], "generated_at": "2026-09-08T14:03:00Z"}
+```
+
+**GET /api/recommendations/latest — response (fallback when no push connection is open)**
 ```json
 {
-  "narrative": "You've been comparing low-latency voice models all week...",
-  "models": [
-    {"id": 12, "title": "ElevenLabs Turbo v2", "reason": "viewed 3 times"},
-    {"id": 31, "title": "PlayHT", "reason": "matched search: real-time voice"}
+  "narrative": "You've been comparing low-fee travel cards...",
+  "items": [
+    {"id": 12, "title": "Voyager Card", "reason": "viewed 3 times"},
+    {"id": 31, "title": "Journey Card", "reason": "matched search: low annual fee"}
   ],
-  "generated_at": "2026-08-01T14:03:00Z"
+  "generated_at": "2026-09-08T14:03:00Z"
 }
 ```
 
@@ -142,115 +215,170 @@ wrong-role session cookie) — not merely a client-side nav toggle.
 ```json
 {
   "events": [
-    {"type": "model_view", "model": "ElevenLabs Turbo v2.5", "at": "14:02:11", "metadata": {"dwell_ms": 41000}},
-    {"type": "search", "query": "real-time voice", "at": "14:02:58"},
-    {"type": "model_compare", "models": ["ElevenLabs Turbo v2.5", "PlayHT Play 3.0"], "at": "14:04:20"}
+    {"type": "item_view", "item": "Voyager Card", "at": "14:02:11", "metadata": {"dwell_ms": 41000}},
+    {"type": "search", "query": "low annual fee", "at": "14:02:58"},
+    {"type": "item_compare", "items": ["Voyager Card", "Journey Card"], "at": "14:04:20"}
   ],
   "pipeline": {
     "events_since_last": 6,
     "trigger_reason": "event_count",
-    "behavior_summary": "evaluating low-latency voice models",
+    "behavior_summary": "evaluating low-annual-fee travel cards",
     "activity_hash": "a91f...02c4",
-    "delivered_at": "2026-08-01T14:09:20Z"
+    "delivered_at": "2026-09-08T14:09:20Z"
   }
 }
 ```
-Both arrays are read straight from `events` and `recommendations` — no synthetic or hardcoded data,
-which is what makes this screen usable as grounding proof rather than a mocked-up debug view.
+Both arrays are read straight from `events` and `recommendations`, scoped to `tenant_id` +
+`visitor_id` — no synthetic or hardcoded data, which is what makes this screen usable as grounding
+proof rather than a mocked-up debug view.
 
 ---
 
-## 3. Trigger evaluator (pseudocode)
+## 3. Trigger evaluator (actual algorithm, Phase 1 shape)
+
+Corrected to match what `app/services/recommendation.py::should_trigger` actually implements
+(session-bucket-based, not the flat lifetime-event-count/time-elapsed pseudocode this section
+previously showed — that mismatch was caught during the Phase 1 multi-tenant implementation and is
+fixed here per `AGENTS.md`'s "preserve requirement IDs, update the design doc" rule). Still keyed
+on `tenant_id` + `user_id` in Phase 1, not yet `visitor_id` — see the note at the end of §1 above:
+the anonymous-visitor identity model arrives with the tracker SDK phase, not this one.
 
 ```python
-def should_trigger(user_id: int) -> tuple[bool, str]:
-    last = get_last_recommendation(user_id)
-    events_since = count_events_since(user_id, last.created_at if last else None)
-    cooldown_ok = not last or (now() - last.created_at) > timedelta(minutes=2)
+SESSION_GAP = timedelta(minutes=30)       # a new bucket starts after this much inactivity
+SESSION_TRIGGER_COUNT = 2                 # events needed in the *current* session bucket
+SESSION_COOLDOWN = timedelta(minutes=3)   # minimum gap between runs within the same session
 
-    if not cooldown_ok:
-        return False, ""
-    if events_since >= 5:
-        return True, "event_count"
-    if last and (now() - last.created_at) > timedelta(minutes=10) and events_since > 0:
-        return True, "time_elapsed"
-    return False, ""
+def should_trigger(tenant_id: int, user_id: int) -> bool:
+    events = recent_events(tenant_id, user_id)          # last 3 days, newest-first
+    buckets = session_bucket_events(events)              # split into session buckets by SESSION_GAP
+    if not buckets or len(buckets[0]) < SESSION_TRIGGER_COUNT:
+        return False                                     # not enough activity in *this* session yet
+    latest = get_last_recommendation(tenant_id, user_id)
+    return is_recommendation_stale(events, latest)
+
+def is_recommendation_stale(events, latest) -> bool:
+    if latest is None:
+        return True
+    if not events:
+        return False
+    if latest.activity_hash == activity_hash(events):
+        return False                                     # AGT-6: nothing changed since last run
+    if (events[0].created_at - latest.created_at < SESSION_GAP
+            and now() - latest.created_at < SESSION_COOLDOWN):
+        return False                                     # same session, still within cooldown
+    return True
 ```
 
+Gated on *current-session* activity, not lifetime event count — 2 fresh events in a new session
+trigger regardless of how much history sits behind `SESSION_GAP`. `is_recommendation_stale` is
+shared verbatim with the LangGraph `analyze_activity` node's own short-circuit (AGT-6), so the two
+can never quietly disagree — see `app/services/recommendation.py` for the full docstring reasoning
+behind this split.
+
 Called synchronously (cheap, pure SQL) at the end of `/api/events/batch`; if it returns `True`, a
-background task is scheduled — the HTTP response to the browser is not blocked on the agent run.
+background task is scheduled — the HTTP response to the tracker SDK is not blocked on the agent
+run.
 
 **Evaluation clustering (feeds `analyze_activity`, not a trigger rule):** in the same pass that
-aggregates recent events, group `model_view` events by modality; if 2+ *distinct* models of the
-same modality were viewed within a 15-minute window, fold that into the behavior summary as a soft
-signal (e.g. "browsing multiple voice models"). This is separate from `model_compare` (TRK-6, which
-only fires on the explicit "add to comparison" action) — clustering never produces a "you compared
-X vs Y" claim, only a softer "you've been evaluating this modality" one.
+aggregates recent events, group `item_view` events by subcategory; if 2+ *distinct* items of the
+same subcategory were viewed within a 15-minute window, fold that into the behavior summary as a
+soft signal (e.g. "browsing multiple travel cards"). This is separate from `item_compare` (TRK-6,
+which only fires on an explicit compare action) — clustering never produces a "you compared X vs
+Y" claim, only a softer "you've been evaluating this category" one.
 
 ---
 
 ## 4. LangGraph node contracts
 
+Unchanged shape from the hackathon build — every node is now tenant-scoped, and
+`generate_narrative`/the grounding guard are strengthened per AGT-5/AGT-8 (catalog-only, no
+invented facts).
+
 | Node | Input | Output | Notes |
 |---|---|---|---|
-| `analyze_activity` | `user_id` | `behavior_summary: str`, `activity_hash: str` | Pulls last N events, aggregates by modality/provider/query; reads explicit `model_compare` events for high-confidence "X vs Y" pairs, and separately applies same-modality view clustering (see §3) for a softer evaluation signal; if `activity_hash` matches last stored recommendation's hash, short-circuit the graph (AGT-6) |
-| `retrieve_models` | `behavior_summary` | `candidates: list[{id, title, score, metadata}]` | Embeds a retrieval query from the summary, queries Chroma top-k=8 |
-| `rerank_candidates` | `candidates` (dense-ranked) | `candidates` (re-ordered) | Hybrid dense+sparse re-rank (bonus, retrieval polish): blends each candidate's Chroma distance with lexical term overlap against its own catalog document text (`app/vector.py:ModelVectorStore.document`); additive bonus capped at `RERANK_LEXICAL_BONUS`, no LLM/network call. Also applies the explicit feedback loop (bonus): `recent_feedback_by_model` looks back 14 days for the user's most recent 👍/👎 per model and `apply_feedback_adjustment` nudges distance accordingly — but only when the current query is similar enough (lexical overlap) to the query the rating was originally given under, so a rating never leaks across unrelated future searches |
-| `grade_refine` | `candidates`, retry count | `candidates` (possibly re-retrieved) or `refined_query` | If max(score) < threshold and retries < 2, rewrite query (broaden modality / drop over-specific term) and loop back to `retrieve_models` (which re-runs `rerank_candidates` on the new results) |
-| `generate_narrative` | `behavior_summary`, `candidates` | `narrative: str`, `model_ids: list[str]` | Mesh API call; prompt instructs the model to produce a comparison-driven narrative referencing **only** provided candidate IDs (e.g. contrasting price/latency); response is validated post-hoc — any ID not in `candidates` is dropped before storage |
-| `store_and_deliver` | `narrative`, `model_ids`, `activity_hash`, `trigger_reason` | — | Writes `recommendations` row; (bonus) enqueues email/Telegram send |
+| `analyze_activity` | `tenant_id`, `visitor_id` | `behavior_summary: str`, `activity_hash: str` | Pulls last N events for that tenant+visitor, aggregates by subcategory/category/query; reads explicit `item_compare` events for high-confidence "X vs Y" pairs, and separately applies same-subcategory view clustering (see §3) for a softer evaluation signal; if `activity_hash` matches last stored recommendation's hash, short-circuit the graph (AGT-6) |
+| `retrieve_candidates` | `tenant_id`, `behavior_summary` | `candidates: list[{id, title, score, metadata}]` | Embeds a retrieval query from the summary, queries that tenant's Chroma collection/namespace top-k=8 — never another tenant's |
+| `rerank_candidates` | `candidates` (dense-ranked) | `candidates` (re-ordered) | Hybrid dense+sparse re-rank: blends each candidate's Chroma distance with lexical term overlap against its own catalog document text; additive bonus capped at `RERANK_LEXICAL_BONUS`, no LLM/network call. Feedback loop (bonus) unchanged in spirit, now scoped per tenant+visitor |
+| `grade_refine` | `candidates`, retry count | `candidates` (possibly re-retrieved) or `refined_query` | If max(score) < threshold and retries < 2, rewrite query (broaden subcategory / drop over-specific term) and loop back to `retrieve_candidates` (which re-runs `rerank_candidates` on the new results) |
+| `generate_narrative` | `behavior_summary`, `candidates` | `narrative: str`, `item_ids: list[str]`, `grounding_facts: dict` | Mesh API call; prompt instructs the model to produce a comparison-driven narrative referencing **only** provided candidate IDs and **only** citing numeric/factual claims present in `candidates[*].metadata.attributes` (AGT-5/AGT-8) — response validated post-hoc: any ID not in `candidates` is dropped, any numeric claim not traceable to a candidate's `attributes` is dropped before storage |
+| `store_and_deliver` | `narrative`, `item_ids`, `grounding_facts`, `activity_hash`, `trigger_reason` | — | Writes `recommendations` row (`grounding_facts` persisted for OBS-3 audit); pushes to any open `widget_sessions` connection for that tenant+visitor (DLV-2); (bonus) enqueues email/Telegram send |
 
-Grounding guard (important for the "no hallucinated models" NFR): after `generate_narrative`
-returns, filter `model_ids` against the candidate set server-side before persisting — never trust
-the LLM's IDs blindly.
+Grounding guard (important for AGT-5/AGT-8 and NFR — no hallucinated items or facts): after
+`generate_narrative` returns, filter `item_ids` against the candidate set *and* filter any
+numeric/factual claim in the narrative against `grounding_facts` server-side before persisting —
+never trust the LLM's IDs or figures blindly. This is the same "LLM never asserts facts, Python
+computes them" house style the pipeline already followed pre-pivot, now load-bearing for a
+regulated tenant's liability, not just a rubric line item.
 
 ---
 
-## 5. Sequence — recommendation generation
+## 5. Sequence — recommendation generation with real-time push
 
 ```mermaid
 sequenceDiagram
-  participant B as Browser
+  participant W as Tracker SDK (host page)
   participant API as FastAPI
   participant DB as SQL DB
   participant AGT as Agent (LangGraph)
-  participant VDB as Vector DB
+  participant VDB as Vector DB (tenant-scoped)
   participant MESH as Mesh API
+  participant WS as Widget (open connection)
 
-  B->>API: POST /api/events/batch
-  API->>DB: bulk insert events
-  API->>DB: should_trigger(user_id)?
+  W->>API: POST /api/events/batch (tenant API key)
+  API->>DB: bulk insert events (tenant_id, visitor_id)
+  API->>DB: should_trigger(tenant_id, visitor_id)?
   alt trigger fires
-    API-->>B: 200 OK (immediate)
-    API->>AGT: run pipeline (background task)
-    AGT->>DB: fetch recent events
-    AGT->>VDB: semantic search (top-k)
+    API-->>W: 200 OK (immediate)
+    API->>AGT: run pipeline (background task, tenant-scoped)
+    AGT->>DB: fetch recent events for tenant+visitor
+    AGT->>VDB: semantic search (top-k, this tenant's collection only)
     AGT->>AGT: grade relevance (retry if weak)
-    AGT->>MESH: generate narrative (grounded, comparison-driven prompt)
-    MESH-->>AGT: narrative + referenced model ids
-    AGT->>AGT: filter ids against candidate set
-    AGT->>DB: store recommendation
+    AGT->>MESH: generate narrative (grounded, catalog-only prompt)
+    MESH-->>AGT: narrative + referenced item ids + cited facts
+    AGT->>AGT: filter ids and facts against candidate set
+    AGT->>DB: store recommendation (grounding_facts persisted)
+    AGT->>WS: push over open widget_sessions connection, if any
   else no trigger
-    API-->>B: 200 OK
+    API-->>W: 200 OK
   end
 ```
 
-## 6. Sequence — admin model dual-write
+## 6. Sequence — tenant admin manual catalog dual-write
 
 ```mermaid
 sequenceDiagram
-  participant Admin
+  participant Admin as Tenant admin
   participant API as FastAPI
   participant DB as SQL DB
-  participant VDB as Vector DB
+  participant VDB as Vector DB (tenant-scoped)
 
-  Admin->>API: POST /api/admin/models
-  API->>DB: insert model (vector_synced=false)
-  API->>VDB: upsert embedding
+  Admin->>API: POST /api/admin/catalog
+  API->>DB: insert catalog_item (tenant_id, vector_synced=false)
+  API->>VDB: upsert embedding into this tenant's collection
   alt vector write succeeds
     API->>DB: set vector_synced=true
   else vector write fails
     API->>DB: leave vector_synced=false (retry job picks up later)
   end
   API-->>Admin: 201 Created (with sync status)
+```
+
+## 7. Sequence — feed adapter sync (new)
+
+```mermaid
+sequenceDiagram
+  participant Sched as Scheduler
+  participant ING as Ingestion service
+  participant Feed as Tenant's feed/API
+  participant DB as SQL DB
+  participant VDB as Vector DB (tenant-scoped)
+
+  Sched->>ING: sync tenant catalog (on schedule)
+  ING->>Feed: fetch feed
+  alt feed reachable
+    ING->>DB: upsert catalog_items (ingestion_adapter='feed', last_synced_at=now, sync_stale=false)
+    ING->>VDB: upsert embeddings into this tenant's collection
+  else feed unreachable / malformed
+    ING->>DB: set sync_stale=true on affected rows (ING-5)
+  end
 ```

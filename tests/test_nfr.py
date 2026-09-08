@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, User
+from app.models import Event, Model, Tenant, User
 from app.security import hash_password
 from app.services.agent_graph import prepare_retrieval_recommendation
 
@@ -58,6 +58,14 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> None:
     """NFR-2: at most 1 LLM generation call per trigger event, excluding bounded retries.
     Retries (AGT-4) only re-run retrieval, never generation — forcing 2 retries here proves
@@ -65,10 +73,15 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
     """
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         user = User(
-            email="nfr2@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="nfr2@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         model = Model(
+            tenant_id=tenant.id,
             title="Eventually Found",
             provider="Test",
             modality="LLM",
@@ -79,7 +92,12 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
         session.add_all([user, model])
         session.commit()
         session.add(
-            Event(user_id=user.id, event_type="search", metadata_json={"query": "test"})
+            Event(
+                tenant_id=tenant.id,
+                user_id=user.id,
+                event_type="search",
+                metadata_json={"query": "test"},
+            )
         )
         session.commit()
 
@@ -88,7 +106,11 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
                 self.calls = 0
 
             def query_scored(
-                self, text: str, limit: int = 5, where: dict | None = None
+                self,
+                text: str,
+                tenant_id: int,
+                limit: int = 5,
+                where: dict | None = None,
             ):
                 self.calls += 1
                 # Weak until the 3rd attempt (initial + 2 retries == MAX_RETRIES), so
@@ -108,7 +130,9 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
 
         store = RetryForcingStore()
         mesh = CountingMeshGenerator()
-        recommendation = prepare_retrieval_recommendation(session, store, user.id, mesh)
+        recommendation = prepare_retrieval_recommendation(
+            session, store, tenant.id, user.id, mesh
+        )
 
         assert store.calls == 3, "expected the initial attempt plus 2 bounded retries"
         assert mesh.calls == 1, "generation must run exactly once despite the retries"

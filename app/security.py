@@ -26,6 +26,7 @@ def create_session_token(user: User, settings: Settings) -> str:
     payload = {
         "sub": str(user.id),
         "role": user.role,
+        "tenant_id": user.tenant_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=12),
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")

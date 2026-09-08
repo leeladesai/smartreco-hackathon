@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, User
+from app.models import Event, Model, Recommendation, Tenant, User
 from app.security import hash_password
 from app.services.admin_overview import (
     event_type_counts,
@@ -22,11 +22,26 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="u@test.dev", password_hash=hash_password("x"), role="user")
+        tenant = _make_tenant(session)
+        user = User(
+            tenant_id=tenant.id,
+            email="u@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
         model = Model(
+            tenant_id=tenant.id,
             title="M1",
             provider="P",
             modality="LLM",
@@ -38,9 +53,15 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
         session.commit()
         session.add_all(
             [
-                Event(user_id=user.id, event_type="page_view", metadata_json={}),
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="page_view",
+                    metadata_json={},
+                ),
                 # Generated (has a narrative) — counts.
                 Recommendation(
+                    tenant_id=tenant.id,
                     user_id=user.id,
                     narrative="hi",
                     model_ids=[],
@@ -51,6 +72,7 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
                 # Retrieval-only (no narrative, e.g. Mesh unset) — must not count as
                 # "generated".
                 Recommendation(
+                    tenant_id=tenant.id,
                     user_id=user.id,
                     narrative=None,
                     model_ids=[],
@@ -62,76 +84,124 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
         )
         session.commit()
 
-        totals = usage_totals(session)
+        totals = usage_totals(session, tenant.id)
         assert totals == {"users": 1, "models": 1, "events": 1, "recommendations": 1}
 
 
 def test_event_type_counts_groups_by_type(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="u@test.dev", password_hash=hash_password("x"), role="user")
+        tenant = _make_tenant(session)
+        user = User(
+            tenant_id=tenant.id,
+            email="u@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
         session.add(user)
         session.commit()
         session.add_all(
             [
-                Event(user_id=user.id, event_type="page_view", metadata_json={}),
-                Event(user_id=user.id, event_type="page_view", metadata_json={}),
-                Event(user_id=user.id, event_type="search", metadata_json={}),
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="page_view",
+                    metadata_json={},
+                ),
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="page_view",
+                    metadata_json={},
+                ),
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="search",
+                    metadata_json={},
+                ),
             ]
         )
         session.commit()
 
-        assert event_type_counts(session) == {"page_view": 2, "search": 1}
+        assert event_type_counts(session, tenant.id) == {"page_view": 2, "search": 1}
 
 
 def test_feedback_sentiment_counts_up_and_down_ignoring_other_events(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="u@test.dev", password_hash=hash_password("x"), role="user")
+        tenant = _make_tenant(session)
+        user = User(
+            tenant_id=tenant.id,
+            email="u@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
         session.add(user)
         session.commit()
         session.add_all(
             [
                 Event(
+                    tenant_id=tenant.id,
                     user_id=user.id,
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "up"},
                 ),
                 Event(
+                    tenant_id=tenant.id,
                     user_id=user.id,
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "up"},
                 ),
                 Event(
+                    tenant_id=tenant.id,
                     user_id=user.id,
                     event_type="recommendation_feedback",
                     metadata_json={"rating": "down"},
                 ),
                 # Not feedback — must not pollute the count.
-                Event(user_id=user.id, event_type="model_view", metadata_json={}),
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="model_view",
+                    metadata_json={},
+                ),
             ]
         )
         session.commit()
 
-        assert feedback_sentiment(session) == {"up": 2, "down": 1}
+        assert feedback_sentiment(session, tenant.id) == {"up": 2, "down": 1}
 
 
 def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user_a = User(email="a@test.dev", password_hash=hash_password("x"), role="user")
-        user_b = User(email="b@test.dev", password_hash=hash_password("x"), role="user")
+        tenant = _make_tenant(session)
+        user_a = User(
+            tenant_id=tenant.id,
+            email="a@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
+        user_b = User(
+            tenant_id=tenant.id,
+            email="b@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
         session.add_all([user_a, user_b])
         session.commit()
         session.add_all(
             [
                 Event(
+                    tenant_id=tenant.id,
                     user_id=user_a.id,
                     event_type="page_view",
                     metadata_json={},
                     created_at=datetime(2026, 8, 8, 12, 0, 0),
                 ),
                 Event(
+                    tenant_id=tenant.id,
                     user_id=user_b.id,
                     event_type="search",
                     metadata_json={"query": "voice"},
@@ -141,7 +211,7 @@ def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
         )
         session.commit()
 
-        events, has_more = recent_activity(session, limit=10)
+        events, has_more = recent_activity(session, tenant.id, limit=10)
         assert [e["user_email"] for e in events] == ["b@test.dev", "a@test.dev"]
         assert events[0]["event_type"] == "search"
         assert events[0]["metadata"] == {"query": "voice"}
@@ -151,18 +221,29 @@ def test_recent_activity_includes_user_email_newest_first(tmp_path) -> None:
 def test_recent_activity_respects_limit(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(email="u@test.dev", password_hash=hash_password("x"), role="user")
+        tenant = _make_tenant(session)
+        user = User(
+            tenant_id=tenant.id,
+            email="u@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
+        )
         session.add(user)
         session.commit()
         session.add_all(
             [
-                Event(user_id=user.id, event_type="page_view", metadata_json={})
+                Event(
+                    tenant_id=tenant.id,
+                    user_id=user.id,
+                    event_type="page_view",
+                    metadata_json={},
+                )
                 for _ in range(5)
             ]
         )
         session.commit()
 
-        events, has_more = recent_activity(session, limit=2)
+        events, has_more = recent_activity(session, tenant.id, limit=2)
         assert len(events) == 2
         assert has_more is True
 

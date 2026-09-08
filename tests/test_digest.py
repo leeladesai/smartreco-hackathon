@@ -2,7 +2,7 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, User
+from app.models import Event, Model, Recommendation, Tenant, User
 from app.security import hash_password
 from app.services.digest import (
     EmailNotifier,
@@ -23,8 +23,18 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 class NullVectorStore:
-    def query_scored(self, text: str, limit: int = 5, where: dict | None = None):
+    def query_scored(
+        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+    ):
         return []
 
 
@@ -176,16 +186,24 @@ def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
 ) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         with_history = User(
-            email="with-history@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="with-history@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         no_history = User(
-            email="no-history@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="no-history@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add_all([with_history, no_history])
         session.commit()
         session.add(
             Event(
+                tenant_id=tenant.id,
                 user_id=with_history.id,
                 event_type="search",
                 metadata_json={"query": "voice"},
@@ -211,13 +229,18 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
     today's digest — DLV-3 sends the latest recommendation, not only fresh ones."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         user = User(
-            email="stable@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="stable@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add(user)
         session.commit()
         session.add(
             Recommendation(
+                tenant_id=tenant.id,
                 user_id=user.id,
                 narrative="You'll like this.",
                 model_ids=[],
@@ -243,13 +266,18 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
 def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         user = User(
-            email="broken@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="broken@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add(user)
         session.commit()
         session.add(
             Recommendation(
+                tenant_id=tenant.id,
                 user_id=user.id,
                 narrative="hi",
                 model_ids=[],
@@ -278,7 +306,9 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
 def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         model = Model(
+            tenant_id=tenant.id,
             title="Voice X",
             provider="Test Labs",
             modality="Voice",
@@ -289,6 +319,7 @@ def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) ->
         session.add(model)
         session.commit()
         recommendation = Recommendation(
+            tenant_id=tenant.id,
             user_id=1,
             model_ids=[model.id],
             retrieval_meta=[

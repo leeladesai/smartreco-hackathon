@@ -117,7 +117,10 @@ def parse_catalog_file(filename: str, content: bytes) -> list[dict]:
 
 
 def import_catalog_rows(
-    session: Session, vector_store: ModelVectorStore, raw_rows: list[dict]
+    session: Session,
+    vector_store: ModelVectorStore,
+    tenant_id: int,
+    raw_rows: list[dict],
 ) -> list[dict]:
     """Validates and inserts each row independently — reuses catalog.create_model so a
     bulk import writes through the exact same DB+vector-store path (and the same
@@ -160,7 +163,9 @@ def import_catalog_rows(
             continue
 
         existing = session.scalars(
-            select(Model).where(Model.title.ilike(payload.title))
+            select(Model).where(
+                Model.title.ilike(payload.title), Model.tenant_id == tenant_id
+            )
         ).first()
         if existing:
             results.append(
@@ -174,7 +179,7 @@ def import_catalog_rows(
             continue
 
         try:
-            create_model(session, vector_store, payload)
+            create_model(session, vector_store, tenant_id, payload)
         except (
             Exception
         ) as exc:  # noqa: BLE001 — one row's failure must not abort the batch

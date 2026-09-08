@@ -38,6 +38,11 @@ Read these documents before making architectural or product changes:
 6. `docs/05-HLD.md` — component boundaries and data flow.
 7. `docs/06-LLD.md` — schema, API paths, trigger logic, and LangGraph node contracts.
 8. `docs/07-Test-Strategy.md` — test cases mapped to requirements.
+9. `docs/design/09-Platform-Pivot-Decision.md` — post-hackathon direction: converting from a
+   single-tenant demo app into a multi-tenant, embeddable platform. Documents 2/5/6 above are now
+   out of date wherever they assume a single tenant, a self-curated catalog, or a same-origin
+   dashboard as the only delivery surface — read this record first; updates to those documents are
+   pending.
 
 When code and planning documents disagree, preserve the requirement IDs and update the relevant
 design document as part of the change.
