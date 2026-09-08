@@ -123,6 +123,17 @@ catalog rows after. Document id = `catalog_items.id` (string), embedding input =
 
 ## 2. API contract
 
+**Implementation status:** this table is the target contract for the full platform. As of the
+tracker-SDK-phase work in progress, the running app has *removed* the AI-engineer routes this table
+never listed as current in the first place (`POST /api/auth/register`, `POST /api/auth/login`,
+`GET /api/auth/me`, `PUT /api/auth/me/telegram-chat-id`, the old cookie-session
+`POST /api/events/batch`, `GET /api/recommendations/me`, `GET /api/activity/me`) — none of the
+tenant/tracker-SDK rows below (`/api/tenants*`, `/api/track/events`, `/api/widget/*`,
+`/api/admin/ingestion/*`) exist yet either. Currently live: `POST /api/admin/login`,
+`GET/POST/PUT/DELETE /api/admin/models*` and `GET /api/models*` (now admin-only pending a public/
+tenant-key catalog surface), `GET /api/admin/{overview,users,observability}*`. See
+`docs/design/09-Platform-Pivot-Decision.md` and the session handoff notes for exactly what's built.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/api/tenants` | platform admin | TEN-1, onboard a tenant, issue API key (shown once) |

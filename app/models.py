@@ -128,15 +128,3 @@ class Recommendation(Base):
     mesh_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-
-class DemoModeSetting(Base):
-    """Single-row table (id is always 1) — a global, admin-controlled switch that shows a
-    live event-tracking overlay in the model drawer/detail page for every AI-engineer
-    session. Off by default; meant to be flipped on only while demoing the pipeline live
-    (e.g. to hackathon judges), not left on for normal use."""
-
-    __tablename__ = "demo_mode_settings"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False)

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.db import build_session_factory
 from app.models import Event, Model, Recommendation, Tenant, User
-from app.security import hash_password
+from app.security import create_session_token, hash_password
 from app.services.admin_overview import (
     event_type_counts,
     feedback_sentiment,
@@ -248,15 +248,27 @@ def test_recent_activity_respects_limit(tmp_path) -> None:
         assert has_more is True
 
 
+def _make_non_admin(client: TestClient, email: str) -> User:
+    """No self-registration path remains for non-admin accounts (the AI-engineer
+    login/register surface was removed — docs/design/09-Platform-Pivot-Decision.md);
+    create one directly and mint its session cookie the way login used to."""
+    with client.app.state.session_factory() as session:
+        user = User(
+            tenant_id=1,
+            email=email,
+            password_hash=hash_password("password123"),
+            role="user",
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        token = create_session_token(user, client.app.state.settings)
+    client.cookies.set(client.app.state.settings.session_cookie_name, token)
+    return user
+
+
 def test_admin_overview_endpoint_requires_admin(client: TestClient) -> None:
-    client.post(
-        "/api/auth/register",
-        json={"email": "notadmin@test.dev", "password": "password123"},
-    )
-    client.post(
-        "/api/auth/login",
-        json={"email": "notadmin@test.dev", "password": "password123"},
-    )
+    _make_non_admin(client, "notadmin@test.dev")
     response = client.get("/api/admin/overview")
     assert response.status_code == 403
 
@@ -265,18 +277,17 @@ def test_admin_overview_endpoint_requires_admin(client: TestClient) -> None:
 
 
 def test_admin_overview_endpoint_returns_real_aggregates(client: TestClient) -> None:
-    client.post(
-        "/api/auth/register",
-        json={"email": "overview-user@test.dev", "password": "password123"},
-    )
-    client.post(
-        "/api/auth/login",
-        json={"email": "overview-user@test.dev", "password": "password123"},
-    )
-    client.post(
-        "/api/events/batch",
-        json={"events": [{"event_type": "search", "metadata": {"query": "voice"}}]},
-    )
+    user = _make_non_admin(client, "overview-user@test.dev")
+    with client.app.state.session_factory() as session:
+        session.add(
+            Event(
+                tenant_id=1,
+                user_id=user.id,
+                event_type="search",
+                metadata_json={"query": "voice"},
+            )
+        )
+        session.commit()
 
     client.post(
         "/api/admin/login",

@@ -44,8 +44,17 @@ AI engineer and admin auth are deliberately two separate modules — a separate 
 and (for admin) no self-registration — not one login screen with a role picker. This pattern now
 generalizes to **tenant admin** (manages that tenant's catalog/ingestion/widget config) replacing
 the former single-admin "Curator" role; a **platform admin** role (us, not a tenant) is layered on
-top for cross-tenant operations. The AI-engineer-facing `user` role from the hackathon build is
-retained only for the reference AI-model-catalog tenant, not as a platform-wide concept.
+top for cross-tenant operations.
+
+**Implementation status:** the AI-engineer-facing `user` role/module below (AUTH-1, AUTH-2) was
+actively removed from the running code — not merely frozen — as part of the tracker-SDK-phase work
+(`docs/design/09-Platform-Pivot-Decision.md`), along with the cookie-session catalog/dashboard/
+activity UI it gated. `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`, and
+`PUT /api/auth/me/telegram-chat-id` no longer exist. The reference tenant's own end-user surface
+returns later in that same phase, built on anonymous tracker-SDK visitor identity rather than this
+cookie-session `user` role — AUTH-1/AUTH-2 below describe that *target* shape, not current code.
+`AUTH-3` through `AUTH-6` (admin auth) are current and unaffected; the running `User.role` is
+`'admin'` only for now (no `tenant_admin`/`platform_admin` split until tenant onboarding, TEN-1).
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
@@ -106,7 +115,15 @@ anonymous visitor rather than a logged-in platform user.
 
 ### DLV
 Now chat-bot-launcher delivery with real-time push, not an in-app dashboard (see pivot record §3.2,
-§3.5). The former dashboard requirements are retained only for the reference tenant's own UI.
+§3.5).
+
+**Implementation status:** the former dashboard/activity UI (`GET /api/recommendations/me`,
+`GET /api/activity/me`, and their pages) was removed along with the AI-engineer login surface
+(AUTH note above) — DLV-1 through DLV-4 and DLV-6 below describe the *target* chat-bot-widget
+shape, not yet built. DLV-5 (scheduled digest) is disabled (its APScheduler job unregistered in
+`app/main.py`) rather than redesigned, since it has no visitors to iterate over until the tracker
+SDK reintroduces them — `app/services/digest.py` itself is untouched and ready to be re-registered
+against visitor identity once that lands.
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|

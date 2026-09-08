@@ -9,6 +9,14 @@ behavior evolves, with a scheduled digest and full pipeline tracing on top.
 
 Originally built for the Krish Naik Hackathon 2026.
 
+> **Platform pivot in progress.** TrailMind is converting from this single-tenant demo into a
+> multi-tenant, embeddable recommendation platform — see
+> [`docs/design/09-Platform-Pivot-Decision.md`](docs/design/09-Platform-Pivot-Decision.md). The
+> AI-engineer self-service login/catalog/dashboard described below has been removed; it returns,
+> generalized to anonymous per-tenant visitors, with the tracker SDK phase. What remains — the
+> curator/admin console and the recommendation pipeline itself — is otherwise unchanged and still
+> accurate below.
+
 ---
 
 ## Live demo
@@ -19,9 +27,6 @@ Originally built for the Krish Naik Hackathon 2026.
 | Role | Email | Password |
 |---|---|---|
 | Curator / admin | `curator@trailmind.dev` | `admin@123` |
-
-AI engineers aren't seeded with a shared demo login — use the **Register** tab on the login page to
-create your own account.
 
 The app is hosted on Render's free tier, which spins the service down after ~15 minutes idle — the
 first hit after idle can take 30–60s to wake up. The Vercel link above is a lightweight warm-up page
