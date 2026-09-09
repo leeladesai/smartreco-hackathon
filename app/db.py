@@ -27,7 +27,9 @@ def _add_missing_columns(engine) -> None:
     table_names = inspector.get_table_names()
 
     if "models" in table_names:
-        _add_columns_if_missing(engine, inspector, "models", {"story": "TEXT"})
+        _add_columns_if_missing(
+            engine, inspector, "models", {"story": "TEXT", "tenant_id": "INTEGER"}
+        )
 
     if "recommendations" in table_names:
         _add_columns_if_missing(
@@ -39,12 +41,33 @@ def _add_missing_columns(engine) -> None:
                 "mesh_prompt_tokens": "INTEGER",
                 "mesh_completion_tokens": "INTEGER",
                 "mesh_cost_usd": "FLOAT",
+                "tenant_id": "INTEGER",
+                "visitor_id": "VARCHAR(64)",
             },
         )
 
     if "users" in table_names:
         _add_columns_if_missing(
-            engine, inspector, "users", {"telegram_chat_id": "VARCHAR(120)"}
+            engine,
+            inspector,
+            "users",
+            {"telegram_chat_id": "VARCHAR(120)", "tenant_id": "INTEGER"},
+        )
+
+    if "events" in table_names:
+        _add_columns_if_missing(
+            engine,
+            inspector,
+            "events",
+            {"tenant_id": "INTEGER", "visitor_id": "VARCHAR(64)"},
+        )
+
+    if "tenants" in table_names:
+        # TIMESTAMP, not SQLite's own DATETIME spelling — this ALTER TABLE runs
+        # against Postgres too (see test_handshake.py, which hits the real
+        # DATABASE_URL), and Postgres has no DATETIME type.
+        _add_columns_if_missing(
+            engine, inspector, "tenants", {"first_event_at": "TIMESTAMP"}
         )
 
 

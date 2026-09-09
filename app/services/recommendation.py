@@ -7,7 +7,7 @@ from typing import NamedTuple
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Event, Model, Recommendation
+from app.models import Event, Model, Recommendation, Tenant
 
 
 class FeedbackRecord(NamedTuple):
@@ -58,13 +58,18 @@ def session_weight(session_index: int) -> float:
     return SESSION_DECAY**session_index
 
 
-def _summarize_bucket(session: Session, events: list[Event]) -> str:
+def _summarize_bucket(session: Session, tenant_id: int, events: list[Event]) -> str:
     """Aggregate a single session bucket of events into a natural-language behavior
     summary.
 
     Never a raw dump of event data into the prompt: `model_view` events for 2+ distinct
     models of the same modality within a short window are folded in as a soft "browsing
     this modality" signal, kept distinct from an explicit `model_compare` (AGT-2).
+
+    Model lookups are scoped to `tenant_id`, not just by id: an `Event.model_id` is
+    client-submitted at ingestion (see `POST /api/track/events`), so without this
+    filter a visitor could reference another tenant's catalog item id and have its
+    title/modality leak into their own behavior summary (TEN-3/NFR-8).
     """
     if not events:
         return ""
@@ -74,7 +79,9 @@ def _summarize_bucket(session: Session, events: list[Event]) -> str:
         {
             model.id: model
             for model in session.scalars(
-                select(Model).where(Model.id.in_(model_ids))
+                select(Model).where(
+                    Model.id.in_(model_ids), Model.tenant_id == tenant_id
+                )
             ).all()
         }
         if model_ids
@@ -148,7 +155,7 @@ def _summarize_bucket(session: Session, events: list[Event]) -> str:
     return " ".join(parts)
 
 
-def activity_summary(session: Session, events: list[Event]) -> str:
+def activity_summary(session: Session, tenant_id: int, events: list[Event]) -> str:
     """Session-aware behavior summary: current-session activity is called out first,
     older sessions (beyond the SESSION_GAP inactivity boundary) are folded in as
     secondary "Earlier: ..." context rather than blended in unweighted.
@@ -156,9 +163,9 @@ def activity_summary(session: Session, events: list[Event]) -> str:
     buckets = session_bucket_events(events)
     if not buckets:
         return ""
-    current = _summarize_bucket(session, buckets[0])
+    current = _summarize_bucket(session, tenant_id, buckets[0])
     older = _summarize_bucket(
-        session, [event for bucket in buckets[1:] for event in bucket]
+        session, tenant_id, [event for bucket in buckets[1:] for event in bucket]
     )
     parts: list[str] = []
     if current:
@@ -168,7 +175,9 @@ def activity_summary(session: Session, events: list[Event]) -> str:
     return " ".join(parts)
 
 
-def dominant_modality(session: Session, events: list[Event]) -> str | None:
+def dominant_modality(
+    session: Session, tenant_id: int, events: list[Event]
+) -> str | None:
     """Retrieval polish (Iteration 3): session-weighted modality scoring, replacing the
     old all-or-nothing rule (which required *exactly one* modality to have 2+ distinct
     models, else gave up entirely — a 3-way tie across session boundaries disabled
@@ -191,7 +200,9 @@ def dominant_modality(session: Session, events: list[Event]) -> str | None:
         return None
     models_by_id = {
         model.id: model
-        for model in session.scalars(select(Model).where(Model.id.in_(model_ids))).all()
+        for model in session.scalars(
+            select(Model).where(Model.id.in_(model_ids), Model.tenant_id == tenant_id)
+        ).all()
     }
 
     scores: dict[str, float] = defaultdict(float)
@@ -230,7 +241,7 @@ def dominant_modality(session: Session, events: list[Event]) -> str | None:
 
 
 def session_evidence(
-    session: Session, events: list[Event], limit: int = 5
+    session: Session, tenant_id: int, events: list[Event], limit: int = 5
 ) -> list[dict]:
     """Current session only (buckets[0]), newest-first — the raw, itemized "what actually
     happened" list backing the Dashboard's evidence row, as opposed to `activity_summary`'s
@@ -247,7 +258,9 @@ def session_evidence(
         {
             model.id: model
             for model in session.scalars(
-                select(Model).where(Model.id.in_(model_ids))
+                select(Model).where(
+                    Model.id.in_(model_ids), Model.tenant_id == tenant_id
+                )
             ).all()
         }
         if model_ids
@@ -315,24 +328,28 @@ def activity_hash(events: list[Event]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def recent_events(session: Session, user_id: int) -> list[Event]:
+def recent_events(session: Session, tenant_id: int, visitor_id: str) -> list[Event]:
     cutoff = datetime.utcnow() - LOOKBACK_DAYS
     return session.scalars(
         select(Event)
-        .where(Event.user_id == user_id, Event.created_at >= cutoff)
+        .where(
+            Event.tenant_id == tenant_id,
+            Event.visitor_id == visitor_id,
+            Event.created_at >= cutoff,
+        )
         .order_by(Event.created_at.desc())
         .limit(LOOKBACK_EVENT_LIMIT)
     ).all()
 
 
 def recent_feedback_by_model(
-    session: Session, user_id: int
+    session: Session, tenant_id: int, visitor_id: str
 ) -> dict[int, FeedbackRecord]:
     """Most recent explicit up/down feedback per model within FEEDBACK_LOOKBACK_DAYS —
-    newest rating wins if the user changed their mind. No new table: feedback is just
-    another `Event` (event_type="recommendation_feedback", metadata={"rating": ...,
-    "recommendation_id": ...}), tracked through the same batched /api/events/batch path
-    as every other behavioral signal. Feeds the rerank_candidates node
+    newest rating wins if the visitor changed their mind. No new table: feedback is
+    just another `Event` (event_type="recommendation_feedback", metadata={"rating":
+    ..., "recommendation_id": ...}), tracked through the same batched tracker-SDK
+    ingestion path as every other behavioral signal. Feeds the rerank_candidates node
     (app/services/agent_graph.py) so a downvote actually suppresses that model from
     reappearing, not just logs a rating.
 
@@ -340,13 +357,14 @@ def recent_feedback_by_model(
     (via the linked Recommendation row) so the caller can scope the adjustment to a
     similar query rather than applying it globally — a downvote on a voice model shown
     for a "rack-based" search shouldn't also suppress that same model the next time the
-    user is genuinely looking for voice models.
+    visitor is genuinely looking for voice models.
     """
     cutoff = datetime.utcnow() - FEEDBACK_LOOKBACK_DAYS
     events = session.scalars(
         select(Event)
         .where(
-            Event.user_id == user_id,
+            Event.tenant_id == tenant_id,
+            Event.visitor_id == visitor_id,
             Event.event_type == "recommendation_feedback",
             Event.created_at >= cutoff,
         )
@@ -362,7 +380,10 @@ def recent_feedback_by_model(
         {
             rec.id: rec.behavior_summary
             for rec in session.scalars(
-                select(Recommendation).where(Recommendation.id.in_(recommendation_ids))
+                select(Recommendation).where(
+                    Recommendation.id.in_(recommendation_ids),
+                    Recommendation.tenant_id == tenant_id,
+                )
             ).all()
         }
         if recommendation_ids
@@ -411,8 +432,9 @@ def is_recommendation_stale(events: list[Event], latest: Recommendation | None) 
     return True
 
 
-def should_trigger(session: Session, user_id: int) -> bool:
-    """Cheap, pure-SQL gate run synchronously at the end of `/api/events/batch` (AGT-1).
+def should_trigger(session: Session, tenant_id: int, visitor_id: str) -> bool:
+    """Cheap, pure-SQL gate run synchronously at the end of the tracker-SDK ingestion
+    endpoint (AGT-1).
 
     Deliberately outside the LangGraph pipeline — the graph only runs once this says
     yes, so a per-event LLM call never happens (still true here: this only adds a
@@ -425,19 +447,48 @@ def should_trigger(session: Session, user_id: int) -> bool:
     background pipeline run (and LangSmith trace) on every single batch flush once the
     threshold has been crossed once.
     """
-    events = recent_events(session, user_id)
+    events = recent_events(session, tenant_id, visitor_id)
     buckets = session_bucket_events(events)
     if not buckets or len(buckets[0]) < SESSION_TRIGGER_COUNT:
         return False
     latest = session.scalar(
         select(Recommendation)
-        .where(Recommendation.user_id == user_id)
+        .where(
+            Recommendation.tenant_id == tenant_id,
+            Recommendation.visitor_id == visitor_id,
+        )
         .order_by(Recommendation.created_at.desc())
     )
     return is_recommendation_stale(events, latest)
 
 
-def mesh_cost_rollup(session: Session, limit: int = 10) -> dict:
+def tenant_rate_limited(session: Session, tenant: Tenant) -> bool:
+    """TEN-6: a hard per-tenant ceiling on LLM-triggering agent runs, independent of
+    the per-visitor `should_trigger` cooldown above. The tenant API key is a public,
+    client-embedded credential (it ships in the tracker snippet's page source, like a
+    Stripe publishable key — see app/services/tenants.py), so per-visitor cooldown
+    alone doesn't stop an abuser fabricating unlimited distinct visitor_ids to bypass
+    it; only a tenant-aggregate cap actually bounds worst-case Mesh spend and protects
+    other tenants sharing this backend (docs/design/09-Platform-Pivot-Decision.md §5).
+
+    Counts `Recommendation` rows as a proxy for "agent runs" — one row is written per
+    completed run (`_store_and_deliver`), so this is a real count of runs in the last
+    hour, not an estimate.
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=1)
+    recent_run_count = (
+        session.scalar(
+            select(func.count(Recommendation.id)).where(
+                Recommendation.tenant_id == tenant.id,
+                Recommendation.created_at >= cutoff,
+            )
+        )
+        or 0
+    )
+    return recent_run_count >= tenant.max_agent_runs_per_hour
+
+
+def mesh_cost_rollup(session: Session, tenant_id: int, limit: int = 10) -> dict:
     """Aggregates Mesh cost/latency/token usage straight out of our own DB (the
     `mesh_*` columns on `Recommendation`, captured at generation time in
     app/services/mesh.py) — no LangSmith call involved, so this stays cheap and
@@ -445,7 +496,9 @@ def mesh_cost_rollup(session: Session, limit: int = 10) -> dict:
     generation actually ran (mesh_latency_ms is not null) count; retrieval-only runs
     are excluded rather than silently averaged in as zeros.
     """
-    has_generation = Recommendation.mesh_latency_ms.is_not(None)
+    has_generation = Recommendation.mesh_latency_ms.is_not(None) & (
+        Recommendation.tenant_id == tenant_id
+    )
     totals = session.execute(
         select(
             func.count(),

@@ -14,39 +14,48 @@ def _apply_payload(model: Model, payload: ModelCreate) -> None:
 
 
 def create_model(
-    session: Session, vector_store: ModelVectorStore, payload: ModelCreate
+    session: Session,
+    vector_store: ModelVectorStore,
+    tenant_id: int,
+    payload: ModelCreate,
 ) -> Model:
-    model = Model(vector_synced=False)
+    model = Model(tenant_id=tenant_id, vector_synced=False)
     _apply_payload(model, payload)
     session.add(model)
     session.commit()
     session.refresh(model)
-    _sync_model(session, vector_store, model)
+    _sync_model(session, vector_store, tenant_id, model)
     return model
 
 
 def update_model(
-    session: Session, vector_store: ModelVectorStore, model: Model, payload: ModelCreate
+    session: Session,
+    vector_store: ModelVectorStore,
+    tenant_id: int,
+    model: Model,
+    payload: ModelCreate,
 ) -> Model:
     model.vector_synced = False
     _apply_payload(model, payload)
     session.commit()
     session.refresh(model)
-    _sync_model(session, vector_store, model)
+    _sync_model(session, vector_store, tenant_id, model)
     return model
 
 
 def delete_model(
-    session: Session, vector_store: ModelVectorStore, model: Model
+    session: Session, vector_store: ModelVectorStore, tenant_id: int, model: Model
 ) -> None:
-    vector_store.delete(model.id)
+    vector_store.delete(model.id, tenant_id)
     session.delete(model)
     session.commit()
 
 
-def _sync_model(session: Session, vector_store: ModelVectorStore, model: Model) -> None:
+def _sync_model(
+    session: Session, vector_store: ModelVectorStore, tenant_id: int, model: Model
+) -> None:
     try:
-        vector_store.upsert(model)
+        vector_store.upsert(model, tenant_id)
         model.vector_synced = True
         session.commit()
     except Exception:

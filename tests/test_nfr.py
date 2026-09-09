@@ -1,53 +1,14 @@
-"""Iteration 1 close-out: NFR-1 (ingestion latency) and NFR-2 (LLM call budget)."""
-
-import time
-
-from fastapi.testclient import TestClient
+"""NFR-2 (LLM call budget). NFR-1 (event ingestion latency) has no endpoint to test
+against right now — POST /api/events/batch was removed with the AI-engineer
+cookie-session surface (docs/design/09-Platform-Pivot-Decision.md) and returns with
+the tracker SDK phase (POST /api/track/events); re-add an NFR-1 test against that
+endpoint then, scoped to tenant+visitor ingestion instead of a logged-in user.
+"""
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, User
-from app.security import hash_password
+from app.models import Event, Model, Tenant
 from app.services.agent_graph import prepare_retrieval_recommendation
-
-NFR1_P95_BUDGET_SECONDS = 0.150
-SAMPLE_SIZE = 40
-
-
-def _p95(samples: list[float]) -> float:
-    ordered = sorted(samples)
-    index = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
-    return ordered[index]
-
-
-def test_event_ingestion_p95_latency_under_budget(client: TestClient) -> None:
-    """NFR-1: ingestion must stay under 150ms p95. This only holds because the triggered
-    agent pipeline (a real network LLM call) runs in a background task after the response is
-    sent, not inline — see `run_pipeline_in_background` in `app/main.py`. Each sample uses a
-    fresh user with a single event, staying under AGT-1's 3-event trigger threshold, so this
-    isolates plain ingestion cost rather than measuring a run that also happens to trigger.
-    """
-    samples: list[float] = []
-    for i in range(SAMPLE_SIZE):
-        email = f"perf{i}@test.dev"
-        client.post(
-            "/api/auth/register", json={"email": email, "password": "password123"}
-        )
-        client.post("/api/auth/login", json={"email": email, "password": "password123"})
-
-        start = time.perf_counter()
-        response = client.post(
-            "/api/events/batch",
-            json={"events": [{"event_type": "search", "metadata": {"query": "test"}}]},
-        )
-        samples.append(time.perf_counter() - start)
-        assert response.status_code == 200
-        assert response.json()["recommendation_triggered"] is False
-
-    p95 = _p95(samples)
-    assert (
-        p95 < NFR1_P95_BUDGET_SECONDS
-    ), f"p95 ingestion latency {p95 * 1000:.1f}ms exceeds the {NFR1_P95_BUDGET_SECONDS * 1000:.0f}ms budget"
 
 
 def _make_session_factory(tmp_path):
@@ -58,6 +19,14 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> None:
     """NFR-2: at most 1 LLM generation call per trigger event, excluding bounded retries.
     Retries (AGT-4) only re-run retrieval, never generation — forcing 2 retries here proves
@@ -65,10 +34,10 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
     """
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="nfr2@test.dev", password_hash=hash_password("x"), role="user"
-        )
+        tenant = _make_tenant(session)
+        visitor_id = "v-nfr2"
         model = Model(
+            tenant_id=tenant.id,
             title="Eventually Found",
             provider="Test",
             modality="LLM",
@@ -76,10 +45,15 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add(model)
         session.commit()
         session.add(
-            Event(user_id=user.id, event_type="search", metadata_json={"query": "test"})
+            Event(
+                tenant_id=tenant.id,
+                visitor_id=visitor_id,
+                event_type="search",
+                metadata_json={"query": "test"},
+            )
         )
         session.commit()
 
@@ -88,7 +62,11 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
                 self.calls = 0
 
             def query_scored(
-                self, text: str, limit: int = 5, where: dict | None = None
+                self,
+                text: str,
+                tenant_id: int,
+                limit: int = 5,
+                where: dict | None = None,
             ):
                 self.calls += 1
                 # Weak until the 3rd attempt (initial + 2 retries == MAX_RETRIES), so
@@ -108,7 +86,9 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
 
         store = RetryForcingStore()
         mesh = CountingMeshGenerator()
-        recommendation = prepare_retrieval_recommendation(session, store, user.id, mesh)
+        recommendation = prepare_retrieval_recommendation(
+            session, store, tenant.id, visitor_id, mesh
+        )
 
         assert store.calls == 3, "expected the initial attempt plus 2 bounded retries"
         assert mesh.calls == 1, "generation must run exactly once despite the retries"

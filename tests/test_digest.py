@@ -2,7 +2,7 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, User
+from app.models import Event, Model, Recommendation, Tenant, User
 from app.security import hash_password
 from app.services.digest import (
     EmailNotifier,
@@ -23,8 +23,18 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 class NullVectorStore:
-    def query_scored(self, text: str, limit: int = 5, where: dict | None = None):
+    def query_scored(
+        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+    ):
         return []
 
 
@@ -107,7 +117,7 @@ def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id="personal-chat")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -135,7 +145,7 @@ def test_telegram_notifier_falls_back_to_shared_chat_id(monkeypatch) -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id="shared-chat")
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -150,7 +160,7 @@ def test_telegram_notifier_raises_without_any_chat_id() -> None:
     notifier = TelegramNotifier(bot_token="token", fallback_chat_id=None)
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         behavior_summary="s",
         activity_hash="h",
@@ -176,17 +186,25 @@ def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
 ) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         with_history = User(
-            email="with-history@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="with-history@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         no_history = User(
-            email="no-history@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="no-history@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add_all([with_history, no_history])
         session.commit()
         session.add(
             Event(
-                user_id=with_history.id,
+                tenant_id=tenant.id,
+                visitor_id=str(with_history.id),
                 event_type="search",
                 metadata_json={"query": "voice"},
             )
@@ -211,14 +229,19 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
     today's digest — DLV-3 sends the latest recommendation, not only fresh ones."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         user = User(
-            email="stable@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="stable@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add(user)
         session.commit()
         session.add(
             Recommendation(
-                user_id=user.id,
+                tenant_id=tenant.id,
+                visitor_id=str(user.id),
                 narrative="You'll like this.",
                 model_ids=[],
                 behavior_summary="prior activity",
@@ -243,14 +266,19 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
 def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         user = User(
-            email="broken@test.dev", password_hash=hash_password("x"), role="user"
+            tenant_id=tenant.id,
+            email="broken@test.dev",
+            password_hash=hash_password("x"),
+            role="user",
         )
         session.add(user)
         session.commit()
         session.add(
             Recommendation(
-                user_id=user.id,
+                tenant_id=tenant.id,
+                visitor_id=str(user.id),
                 narrative="hi",
                 model_ids=[],
                 behavior_summary="s",
@@ -278,7 +306,9 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
 def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
+        tenant = _make_tenant(session)
         model = Model(
+            tenant_id=tenant.id,
             title="Voice X",
             provider="Test Labs",
             modality="Voice",
@@ -289,7 +319,8 @@ def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) ->
         session.add(model)
         session.commit()
         recommendation = Recommendation(
-            user_id=1,
+            tenant_id=tenant.id,
+            visitor_id="v1",
             model_ids=[model.id],
             retrieval_meta=[
                 {"model_id": model.id, "reason": "great fit", "distance": 0.2}
@@ -317,7 +348,7 @@ def test_recommendation_models_skips_ids_with_no_matching_row(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         recommendation = Recommendation(
-            user_id=1,
+            visitor_id="v1",
             model_ids=[999],
             behavior_summary="s",
             activity_hash="h",
@@ -375,7 +406,7 @@ def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> 
     )
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[1],
         narrative=encode_narrative(
             "You've been comparing low-latency voice models.",
@@ -429,7 +460,7 @@ def test_email_notifier_omits_cta_link_when_app_url_unset(monkeypatch) -> None:
     )
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
-        user_id=1,
+        visitor_id="v1",
         model_ids=[],
         narrative="hi",
         behavior_summary="s",

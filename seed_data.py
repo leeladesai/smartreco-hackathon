@@ -6,6 +6,7 @@ from app.config import Settings
 from app.db import build_session_factory
 from app.models import Model, User
 from app.security import hash_password
+from app.services.tenants import get_or_create_reference_tenant
 from app.vector import ModelVectorStore, build_embedding_function
 
 
@@ -1435,16 +1436,20 @@ def seed_demo_data(session_factory, vector_store) -> None:
     engineer_password = os.getenv("SEED_ENGINEER_PASSWORD", "engineer@123")
 
     with session_factory() as session:
+        tenant = get_or_create_reference_tenant(session)
+
         admin = session.scalar(select(User).where(User.email == admin_email))
         if not admin:
             session.add(
                 User(
+                    tenant_id=tenant.id,
                     email=admin_email,
                     password_hash=hash_password(admin_password),
                     role="admin",
                 )
             )
         else:
+            admin.tenant_id = tenant.id
             admin.role = "admin"
             admin.password_hash = hash_password(admin_password)
 
@@ -1452,25 +1457,31 @@ def seed_demo_data(session_factory, vector_store) -> None:
         if not engineer:
             session.add(
                 User(
+                    tenant_id=tenant.id,
                     email=engineer_email,
                     password_hash=hash_password(engineer_password),
                     role="user",
                 )
             )
         else:
+            engineer.tenant_id = tenant.id
             engineer.role = "user"
             engineer.password_hash = hash_password(engineer_password)
 
         for values in SEED_MODELS:
-            model = session.scalar(select(Model).where(Model.title == values["title"]))
+            model = session.scalar(
+                select(Model).where(
+                    Model.title == values["title"], Model.tenant_id == tenant.id
+                )
+            )
             if not model:
-                model = Model(**values, vector_synced=False)
+                model = Model(**values, tenant_id=tenant.id, vector_synced=False)
                 session.add(model)
                 session.flush()
             else:
                 for key, value in values.items():
                     setattr(model, key, value)
-            vector_store.upsert(model)
+            vector_store.upsert(model, tenant.id)
             model.vector_synced = True
         session.commit()
 

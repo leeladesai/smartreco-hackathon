@@ -67,6 +67,12 @@ def build_embedding_function(settings):
 
 
 class ModelVectorStore:
+    """Manages one Chroma collection per tenant (docs/design/09-Platform-Pivot-Decision.md
+    §5: separate collections chosen over a shared collection + metadata filter, for
+    stronger physical isolation between tenants sharing this store). `collection_name`
+    is the shared prefix; the actual collection a call touches is always
+    `{collection_name}_tenant_{tenant_id}`, created lazily on first use."""
+
     def __init__(
         self,
         path: str,
@@ -75,18 +81,28 @@ class ModelVectorStore:
         embedding_dimension: int = 64,
     ) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)
+        self.collection_name = collection_name
+        self.embedding_function = embedding_function or DeterministicEmbeddingFunction(
+            embedding_dimension
+        )
         # anonymized_telemetry=False: this pinned chromadb version calls posthog's old
         # positional capture() signature, which the installed posthog major version no longer
         # accepts — chromadb swallows the resulting TypeError and just logs it every client
         # init. Harmless, but disabling telemetry removes the noise (and the outbound call).
-        client = chromadb.PersistentClient(
+        self.client = chromadb.PersistentClient(
             path=path, settings=chromadb.Settings(anonymized_telemetry=False)
         )
-        self.collection = client.get_or_create_collection(
-            name=collection_name,
-            embedding_function=embedding_function
-            or DeterministicEmbeddingFunction(embedding_dimension),
-        )
+        self._collections: dict[int, object] = {}
+
+    def _collection_for(self, tenant_id: int):
+        collection = self._collections.get(tenant_id)
+        if collection is None:
+            collection = self.client.get_or_create_collection(
+                name=f"{self.collection_name}_tenant_{tenant_id}",
+                embedding_function=self.embedding_function,
+            )
+            self._collections[tenant_id] = collection
+        return collection
 
     @staticmethod
     def document(model) -> str:
@@ -97,8 +113,8 @@ class ModelVectorStore:
             f"{model.description}.{story} {tags}"
         )
 
-    def upsert(self, model) -> None:
-        self.collection.upsert(
+    def upsert(self, model, tenant_id: int) -> None:
+        self._collection_for(tenant_id).upsert(
             ids=[str(model.id)],
             documents=[self.document(model)],
             metadatas=[
@@ -111,20 +127,22 @@ class ModelVectorStore:
             ],
         )
 
-    def delete(self, model_id: int) -> None:
-        self.collection.delete(ids=[str(model_id)])
+    def delete(self, model_id: int, tenant_id: int) -> None:
+        self._collection_for(tenant_id).delete(ids=[str(model_id)])
 
     def query_scored(
-        self, text: str, limit: int = 5, where: dict | None = None
+        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
     ) -> list[tuple[int, float]]:
         """Like `query`, but also returns each result's distance (lower = more similar) —
         used by the grade/refine node to detect weak retrieval. `where` applies Chroma
         metadata filtering (e.g. `{"modality": "Voice"}`) before the ANN search runs, not
-        as a post-hoc re-rank filter."""
-        if not text.strip() or self.collection.count() == 0:
+        as a post-hoc re-rank filter. Always scoped to `tenant_id`'s own collection —
+        never searches across tenants."""
+        collection = self._collection_for(tenant_id)
+        if not text.strip() or collection.count() == 0:
             return []
         try:
-            results = self.collection.query(
+            results = collection.query(
                 query_texts=[text], n_results=limit, where=where, include=["distances"]
             )
         except Exception:

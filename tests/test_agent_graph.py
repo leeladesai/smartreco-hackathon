@@ -3,8 +3,7 @@ from datetime import datetime
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, User
-from app.security import hash_password
+from app.models import Event, Model, Tenant
 from app.services.agent_graph import (
     _story_snippet,
     apply_feedback_adjustment,
@@ -25,7 +24,9 @@ class FakeVectorStore:
         self.strong_id = strong_id
         self.calls: list[str] = []
 
-    def query_scored(self, text: str, limit: int = 5, where: dict | None = None):
+    def query_scored(
+        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+    ):
         self.calls.append(text)
         if len(self.calls) == 1:
             return [(self.weak_id, 1.9)]
@@ -40,13 +41,21 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
+def _make_tenant(session) -> Tenant:
+    tenant = Tenant(name="Test Tenant")
+    session.add(tenant)
+    session.commit()
+    session.refresh(tenant)
+    return tenant
+
+
 def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="grade@test.dev", password_hash=hash_password("x"), role="user"
-        )
+        tenant = _make_tenant(session)
+        visitor_id = "v-grade"
         weak_model = Model(
+            tenant_id=tenant.id,
             title="Weak Match",
             provider="Test",
             modality="LLM",
@@ -55,6 +64,7 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
             use_case_tags=[],
         )
         strong_model = Model(
+            tenant_id=tenant.id,
             title="Strong Match",
             provider="Test",
             modality="LLM",
@@ -62,24 +72,27 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, weak_model, strong_model])
+        session.add_all([weak_model, strong_model])
         session.commit()
 
         session.add_all(
             [
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "test"},
                 ),
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=weak_model.id,
                     metadata_json={},
                 ),
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="model_compare",
                     model_id=weak_model.id,
                     metadata_json={"explicit": True},
@@ -90,7 +103,7 @@ def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
 
         fake_store = FakeVectorStore(weak_model.id, strong_model.id)
         recommendation = prepare_retrieval_recommendation(
-            session, fake_store, user.id, mesh_generator=None
+            session, fake_store, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert (
@@ -115,10 +128,10 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
     the retrieval distance when grade_refine never had to broaden the query."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="strong@test.dev", password_hash=hash_password("x"), role="user"
-        )
+        tenant = _make_tenant(session)
+        visitor_id = "v-strong"
         model = Model(
+            tenant_id=tenant.id,
             title="Immediate Match",
             provider="Test",
             modality="LLM",
@@ -126,22 +139,31 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add(model)
         session.commit()
 
         session.add(
-            Event(user_id=user.id, event_type="search", metadata_json={"query": "test"})
+            Event(
+                tenant_id=tenant.id,
+                visitor_id=visitor_id,
+                event_type="search",
+                metadata_json={"query": "test"},
+            )
         )
         session.commit()
 
         class StrongFirstTryStore:
             def query_scored(
-                self, text: str, limit: int = 5, where: dict | None = None
+                self,
+                text: str,
+                tenant_id: int,
+                limit: int = 5,
+                where: dict | None = None,
             ):
                 return [(model.id, 0.4)]
 
         recommendation = prepare_retrieval_recommendation(
-            session, StrongFirstTryStore(), user.id, mesh_generator=None
+            session, StrongFirstTryStore(), tenant.id, visitor_id, mesh_generator=None
         )
 
         assert recommendation is not None
@@ -163,10 +185,10 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
     broadened."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="filter@test.dev", password_hash=hash_password("x"), role="user"
-        )
+        tenant = _make_tenant(session)
+        visitor_id = "v-filter"
         voice_a = Model(
+            tenant_id=tenant.id,
             title="Voice A",
             provider="Test",
             modality="Voice",
@@ -175,6 +197,7 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
             use_case_tags=[],
         )
         voice_b = Model(
+            tenant_id=tenant.id,
             title="Voice B",
             provider="Test",
             modality="Voice",
@@ -182,19 +205,21 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, voice_a, voice_b])
+        session.add_all([voice_a, voice_b])
         session.commit()
 
         session.add_all(
             [
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=voice_a.id,
                     metadata_json={},
                 ),
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="model_view",
                     model_id=voice_b.id,
                     metadata_json={},
@@ -208,7 +233,11 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
                 self.wheres: list[dict | None] = []
 
             def query_scored(
-                self, text: str, limit: int = 5, where: dict | None = None
+                self,
+                text: str,
+                tenant_id: int,
+                limit: int = 5,
+                where: dict | None = None,
             ):
                 self.wheres.append(where)
                 if len(self.wheres) == 1:
@@ -217,7 +246,7 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
 
         store = RecordingStore()
         recommendation = prepare_retrieval_recommendation(
-            session, store, user.id, mesh_generator=None
+            session, store, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert recommendation is not None
@@ -227,26 +256,26 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
 def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="empty@test.dev", password_hash=hash_password("x"), role="user"
-        )
-        session.add(user)
-        session.commit()
+        tenant = _make_tenant(session)
+        visitor_id = "v-empty"
 
         session.add_all(
             [
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "a b c d e"},
                 ),
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "f g h"},
                 ),
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "i j k"},
                 ),
@@ -259,14 +288,18 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
                 self.calls = 0
 
             def query_scored(
-                self, text: str, limit: int = 5, where: dict | None = None
+                self,
+                text: str,
+                tenant_id: int,
+                limit: int = 5,
+                where: dict | None = None,
             ):
                 self.calls += 1
                 return []
 
         empty_store = EmptyVectorStore()
         recommendation = prepare_retrieval_recommendation(
-            session, empty_store, user.id, mesh_generator=None
+            session, empty_store, tenant.id, visitor_id, mesh_generator=None
         )
 
         # Initial attempt + MAX_RETRIES(=2) retries, then give up without storing anything.
@@ -505,8 +538,9 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
     every one of a decorated function's own bound arguments as that run's "inputs" —
     confirmed live that a mesh_generator object passed directly put a real Mesh
     api_key in plaintext into every agent_pipeline trace. session/vector_store/
-    mesh_generator must never be parameters of the traced function; only user_id/
-    trigger_reason (safe primitives) may be, and the run must be tagged user:<id>."""
+    mesh_generator must never be parameters of the traced function; only
+    tenant_id/visitor_id/trigger_reason (safe primitives) may be, and the run must be
+    tagged both visitor:<id> and tenant:<id>."""
     captured: dict = {}
 
     def fake_traceable(*_args, **kwargs):
@@ -524,12 +558,9 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
 
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        user = User(
-            email="secret-check@test.dev", password_hash=hash_password("x"), role="user"
-        )
-        session.add(user)
-        session.commit()
-        user_id = user.id  # captured before the session closes below
+        tenant = _make_tenant(session)
+        tenant_id = tenant.id  # captured before the session closes below
+        visitor_id = "v-secret-check"
 
         class LeakyMeshGenerator:
             enabled = False
@@ -544,12 +575,13 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
         prepare_retrieval_recommendation(
             session,
             FakeVectorStore(1, 1),
-            user_id,
+            tenant_id,
+            visitor_id,
             mesh_generator=LeakyMeshGenerator(),
         )
 
-    assert captured["params"] == ["user_id", "trigger_reason"]
+    assert captured["params"] == ["tenant_id", "visitor_id", "trigger_reason"]
     assert "session" not in captured["params"]
     assert "vector_store" not in captured["params"]
     assert "mesh_generator" not in captured["params"]
-    assert captured["tags"] == [f"user:{user_id}"]
+    assert captured["tags"] == [f"visitor:{visitor_id}", f"tenant:{tenant_id}"]

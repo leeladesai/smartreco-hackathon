@@ -16,10 +16,50 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+class Tenant(Base):
+    """A site embedding TrailMind (docs/design/09-Platform-Pivot-Decision.md). The
+    hackathon-era AI-model-catalog app runs as a single seeded 'reference' tenant so its
+    behavior is unchanged while the schema underneath becomes tenant-aware. `status`
+    drives the widget readiness gate (TEN-8) once the widget exists; `allowed_origins`
+    and `max_agent_runs_per_hour` are part of the target schema but unused until the
+    tracker SDK / rate-limiting phases land."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    allowed_origins: Mapped[list[str]] = mapped_column(JSON, default=list)
+    max_agent_runs_per_hour: Mapped[int] = mapped_column(Integer, default=500)
+    # Set once, on the first successful tracker-SDK ingestion for this tenant (see
+    # POST /api/track/events) — the "tracker verified" half of the TEN-8 widget
+    # readiness gate. Null until then.
+    first_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TenantApiKey(Base):
+    """Schema only in this phase — no issuance/rotation/request-auth logic yet
+    (TEN-1/TEN-4/TEN-5 land with the tracker SDK phase). `status` supports the
+    grace-period rotation design from docs/design/09-Platform-Pivot-Decision.md §5."""
+
+    __tablename__ = "tenant_api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    key_hash: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tenants.id"), nullable=True, index=True
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(20), default="user")
@@ -35,6 +75,9 @@ class Model(Base):
     __tablename__ = "models"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tenants.id"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text)
     story: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -56,7 +99,13 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tenants.id"), nullable=True, index=True
+    )
+    # An anonymous, tracker-assigned identity (see app/static/js/tracker.js) — not a
+    # User row. The AI-engineer cookie-session `user_id` this replaced was removed
+    # along with that login surface (docs/design/09-Platform-Pivot-Decision.md).
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     event_type: Mapped[str] = mapped_column(String(40))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
@@ -67,7 +116,10 @@ class Recommendation(Base):
     __tablename__ = "recommendations"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tenants.id"), nullable=True, index=True
+    )
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     retrieval_meta: Mapped[list[dict]] = mapped_column(JSON, default=list)
@@ -83,15 +135,3 @@ class Recommendation(Base):
     mesh_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-
-class DemoModeSetting(Base):
-    """Single-row table (id is always 1) — a global, admin-controlled switch that shows a
-    live event-tracking overlay in the model drawer/detail page for every AI-engineer
-    session. Off by default; meant to be flipped on only while demoing the pipeline live
-    (e.g. to hackathon judges), not left on for normal use."""
-
-    __tablename__ = "demo_mode_settings"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False)

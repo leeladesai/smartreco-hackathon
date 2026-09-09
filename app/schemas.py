@@ -21,12 +21,6 @@ class AdminUserResponse(UserResponse):
     created_at: datetime
 
 
-class TelegramChatIdUpdate(BaseModel):
-    # None/empty clears it (falls back to the shared TELEGRAM_CHAT_ID, if any, or
-    # digest delivery for this user just gets skipped and logged).
-    telegram_chat_id: str | None = Field(default=None, max_length=120)
-
-
 class ModelCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
@@ -51,21 +45,6 @@ class ModelResponse(ModelCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class EventInput(BaseModel):
-    event_type: str = Field(
-        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
-        "|model_copy|model_watchlist|recommendation_feedback)$"
-    )
-    model_id: int | None = None
-    metadata: dict = Field(default_factory=dict)
-
-    model_config = ConfigDict(protected_namespaces=())
-
-
-class EventBatch(BaseModel):
-    events: list[EventInput] = Field(min_length=1, max_length=100)
-
-
 class BulkImportRowResult(BaseModel):
     row: int
     title: str | None = None
@@ -80,11 +59,21 @@ class BulkImportResponse(BaseModel):
     rows: list[BulkImportRowResult]
 
 
-class DemoModeResponse(BaseModel):
-    enabled: bool
+class TrackEventInput(BaseModel):
+    event_type: str = Field(
+        pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
+        "|model_copy|model_watchlist|recommendation_feedback)$"
+    )
+    model_id: int | None = None
+    metadata: dict = Field(default_factory=dict)
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(protected_namespaces=())
 
 
-class DemoModeUpdate(BaseModel):
-    enabled: bool
+class TrackEventBatch(BaseModel):
+    # The tenant key travels in the body, not a header — navigator.sendBeacon (used
+    # for the on-unload flush, app/static/js/tracker.js) can't set custom headers, so
+    # a header-only scheme would silently lose every beacon-flushed batch.
+    tenant_key: str = Field(min_length=1)
+    visitor_id: str = Field(min_length=1, max_length=64)
+    events: list[TrackEventInput] = Field(min_length=1, max_length=100)

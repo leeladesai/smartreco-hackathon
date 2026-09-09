@@ -1,11 +1,10 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 from fastapi import (
     BackgroundTasks,
     Depends,
@@ -18,30 +17,26 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import DemoModeSetting, Event, Model, Recommendation, User
+from app.models import Event, Model, Recommendation, Tenant, User
 from app.schemas import (
     AuthCredentials,
     BulkImportResponse,
-    DemoModeResponse,
-    DemoModeUpdate,
-    EventBatch,
     ModelCreate,
     ModelResponse,
-    TelegramChatIdUpdate,
+    TrackEventBatch,
     UserResponse,
 )
 from app.security import (
     create_session_token,
-    hash_password,
     make_role_dependency,
     verify_password,
 )
@@ -67,13 +62,14 @@ from app.services.agent_graph import (
     contextual_reason,
     prepare_retrieval_recommendation,
 )
-from app.services.digest import build_notifier, run_digest
+from app.services.digest import build_notifier
 from app.services.recommendation import (
     activity_summary,
     mesh_cost_rollup,
     recent_events,
     session_evidence,
     should_trigger,
+    tenant_rate_limited,
 )
 from app.services.mesh import MeshNarrativeGenerator
 from app.services.observability import (
@@ -81,6 +77,7 @@ from app.services.observability import (
     fetch_recent_runs,
     fetch_run_detail,
 )
+from app.services.tenants import resolve_tenant_by_api_key
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
 from seed_data import seed_demo_data
@@ -97,16 +94,6 @@ TEMPLATES.env.loader = ChoiceLoader(
 
 def model_response(model: Model) -> ModelResponse:
     return ModelResponse.model_validate(model)
-
-
-def get_or_create_demo_setting(session) -> DemoModeSetting:
-    setting = session.get(DemoModeSetting, 1)
-    if not setting:
-        setting = DemoModeSetting(id=1, enabled=False)
-        session.add(setting)
-        session.commit()
-        session.refresh(setting)
-    return setting
 
 
 def as_utc(value):
@@ -132,30 +119,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     mesh_generator = MeshNarrativeGenerator(app_settings)
     notifier = build_notifier(app_settings)
-    current_user = make_role_dependency(session_factory, app_settings)
+    # AI-engineer accounts/session (self-registration, event tracking, dashboard,
+    # activity) were removed as part of the platform pivot to a multi-tenant,
+    # embeddable-widget product (docs/design/09-Platform-Pivot-Decision.md) — the
+    # reference tenant's own end-user surface returns with the tracker SDK phase,
+    # built on anonymous visitor identity rather than this cookie-session `user` role.
+    # `admin` is (for now) the only role; tenant-admin/platform-admin generalization
+    # lands with tenant onboarding (TEN-1..8).
     current_admin = make_role_dependency(
         session_factory, app_settings, required_role="admin"
     )
-    # Distinct from `current_user`: scoped to the AI-engineer role specifically, so an
-    # authenticated curator/admin session can't fall through onto engineer-only pages
-    # and APIs (catalog browsing, activity, recommendations) just by having any valid
-    # session cookie.
-    current_engineer = make_role_dependency(
-        session_factory, app_settings, required_role="user"
-    )
 
-    # DLV-3: a real cron scheduler, not a manual trigger — `/api/admin/digest/run` below
-    # exists only so the sprint-review demo doesn't have to wait for the next cron fire.
+    # DLV-3 (bonus scheduled digest) is disabled, not redesigned, now that the
+    # AI-engineer `user` role it iterated over is gone — app/services/digest.py stays
+    # in place, unregistered, for whenever anonymous-visitor digest delivery is
+    # actually specified.
     scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        run_digest,
-        trigger=CronTrigger(
-            hour=app_settings.digest_cron_hour, minute=app_settings.digest_cron_minute
-        ),
-        args=[session_factory, vector_store, mesh_generator, notifier],
-        id="scheduled_digest",
-        replace_existing=True,
-    )
 
     def run_seed() -> None:
         try:
@@ -181,8 +160,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="TrailMind",
-        description="Behavioral AI model catalog MVP",
-        version="0.1.0",
+        description="Multi-tenant embeddable behavioral recommendation platform",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.state.settings = app_settings
@@ -193,6 +172,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.pipeline_locks = {}
     app.state.pipeline_locks_guard = asyncio.Lock()
+    # Permissive at the CORSMiddleware layer on purpose — the tracker SDK runs on
+    # arbitrary tenant domains we can't enumerate in advance, and per-tenant origin
+    # scoping (`Tenant.allowed_origins`) is checked inside the handler instead (see
+    # POST /api/track/events below). CORS itself is a browser-only, spoofable
+    # convenience; the tenant API key is the real boundary
+    # (docs/design/09-Platform-Pivot-Decision.md §5).
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["POST", "OPTIONS"],
+        allow_headers=["*"],
+    )
     app.mount(
         "/static",
         StaticFiles(directory=PROJECT_ROOT / "app" / "static"),
@@ -205,36 +196,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         return int((PROJECT_ROOT / "app" / "static" / relative_path).stat().st_mtime)
 
-    def render_page(
-        request: Request,
-        page: str,
-        template: str,
-        model_id: int | None = None,
-        session_role: str | None = None,
-    ):
+    def render_page(request: Request, page: str, template: str, session_role=None):
         return TEMPLATES.TemplateResponse(
             template,
             {
                 "request": request,
                 "initial_page": page,
-                "model_id": model_id,
                 "session_role": session_role,
                 "css_version": asset_version("css/app.css"),
                 "js_version": asset_version("js/app.js"),
             },
         )
-
-    def render_user_page(request: Request, page: str, template: str):
-        try:
-            user = current_engineer(request)
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_403_FORBIDDEN:
-                # A valid session exists, just not an engineer one (e.g. a curator/admin
-                # cookie) — send them to their own console instead of bouncing back to
-                # the engineer login page they're not meant to sign into.
-                return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
-            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-        return render_page(request, page, template, session_role=user.role)
 
     def render_admin_page(
         request: Request, page: str = "admin", template: str = "admin.html"
@@ -247,45 +219,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         return render_page(request, page, template, session_role="admin")
 
-    @app.get("/", include_in_schema=False)
-    async def landing_page(request: Request):
-        return render_user_page(request, "catalog", "catalog.html")
-
-    @app.get("/login", include_in_schema=False)
-    async def login_page(request: Request):
-        return render_page(request, "auth", "login.html")
-
     @app.get("/admin/login", include_in_schema=False)
     async def admin_login_page(request: Request):
         return render_page(request, "admin-auth", "admin_login.html")
-
-    @app.get("/catalog", include_in_schema=False)
-    async def catalog_page(request: Request):
-        return render_user_page(request, "catalog", "catalog.html")
-
-    @app.get("/models/{model_id}", include_in_schema=False)
-    async def model_detail_page(request: Request, model_id: int):
-        try:
-            current_engineer(request)
-        except HTTPException as exc:
-            if exc.status_code == status.HTTP_403_FORBIDDEN:
-                return RedirectResponse("/admin", status_code=status.HTTP_303_SEE_OTHER)
-            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-        return render_page(
-            request, "detail", "model_detail.html", model_id, session_role="user"
-        )
-
-    @app.get("/compare", include_in_schema=False)
-    async def compare_page(request: Request):
-        return render_user_page(request, "compare", "compare.html")
-
-    @app.get("/dashboard", include_in_schema=False)
-    async def dashboard_page(request: Request):
-        return render_user_page(request, "dashboard", "dashboard.html")
-
-    @app.get("/activity", include_in_schema=False)
-    async def activity_page(request: Request):
-        return render_user_page(request, "activity", "activity.html")
 
     @app.get("/admin", include_in_schema=False)
     async def admin_page(request: Request):
@@ -310,38 +246,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["Access-Control-Allow-Origin"] = "*"
         return {"status": "ok", "service": "trailmind"}
 
-    @app.post(
-        "/api/auth/register",
-        response_model=UserResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    async def register(credentials: AuthCredentials) -> UserResponse:
-        with session_factory() as session:
-            user = User(
-                email=credentials.email.lower(),
-                password_hash=hash_password(credentials.password),
-                role="user",
-            )
-            session.add(user)
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                raise HTTPException(
-                    status_code=409, detail="Email already registered"
-                ) from None
-            session.refresh(user)
-            return UserResponse.model_validate(user)
-
-    def login_response(
-        credentials: AuthCredentials, admin_only: bool, response
+    @app.post("/api/admin/login", response_model=UserResponse)
+    async def admin_login(
+        credentials: AuthCredentials, response: Response
     ) -> UserResponse:
         with session_factory() as session:
             user = session.scalar(
                 select(User).where(User.email == credentials.email.lower())
             )
             valid = user and verify_password(credentials.password, user.password_hash)
-            if not valid or (admin_only and user.role != "admin"):
+            if not valid or user.role != "admin":
                 raise HTTPException(status_code=401, detail="Invalid email or password")
             token = create_session_token(user, app_settings)
             response.set_cookie(
@@ -354,48 +268,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             return UserResponse.model_validate(user)
 
-    @app.post("/api/auth/login", response_model=UserResponse)
-    async def login(credentials: AuthCredentials, response: Response) -> UserResponse:
-        return login_response(credentials, admin_only=False, response=response)
-
-    @app.post("/api/admin/login", response_model=UserResponse)
-    async def admin_login(
-        credentials: AuthCredentials, response: Response
-    ) -> UserResponse:
-        return login_response(credentials, admin_only=True, response=response)
-
     @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(response: Response) -> None:
-        # Same endpoint for both AI-engineer and admin sessions — there's only ever one
-        # session cookie, and clearing a cookie that's already absent is a harmless no-op.
         response.delete_cookie(app_settings.session_cookie_name)
 
-    @app.get("/api/auth/me", response_model=UserResponse)
-    async def current_user_profile(user: User = Depends(current_user)) -> UserResponse:
-        return UserResponse.model_validate(user)
-
-    @app.put("/api/auth/me/telegram-chat-id", response_model=UserResponse)
-    async def update_telegram_chat_id(
-        payload: TelegramChatIdUpdate, user: User = Depends(current_user)
+    @app.get("/api/admin/me", response_model=UserResponse)
+    async def current_admin_profile(
+        admin: User = Depends(current_admin),
     ) -> UserResponse:
-        """Self-serve per-user Telegram digest delivery (DLV-3 bonus follow-up) — a
-        user sets their own chat_id here instead of everyone sharing one broadcast
-        chat (TelegramNotifier, app/services/digest.py)."""
-        with session_factory() as session:
-            db_user = session.get(User, user.id)
-            db_user.telegram_chat_id = (payload.telegram_chat_id or "").strip() or None
-            session.commit()
-            session.refresh(db_user)
-            return UserResponse.model_validate(db_user)
+        return UserResponse.model_validate(admin)
 
     @app.get("/api/models", response_model=list[ModelResponse])
     async def list_models(
+        admin: User = Depends(current_admin),
         q: str | None = Query(default=None),
         modality: str | None = Query(default=None),
         provider: str | None = Query(default=None),
     ) -> list[ModelResponse]:
         with session_factory() as session:
-            statement = select(Model).order_by(Model.title)
+            statement = (
+                select(Model)
+                .where(Model.tenant_id == admin.tenant_id)
+                .order_by(Model.title)
+            )
             if q:
                 statement = statement.where(
                     Model.title.ilike(f"%{q}%") | Model.description.ilike(f"%{q}%")
@@ -407,31 +302,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return [model_response(model) for model in session.scalars(statement).all()]
 
     @app.get("/api/models/{model_id}", response_model=ModelResponse)
-    async def get_model(model_id: int) -> ModelResponse:
+    async def get_model(
+        model_id: int, admin: User = Depends(current_admin)
+    ) -> ModelResponse:
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
             return model_response(model)
-
-    @app.get("/api/settings/demo-mode", response_model=DemoModeResponse)
-    async def get_demo_mode() -> DemoModeResponse:
-        # Public/unauthenticated on purpose — every AI-engineer session (including a judge's,
-        # who never logs in as admin) needs to know whether to render the live tracking
-        # overlay, not just the curator who flips the switch.
-        with session_factory() as session:
-            return DemoModeResponse.model_validate(get_or_create_demo_setting(session))
-
-    @app.put("/api/admin/settings/demo-mode", response_model=DemoModeResponse)
-    async def update_demo_mode(
-        payload: DemoModeUpdate, _: User = Depends(current_admin)
-    ) -> DemoModeResponse:
-        with session_factory() as session:
-            setting = get_or_create_demo_setting(session)
-            setting.enabled = payload.enabled
-            session.commit()
-            session.refresh(setting)
-            return DemoModeResponse.model_validate(setting)
 
     def content_similarity_reason(distance: float, source_title: str) -> str:
         """Same distance thresholds as retrieval_reason (AGT-4), but worded for content-based
@@ -445,15 +323,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return "Broader catalog match"
 
     @app.get("/api/models/{model_id}/related")
-    async def related_models(model_id: int, limit: int = 3) -> list[dict[str, object]]:
+    async def related_models(
+        model_id: int, admin: User = Depends(current_admin), limit: int = 3
+    ) -> list[dict[str, object]]:
         """Content-based "you might also be interested in": queries the same Chroma vector
         store the recommendation pipeline uses, but keyed on *this model's own* embedding
         text (title/provider/modality/description/tags — see ModelVectorStore.document)
-        rather than a user's activity summary. Grounded in real similarity, not activity —
-        deliberately independent of the personalized recommendation on the Dashboard."""
+        rather than a user's activity summary. Grounded in real similarity, not activity.
+        """
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
             query_text = ModelVectorStore.document(model)
             # Prefer same-modality matches first — the deterministic hashed bag-of-words
@@ -462,7 +342,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # shared generic words. Only fall back to an unfiltered query if same-modality
             # doesn't yield enough candidates (e.g. this modality has too few catalog entries).
             same_modality = vector_store.query_scored(
-                query_text, limit=limit + 1, where={"modality": model.modality}
+                query_text,
+                admin.tenant_id,
+                limit=limit + 1,
+                where={"modality": model.modality},
             )
             seen_ids = {model_id}
             results: list[dict[str, object]] = []
@@ -473,7 +356,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         continue
                     seen_ids.add(candidate_id)
                     candidate = session.get(Model, candidate_id)
-                    if not candidate:
+                    if not candidate or candidate.tenant_id != admin.tenant_id:
                         continue
                     results.append(
                         {
@@ -486,7 +369,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             _add_candidates(same_modality)
             if len(results) < limit:
-                _add_candidates(vector_store.query_scored(query_text, limit=limit + 1))
+                _add_candidates(
+                    vector_store.query_scored(
+                        query_text, admin.tenant_id, limit=limit + 1
+                    )
+                )
             return results
 
     @app.post(
@@ -495,34 +382,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_code=status.HTTP_201_CREATED,
     )
     async def create_model(
-        payload: ModelCreate, _: User = Depends(current_admin)
+        payload: ModelCreate, admin: User = Depends(current_admin)
     ) -> ModelResponse:
         with session_factory() as session:
-            model = create_model_service(session, vector_store, payload)
+            model = create_model_service(
+                session, vector_store, admin.tenant_id, payload
+            )
             return model_response(model)
 
     @app.put("/api/admin/models/{model_id}", response_model=ModelResponse)
     async def update_model(
-        model_id: int, payload: ModelCreate, _: User = Depends(current_admin)
+        model_id: int, payload: ModelCreate, admin: User = Depends(current_admin)
     ) -> ModelResponse:
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
-            update_model_service(session, vector_store, model, payload)
+            update_model_service(session, vector_store, admin.tenant_id, model, payload)
             return model_response(model)
 
     @app.delete("/api/admin/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_model(model_id: int, _: User = Depends(current_admin)) -> None:
+    async def delete_model(model_id: int, admin: User = Depends(current_admin)) -> None:
         with session_factory() as session:
             model = session.get(Model, model_id)
-            if not model:
+            if not model or model.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="Model not found")
-            delete_model_service(session, vector_store, model)
+            delete_model_service(session, vector_store, admin.tenant_id, model)
 
     @app.post("/api/admin/models/bulk-upload", response_model=BulkImportResponse)
     async def bulk_upload_models(
-        file: UploadFile = File(...), _: User = Depends(current_admin)
+        file: UploadFile = File(...), admin: User = Depends(current_admin)
     ) -> BulkImportResponse:
         content = await file.read()
         if len(content) > BULK_UPLOAD_MAX_BYTES:
@@ -532,7 +421,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except CatalogParseError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         with session_factory() as session:
-            rows = import_catalog_rows(session, vector_store, raw_rows)
+            rows = import_catalog_rows(session, vector_store, admin.tenant_id, raw_rows)
         return BulkImportResponse(
             inserted=sum(1 for row in rows if row["status"] == "inserted"),
             skipped_duplicate=sum(
@@ -542,29 +431,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows=rows,
         )
 
-    @app.post("/api/admin/digest/run")
-    async def trigger_digest(_: User = Depends(current_admin)) -> dict[str, int]:
-        """Manual override for demos only — the real delivery path is the cron job
-        registered above via APScheduler (DLV-3)."""
-        return run_digest(session_factory, vector_store, mesh_generator, notifier)
-
     @app.get("/api/admin/observability/runs")
     async def observability_runs(
         limit: int = Query(default=25, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
-        user_id: int | None = Query(default=None),
+        visitor_id: str | None = Query(default=None),
         _: User = Depends(current_admin),
     ) -> dict[str, object]:
         """OBS-2: surfaces recent agent-pipeline traces inside the admin portal
         itself, so a curator never needs their own LangSmith login to see whether
         recent runs succeeded and how long they took. Read-only proxy over the
         LangSmith API — this app never writes trace data, `@traceable` (OBS-1)
-        already does that. Optional `user_id` scopes this to one user's own runs
-        (each is tagged `user:<id>` at trace time — see
-        `prepare_retrieval_recommendation`)."""
+        already does that."""
         try:
             runs, has_more = fetch_recent_runs(
-                app_settings, limit=limit, offset=offset, user_id=user_id
+                app_settings, limit=limit, offset=offset, visitor_id=visitor_id
             )
         except ObservabilityUnavailable as exc:
             return {
@@ -588,7 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else None,
                     "latency_ms": run.latency_ms,
                     "pipeline_latency_ms": run.pipeline_latency_ms,
-                    "user_id": run.user_id,
+                    "visitor_id": run.visitor_id,
                     "error": run.error,
                     "url": run.url,
                 }
@@ -641,7 +522,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/overview")
     async def admin_overview(
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Platform-usage summary for the admin landing page — totals, event-type
         breakdown, and explicit-feedback sentiment. Distinct from
@@ -649,22 +530,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         this is business/usage metrics, computed straight from our own tables."""
         with session_factory() as session:
             return {
-                "totals": usage_totals(session),
-                "event_type_counts": event_type_counts(session),
-                "feedback": feedback_sentiment(session),
+                "totals": usage_totals(session, admin.tenant_id),
+                "event_type_counts": event_type_counts(session, admin.tenant_id),
+                "feedback": feedback_sentiment(session, admin.tenant_id),
             }
 
     @app.get("/api/admin/overview/activity")
     async def admin_overview_activity(
         limit: int = Query(default=20, ge=1, le=100),
         offset: int = Query(default=0, ge=0),
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
-        """The admin-wide live activity feed — every user's events, newest first.
-        Distinct from GET /api/activity/me, which is deliberately scoped to the
-        signed-in user's own history."""
+        """The admin-wide live activity feed — every visitor's events, newest first."""
         with session_factory() as session:
-            events, has_more = recent_activity(session, limit=limit, offset=offset)
+            events, has_more = recent_activity(
+                session, admin.tenant_id, limit=limit, offset=offset
+            )
         return {
             "events": [
                 {**event, "created_at": as_utc(event["created_at"])} for event in events
@@ -676,7 +557,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def list_users(
         limit: int = Query(default=500, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Newest-registered first. `limit` defaults high enough that the
         Observability page's "filter by user" dropdown (which wants every user, not
@@ -685,6 +566,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with session_factory() as session:
             rows = session.scalars(
                 select(User)
+                .where(User.tenant_id == admin.tenant_id)
                 .order_by(User.created_at.desc(), User.id.desc())
                 .offset(offset)
                 .limit(limit + 1)
@@ -713,22 +595,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         with session_factory() as session:
             user = session.get(User, user_id)
-            if not user:
+            if not user or user.tenant_id != admin.tenant_id:
                 raise HTTPException(status_code=404, detail="User not found")
-            # No ORM cascade is configured for Event/Recommendation.user_id (plain FK
-            # columns, not relationships) and SQLite doesn't enforce FKs by default —
-            # deleting the row alone would leave that user's behavioral history and
-            # past recommendations orphaned rather than actually gone.
-            session.query(Event).filter(Event.user_id == user_id).delete()
-            session.query(Recommendation).filter(
-                Recommendation.user_id == user_id
-            ).delete()
+            # Admin accounts (User rows) are no longer linked to Event/Recommendation
+            # at all — those are keyed by anonymous visitor_id, not a User's id — so
+            # there's nothing left to cascade-clean here (see the visitor_id rename,
+            # docs/design/09-Platform-Pivot-Decision.md).
             session.delete(user)
             session.commit()
 
     @app.get("/api/admin/observability/costs")
     async def observability_costs(
-        _: User = Depends(current_admin),
+        admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Mesh cost/latency/token rollup, aggregated straight from our own DB
         (`Recommendation.mesh_*` columns, captured in app/services/mesh.py at
@@ -736,7 +614,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         available even without tracing configured, and demonstrates the "efficiency"
         story with real numbers rather than a trace count."""
         with session_factory() as session:
-            rollup = mesh_cost_rollup(session)
+            rollup = mesh_cost_rollup(session, admin.tenant_id)
         return {
             "call_count": rollup["call_count"],
             "avg_latency_ms": rollup["avg_latency_ms"],
@@ -758,93 +636,143 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ],
         }
 
-    async def _get_user_lock(user_id: int) -> asyncio.Lock:
+    def _origin_allowed(tenant: Tenant, request: Request) -> bool:
+        """Soft, browser-only defense (docs/design/09-Platform-Pivot-Decision.md §5)
+        — an empty `allowed_origins` (no tenant-onboarding UI exists yet to set it,
+        see TEN-1) means "not configured", so every origin is allowed rather than
+        every request being rejected. A non-browser client can always spoof
+        `Origin`/`Referer`; the tenant key is the real boundary, this only stops the
+        most naive cross-site misuse from a real browser."""
+        if not tenant.allowed_origins:
+            return True
+        origin = request.headers.get("origin") or request.headers.get("referer") or ""
+        return any(origin.startswith(allowed) for allowed in tenant.allowed_origins)
+
+    async def _get_visitor_lock(tenant_id: int, visitor_id: str) -> asyncio.Lock:
+        key = (tenant_id, visitor_id)
         async with app.state.pipeline_locks_guard:
-            lock = app.state.pipeline_locks.get(user_id)
+            lock = app.state.pipeline_locks.get(key)
             if lock is None:
                 lock = asyncio.Lock()
-                app.state.pipeline_locks[user_id] = lock
+                app.state.pipeline_locks[key] = lock
             return lock
 
-    async def run_pipeline_in_background(user_id: int) -> None:
-        """NFR-1: the pipeline's Mesh call is a real network round trip (hundreds of ms to
-        seconds) — running it inline on `/api/events/batch` would blow the <150ms p95
-        ingestion budget every time a trigger fires. It runs here, after the response is
-        already sent, in its own session (the request's session is closed by then). The
-        dashboard's polling (DLV-2) is what surfaces the result once this finishes.
-
-        Guarded by a per-user asyncio.Lock: two near-simultaneous qualifying batches can
-        each spawn this background task, each opening its own DB session; without the
-        lock both could read "no recent recommendation yet" before either commits, and
-        both would proceed to write a duplicate Recommendation row.
-
-        `prepare_retrieval_recommendation` is fully synchronous (SQLAlchemy, the Mesh
-        HTTP call, and — once actually configured — LangSmith's own HTTP calls). Calling
-        it directly here would block FastAPI's single-threaded event loop for however
-        long all of that takes, freezing *every* other concurrent request (unrelated
-        users' page loads included), not just this one — the opposite of "background".
-        `asyncio.to_thread` runs it on a worker thread so the event loop stays free."""
-        lock = await _get_user_lock(user_id)
+    async def run_tracker_pipeline_in_background(
+        tenant_id: int, visitor_id: str
+    ) -> None:
+        """Same shape/reasoning as the retired cookie-session
+        run_pipeline_in_background (NFR-1: keep the Mesh round trip off the ingestion
+        request path; per-(tenant, visitor) asyncio.Lock to prevent a duplicate
+        Recommendation row from two near-simultaneous qualifying batches)."""
+        lock = await _get_visitor_lock(tenant_id, visitor_id)
         async with lock:
             with session_factory() as session:
                 await asyncio.to_thread(
                     prepare_retrieval_recommendation,
                     session,
                     vector_store,
-                    user_id,
+                    tenant_id,
+                    visitor_id,
                     app.state.mesh_generator,
                 )
 
-    @app.post("/api/events/batch")
-    async def ingest_events(
-        batch: EventBatch,
+    # No explicit OPTIONS handler needed: CORSMiddleware intercepts and answers every
+    # preflight request itself, before it ever reaches route dispatch.
+    @app.post("/api/track/events")
+    async def track_events(
+        batch: TrackEventBatch,
         background_tasks: BackgroundTasks,
-        user: User = Depends(current_engineer),
+        request: Request,
     ) -> dict[str, object]:
+        """TRK-4: the tracker SDK's ingestion endpoint. Authenticated by tenant API
+        key (`tenant_key`, travels in the body — see TrackEventBatch), not a cookie
+        session; identity is an anonymous, client-generated `visitor_id`, not a
+        `User` row."""
         with session_factory() as session:
+            tenant = resolve_tenant_by_api_key(session, batch.tenant_key)
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Invalid tenant key")
+            if not _origin_allowed(tenant, request):
+                raise HTTPException(status_code=403, detail="Origin not allowed")
+
+            # A model_id that doesn't belong to this tenant is dropped rather than
+            # stored — an event referencing another tenant's catalog item id must
+            # never let that item's title/modality leak into this visitor's behavior
+            # summary later (TEN-3/NFR-8).
+            model_ids = {event.model_id for event in batch.events if event.model_id}
+            valid_model_ids = (
+                set(
+                    session.scalars(
+                        select(Model.id).where(
+                            Model.id.in_(model_ids), Model.tenant_id == tenant.id
+                        )
+                    ).all()
+                )
+                if model_ids
+                else set()
+            )
             events = [
                 Event(
-                    user_id=user.id,
+                    tenant_id=tenant.id,
+                    visitor_id=batch.visitor_id,
                     event_type=event.event_type,
-                    model_id=event.model_id,
+                    model_id=event.model_id
+                    if event.model_id in valid_model_ids
+                    else None,
                     metadata_json=event.metadata,
                 )
                 for event in batch.events
             ]
             session.add_all(events)
+            if tenant.first_event_at is None:
+                # Client-side timestamp, not an Event's own server-generated
+                # created_at — that column is a server_default (func.now()), so it's
+                # not populated on the Python object until after commit/refresh.
+                tenant.first_event_at = datetime.utcnow()
             session.commit()
-            triggered = should_trigger(session, user.id)
+
+            triggered = should_trigger(session, tenant.id, batch.visitor_id)
+            if triggered and tenant_rate_limited(session, tenant):
+                # TEN-6: the tenant-aggregate ceiling wins over an individually
+                # qualifying visitor — see tenant_rate_limited's docstring for why a
+                # per-visitor check alone isn't enough (the key is public).
+                triggered = False
             if triggered:
-                # `should_trigger`'s hash/cooldown check only has something to compare
-                # against once a Recommendation row actually exists — a burst of
-                # batches during the *first* trigger of a session (before that first
-                # background run has finished) would otherwise still each schedule
-                # their own redundant pipeline run and LangSmith trace. Skipping when
-                # one is already in flight for this user closes that gap: whatever
-                # this batch added will be picked up by the next fresh should_trigger
-                # check once the in-flight run finishes.
-                lock = app.state.pipeline_locks.get(user.id)
+                lock = app.state.pipeline_locks.get((tenant.id, batch.visitor_id))
                 if lock is not None and lock.locked():
                     triggered = False
         if triggered:
-            background_tasks.add_task(run_pipeline_in_background, user.id)
+            background_tasks.add_task(
+                run_tracker_pipeline_in_background, tenant.id, batch.visitor_id
+            )
         return {
             "accepted": len(events),
             "recommendation_triggered": triggered,
         }
 
-    @app.get("/api/recommendations/me")
-    async def latest_recommendation(
-        user: User = Depends(current_engineer),
+    @app.get("/api/recommendations/latest")
+    async def latest_recommendation_for_visitor(
+        tenant_key: str = Query(...),
+        visitor_id: str = Query(...),
     ) -> dict[str, object]:
+        """Read fallback for when no real-time push connection is open (the widget
+        phase's `GET /api/widget/stream` doesn't exist yet) — same tenant-key
+        authentication as ingestion, no separate widget-session mechanism yet."""
         with session_factory() as session:
+            tenant = resolve_tenant_by_api_key(session, tenant_key)
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Invalid tenant key")
+
             latest = session.scalar(
                 select(Recommendation)
-                .where(Recommendation.user_id == user.id)
+                .where(
+                    Recommendation.tenant_id == tenant.id,
+                    Recommendation.visitor_id == visitor_id,
+                )
                 .order_by(Recommendation.created_at.desc())
             )
-            current_events = recent_events(session, user.id)
-            evidence = session_evidence(session, current_events)
+            current_events = recent_events(session, tenant.id, visitor_id)
+            evidence = session_evidence(session, tenant.id, current_events)
             evidence_payload = [
                 {
                     "label": item["label"],
@@ -856,7 +784,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             if latest:
                 models = session.scalars(
-                    select(Model).where(Model.id.in_(latest.model_ids))
+                    select(Model).where(
+                        Model.id.in_(latest.model_ids), Model.tenant_id == tenant.id
+                    )
                 ).all()
                 models_by_id = {model.id: model for model in models}
                 reason_by_id = {
@@ -891,8 +821,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "evidence": [],
                 }
 
-            summary = activity_summary(session, current_events)
-            scored = app.state.vector_store.query_scored(summary)
+            summary = activity_summary(session, tenant.id, current_events)
+            scored = vector_store.query_scored(summary, tenant.id)
             if not scored:
                 return {
                     "status": "pending",
@@ -905,7 +835,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             models_by_id = {
                 model.id: model
                 for model in session.scalars(
-                    select(Model).where(Model.id.in_(candidate_ids))
+                    select(Model).where(
+                        Model.id.in_(candidate_ids), Model.tenant_id == tenant.id
+                    )
                 ).all()
             }
             candidates = [
@@ -924,43 +856,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "models": candidates,
                 "trigger_reason": "activity_retrieval",
                 "evidence": evidence_payload,
-            }
-
-    @app.get("/api/activity/me")
-    async def activity(user: User = Depends(current_engineer)) -> dict[str, object]:
-        with session_factory() as session:
-            events = session.scalars(
-                select(Event)
-                .where(Event.user_id == user.id)
-                # created_at is second-resolution (SQLite CURRENT_TIMESTAMP), so a batch flush
-                # that inserts several events in one commit can tie on it — id.desc() breaks
-                # the tie by actual insertion order instead of leaving it DB-arbitrary.
-                .order_by(Event.created_at.desc(), Event.id.desc())
-                .limit(50)
-            ).all()
-            latest = session.scalar(
-                select(Recommendation)
-                .where(Recommendation.user_id == user.id)
-                .order_by(Recommendation.created_at.desc())
-            )
-            return {
-                "events": [
-                    {
-                        "type": event.event_type,
-                        "model_id": event.model_id,
-                        "metadata": event.metadata_json,
-                        "created_at": as_utc(event.created_at),
-                    }
-                    for event in events
-                ],
-                "pipeline": {
-                    "behavior_summary": latest.behavior_summary,
-                    "activity_hash": latest.activity_hash,
-                    "trigger_reason": latest.trigger_reason,
-                    "created_at": as_utc(latest.created_at),
-                }
-                if latest
-                else None,
             }
 
     return app
