@@ -26,8 +26,9 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant, User
+from app.models import Event, Model, Recommendation, Tenant, TenantApiKey, User
 from app.schemas import (
+    ApiKeyResponse,
     AuthCredentials,
     BulkImportResponse,
     FeedConfigRequest,
@@ -35,10 +36,13 @@ from app.schemas import (
     IngestionStatusResponse,
     ModelCreate,
     ModelResponse,
+    OnboardingStatusResponse,
     ScrapeConfirmRequest,
     ScrapeConfirmResponse,
     ScrapePreviewRequest,
     ScrapePreviewResponse,
+    TenantCreateRequest,
+    TenantCreateResponse,
     TrackEventBatch,
     UserResponse,
 )
@@ -94,7 +98,13 @@ from app.services.observability import (
     fetch_recent_runs,
     fetch_run_detail,
 )
-from app.services.tenants import resolve_tenant_by_api_key
+from app.services.tenants import (
+    create_tenant,
+    onboarding_status,
+    resolve_tenant_by_api_key,
+    revoke_api_key,
+    rotate_api_key,
+)
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
 from seed_data import seed_demo_data
@@ -141,10 +151,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # embeddable-widget product (docs/design/09-Platform-Pivot-Decision.md) — the
     # reference tenant's own end-user surface returns with the tracker SDK phase,
     # built on anonymous visitor identity rather than this cookie-session `user` role.
-    # `admin` is (for now) the only role; tenant-admin/platform-admin generalization
-    # lands with tenant onboarding (TEN-1..8).
+    # TEN-1..8: `admin` (tenant-scoped, `tenant_id` set) and `platform_admin`
+    # (unscoped, `tenant_id` is None, can create tenants) are the two roles. `admin`
+    # keeps its pre-onboarding name rather than becoming `tenant_admin` — no other
+    # behavior distinguishes it from a hypothetical `tenant_admin`, so renaming it
+    # would just be churn across every existing route/test.
     current_admin = make_role_dependency(
         session_factory, app_settings, required_role="admin"
+    )
+    current_platform_admin = make_role_dependency(
+        session_factory, app_settings, required_role="platform_admin"
     )
 
     # DLV-3 (bonus scheduled digest) is disabled, not redesigned, now that the
@@ -289,7 +305,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 select(User).where(User.email == credentials.email.lower())
             )
             valid = user and verify_password(credentials.password, user.password_hash)
-            if not valid or user.role != "admin":
+            if not valid or user.role not in ("admin", "platform_admin"):
                 raise HTTPException(status_code=401, detail="Invalid email or password")
             token = create_session_token(user, app_settings)
             response.set_cookie(
@@ -539,6 +555,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ) -> IngestionStatusResponse:
         with session_factory() as session:
             return IngestionStatusResponse(**ingestion_status(session, admin.tenant_id))
+
+    @app.post("/api/tenants", response_model=TenantCreateResponse)
+    async def create_tenant_endpoint(
+        payload: TenantCreateRequest,
+        platform_admin: User = Depends(current_platform_admin),
+    ) -> TenantCreateResponse:
+        with session_factory() as session:
+            tenant, raw_key = create_tenant(
+                session, payload.name, payload.allowed_origins
+            )
+            return TenantCreateResponse(
+                id=tenant.id, name=tenant.name, status=tenant.status, api_key=raw_key
+            )
+
+    @app.post("/api/tenants/{tenant_id}/rotate-key", response_model=ApiKeyResponse)
+    async def rotate_tenant_key(
+        tenant_id: int, admin: User = Depends(current_admin)
+    ) -> ApiKeyResponse:
+        if tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        with session_factory() as session:
+            tenant = session.get(Tenant, tenant_id)
+            raw_key = rotate_api_key(session, tenant)
+            return ApiKeyResponse(api_key=raw_key)
+
+    @app.post(
+        "/api/tenants/{tenant_id}/revoke-key/{key_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def revoke_tenant_key(
+        tenant_id: int, key_id: int, admin: User = Depends(current_admin)
+    ) -> None:
+        if tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        with session_factory() as session:
+            key = session.get(TenantApiKey, key_id)
+            if not key or key.tenant_id != tenant_id:
+                raise HTTPException(status_code=404, detail="Key not found")
+            revoke_api_key(session, key_id)
+
+    @app.get("/api/admin/onboarding/status", response_model=OnboardingStatusResponse)
+    async def get_onboarding_status(
+        admin: User = Depends(current_admin),
+    ) -> OnboardingStatusResponse:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            return OnboardingStatusResponse(**onboarding_status(session, tenant))
 
     @app.get("/api/admin/observability/runs")
     async def observability_runs(

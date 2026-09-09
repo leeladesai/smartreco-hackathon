@@ -116,6 +116,32 @@ class IngestionStatusResponse(BaseModel):
     scrape: IngestionAdapterStatus
 
 
+class TenantCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
+class TenantCreateResponse(BaseModel):
+    id: int
+    name: str
+    status: str
+    api_key: str = Field(
+        description="Raw tracker API key — shown once, never retrievable again."
+    )
+
+
+class ApiKeyResponse(BaseModel):
+    api_key: str = Field(description="Raw tracker API key — shown once.")
+
+
+class OnboardingStatusResponse(BaseModel):
+    tenant_id: int
+    status: str
+    tracker_verified: bool
+    catalog_ready: bool
+    ready: bool
+
+
 class TrackEventInput(BaseModel):
     event_type: str = Field(
         pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"

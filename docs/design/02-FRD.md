@@ -39,6 +39,16 @@ marked where it does.
 | TEN-6 *(new)* | A hard per-tenant ceiling bounds LLM-triggering agent runs, independent of the per-visitor AGT-1 cooldown | Because the tenant API key is a public, client-embedded credential (readable in page source), per-visitor cooldown alone doesn't stop an abuser fabricating unlimited `visitor_id`s to bypass it; a tenant-aggregate cap (`max_agent_runs_per_hour`) rejects/queues further runs once hit, protecting Mesh spend and other tenants on shared infra |
 | TEN-7 *(new)* | Tracker SDK defers to the tenant's own consent-management platform rather than shipping its own banner | SDK listens for the tenant's existing consent signal; anonymous, non-PII event tracking proceeds by default regardless of that signal (no PII is ever captured per TRK-7), with the signal reserved for gating any future identity-adjacent feature |
 
+**Implementation status (M2, 2026-09-09):** TEN-1, TEN-5, and TEN-8 are implemented over HTTP —
+`POST /api/tenants` (platform-admin-only, matching TEN-1's "assisted onboarding" acceptance
+criteria exactly — no self-serve signup), `POST /api/tenants/{id}/rotate-key` and
+`POST /api/tenants/{id}/revoke-key/{key_id}` (tenant-admin, own tenant only), and
+`GET /api/admin/onboarding/status` (computes TEN-8's readiness gate and flips
+`tenants.status` `'onboarding'` → `'active'`). TEN-2/3/4/6 predate this phase (multi-tenant
+foundation + tracker SDK). TEN-7 (consent-signal deference) is not implemented — no consent
+integration exists in `tracker.js` yet. See the AUTH section below for the role-naming deviation
+this required.
+
 ### AUTH
 AI engineer and admin auth are deliberately two separate modules — a separate route, a separate form,
 and (for admin) no self-registration — not one login screen with a role picker. This pattern now
@@ -53,8 +63,17 @@ activity UI it gated. `POST /api/auth/register`, `POST /api/auth/login`, `GET /a
 `PUT /api/auth/me/telegram-chat-id` no longer exist. The reference tenant's own end-user surface
 returns later in that same phase, built on anonymous tracker-SDK visitor identity rather than this
 cookie-session `user` role — AUTH-1/AUTH-2 below describe that *target* shape, not current code.
-`AUTH-3` through `AUTH-6` (admin auth) are current and unaffected; the running `User.role` is
-`'admin'` only for now (no `tenant_admin`/`platform_admin` split until tenant onboarding, TEN-1).
+`AUTH-3` through `AUTH-6` (admin auth) are current and unaffected.
+
+**Implementation status (M2, 2026-09-09):** the role split landed as `'admin'` (tenant-scoped,
+`tenant_id` set) plus a new `'platform_admin'` (unscoped, `tenant_id=None`) — not the `'user'` /
+`'tenant_admin'` / `'platform_admin'` triple AUTH-3 describes. The existing tenant-scoped admin role
+keeps its pre-onboarding name `'admin'` rather than being renamed to `'tenant_admin'`: nothing
+distinguishes it behaviorally from a hypothetical `tenant_admin`, so renaming it would have meant a
+mechanical sweep of every existing route, dependency, and test for no functional gain. `'user'`
+stays retired (AUTH-1/AUTH-2 above). `POST /api/admin/login` (AUTH-6) now accepts either admin role.
+A platform admin is seeded via `SEED_PLATFORM_ADMIN_EMAIL`/`SEED_PLATFORM_ADMIN_PASSWORD`
+(`seed_data.py`) — no endpoint grants the role at runtime, matching AUTH-3's intent.
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|

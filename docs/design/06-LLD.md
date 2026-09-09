@@ -139,19 +139,19 @@ visitor-tracking path: `POST /api/track/events` (this table's target `POST /api/
 its actual implemented name and body shape — `{tenant_key, visitor_id, events}`, key in the body so
 `navigator.sendBeacon` can carry it) and `GET /api/recommendations/latest` (implemented as
 `tenant_key`+`visitor_id` query params, not yet the "visitor session (widget)" auth this table
-describes — no widget-session mechanism exists until the chat-bot-widget phase). Tenant API-key
-issuance/rotation/resolution (`create_tenant`/`issue_api_key`/`rotate_api_key`/`revoke_api_key`/
-`resolve_tenant_by_api_key`, `app/services/tenants.py`) and the TEN-6 rate cap
-(`tenant_rate_limited`) are implemented as service functions, called from a script/shell — the
-`/api/tenants*` HTTP endpoints and admin console UI this table shows are not yet built. None of
-`/api/widget/*` or `/api/admin/ingestion/*` exist yet. See `docs/design/09-Platform-Pivot-Decision.md`
-and the session handoff notes for exactly what's built.
+describes — no widget-session mechanism exists until the chat-bot-widget phase). As of the tenant
+onboarding phase (M2), `POST /api/tenants`, `POST /api/tenants/{id}/rotate-key`,
+`POST /api/tenants/{id}/revoke-key/{key_id}`, and `GET /api/admin/onboarding/status` are also live
+— see the M2 note below the table for the auth-role deviation this required. None of `/api/widget/*`
+or `/api/auth/*` (end-user self-registration) exist yet. See
+`docs/design/09-Platform-Pivot-Decision.md` and the session handoff notes for exactly what's built.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/api/tenants` | platform admin | TEN-1, onboard a tenant, issue API key (shown once) |
 | POST | `/api/tenants/{id}/rotate-key` | tenant admin | TEN-5, issues a new `active` key, flips the previous one to `grace` with `expires_at = now + 24h` |
 | POST | `/api/tenants/{id}/revoke-key/{key_id}` | tenant admin | TEN-5, immediate revoke (suspected leak) — bypasses the grace period, flips straight to `revoked` |
+| GET | `/api/admin/onboarding/status` | tenant admin | TEN-8, computes tracker-verified + catalog-ready readiness; flips `tenants.status` `onboarding`→`active` the first time both are true |
 | POST | `/api/auth/register` | tenant API key | AUTH-1, end-user self-registration for that tenant — always creates role `user` |
 | POST | `/api/auth/login` | tenant API key | AUTH-2, end-user login, returns session/JWT carrying `tenant_id` |
 | POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, tenant-admin login, returns session/JWT with an admin role; no `/api/admin/register` exists |
@@ -175,6 +175,16 @@ built — a `preview`/`confirm` pair for scrape rather than the single `POST
 extracted rows before anything is written (ING-6). The `/admin/ingestion` admin-console
 page (§2a below) is not yet built — these endpoints are API-only for now, same posture
 Phase 1's tenant-key issuance had before its own HTTP surface landed.
+
+**Implementation status (M2, 2026-09-09):** the tenant/onboarding rows above are implemented as
+described, with one auth-role deviation from `02-FRD.md`'s AUTH-3: the tenant-scoped admin role is
+`'admin'` (unchanged from before onboarding existed), not `'tenant_admin'` — a `'platform_admin'`
+role is layered alongside it, unscoped (`tenant_id=None`), for `POST /api/tenants` only. No
+`/api/tenants` self-serve signup exists — a platform admin (seeded via
+`SEED_PLATFORM_ADMIN_EMAIL`/`SEED_PLATFORM_ADMIN_PASSWORD` in `seed_data.py`) creates every tenant,
+matching TEN-1's own "assisted onboarding for now" acceptance criteria. The `/admin/onboarding`
+admin-console page (§2a below) — tracker snippet with the key embedded, live readiness status, a
+go-live indicator — is not yet built; onboarding status is API-only for now.
 | GET | `/api/admin/users` | tenant admin | Read-only list of that tenant's registered accounts — admin-portal visibility into who has registered |
 | POST | `/api/events/batch` | tenant API key, cross-origin | TRK-4, body: `{visitor_id, events: [...]}`, triggers evaluator inline, scoped to `tenant_id` + `visitor_id` |
 | GET | `/api/recommendations/latest` | visitor session (widget) | Latest stored recommendation for this tenant+visitor — read fallback when no push connection is open |

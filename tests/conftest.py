@@ -75,6 +75,14 @@ def client(tmp_path) -> Iterator[TestClient]:
                 role="admin",
             )
         )
+        session.add(
+            User(
+                tenant_id=None,
+                email="platform-admin@test.dev",
+                password_hash=hash_password("password123"),
+                role="platform_admin",
+            )
+        )
         session.commit()
     with TestClient(test_app) as test_client:
         yield test_client
