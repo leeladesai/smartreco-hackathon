@@ -2,13 +2,14 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Model, Tenant
+from app.models import CatalogItem, Tenant, Widget
 from app.services.catalog_import import (
     CatalogParseError,
     import_catalog_rows,
     parse_catalog_file,
 )
-from app.vector import ModelVectorStore, build_embedding_function
+from app.services.widgets import create_widget
+from app.vector import CatalogItemVectorStore, build_embedding_function
 
 
 def _make_session_factory(tmp_path):
@@ -28,8 +29,13 @@ def _make_tenant(session) -> Tenant:
     return tenant
 
 
+def _make_widget(session, tenant: Tenant) -> Widget:
+    widget, _raw_key = create_widget(session, tenant, "Test Widget")
+    return widget
+
+
 def _make_vector_store(settings, tmp_path):
-    return ModelVectorStore(
+    return CatalogItemVectorStore(
         str(tmp_path / "chroma"),
         collection_name="models",
         embedding_function=build_embedding_function(settings),
@@ -38,7 +44,7 @@ def _make_vector_store(settings, tmp_path):
 
 def test_parse_csv_file_reads_rows_and_splits_tags() -> None:
     content = (
-        "title,provider,modality,price,description,use_case_tags\n"
+        "title,provider,category,price,description,use_case_tags\n"
         'Test Voice,Test Labs,Voice,$0.001/char,"A voice model.",real-time;support\n'
     ).encode("utf-8")
     rows = parse_catalog_file("catalog.csv", content)
@@ -46,7 +52,7 @@ def test_parse_csv_file_reads_rows_and_splits_tags() -> None:
         {
             "title": "Test Voice",
             "provider": "Test Labs",
-            "modality": "Voice",
+            "category": "Voice",
             "price": "$0.001/char",
             "description": "A voice model.",
             "use_case_tags": "real-time;support",
@@ -89,18 +95,20 @@ def test_import_catalog_rows_inserts_valid_rows_and_syncs_vector_store(
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         results = import_catalog_rows(
             session,
             vector_store,
-            tenant.id,
+            widget,
             [
                 {
                     "title": "Test Voice",
                     "provider": "Test Labs",
-                    "modality": "Voice",
+                    "category": "Voice",
                     "price": "$0.001/char",
                     "description": "A voice model.",
-                    "latency_ms": "120",
+                    "spec_1_label": "Latency",
+                    "spec_1_value": "120ms",
                     "use_case_tags": "real-time;support",
                 }
             ],
@@ -108,10 +116,12 @@ def test_import_catalog_rows_inserts_valid_rows_and_syncs_vector_store(
         assert results == [
             {"row": 1, "title": "Test Voice", "status": "inserted", "errors": []}
         ]
-        model = session.query(Model).filter(Model.title == "Test Voice").one()
-        assert model.vector_synced is True
-        assert model.latency_ms == 120
-        assert model.use_case_tags == ["real-time", "support"]
+        item = (
+            session.query(CatalogItem).filter(CatalogItem.title == "Test Voice").one()
+        )
+        assert item.vector_synced is True
+        assert item.specs == {"Latency": "120ms"}
+        assert item.use_case_tags == ["real-time", "support"]
 
 
 def test_import_catalog_rows_reports_invalid_rows_without_aborting_batch(
@@ -121,25 +131,29 @@ def test_import_catalog_rows_reports_invalid_rows_without_aborting_batch(
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         results = import_catalog_rows(
             session,
             vector_store,
-            tenant.id,
+            widget,
             [
                 {"title": "", "provider": "Test Labs"},  # missing required fields
                 {
-                    "title": "Valid Model",
+                    "title": "Valid Item",
                     "provider": "Test Labs",
-                    "modality": "LLM",
+                    "category": "LLM",
                     "price": "$1",
-                    "description": "A model.",
+                    "description": "An item.",
                 },
             ],
         )
         assert results[0]["status"] == "invalid"
         assert results[0]["errors"]
         assert results[1]["status"] == "inserted"
-        assert session.query(Model).filter(Model.title == "Valid Model").count() == 1
+        assert (
+            session.query(CatalogItem).filter(CatalogItem.title == "Valid Item").count()
+            == 1
+        )
 
 
 def test_import_catalog_rows_skips_case_insensitive_duplicate_titles(tmp_path) -> None:
@@ -147,13 +161,15 @@ def test_import_catalog_rows_skips_case_insensitive_duplicate_titles(tmp_path) -
     vector_store = _make_vector_store(settings, tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         session.add(
-            Model(
+            CatalogItem(
                 tenant_id=tenant.id,
-                title="Existing Model",
+                widget_id=widget.id,
+                title="Existing Item",
                 description="d",
                 provider="Test Labs",
-                modality="LLM",
+                category="LLM",
                 price="$1",
                 use_case_tags=[],
             )
@@ -163,23 +179,23 @@ def test_import_catalog_rows_skips_case_insensitive_duplicate_titles(tmp_path) -
         results = import_catalog_rows(
             session,
             vector_store,
-            tenant.id,
+            widget,
             [
                 {
-                    "title": "existing model",
+                    "title": "existing item",
                     "provider": "Test Labs",
-                    "modality": "LLM",
+                    "category": "LLM",
                     "price": "$1",
-                    "description": "A model.",
+                    "description": "An item.",
                 }
             ],
         )
         assert results == [
             {
                 "row": 1,
-                "title": "existing model",
+                "title": "existing item",
                 "status": "skipped_duplicate",
                 "errors": [],
             }
         ]
-        assert session.query(Model).count() == 1
+        assert session.query(CatalogItem).count() == 1

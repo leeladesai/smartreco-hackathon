@@ -17,36 +17,29 @@ from app.db import Base
 
 
 class Tenant(Base):
-    """A site embedding TrailMind (docs/design/09-Platform-Pivot-Decision.md). The
-    hackathon-era AI-model-catalog app runs as a single seeded 'reference' tenant so its
-    behavior is unchanged while the schema underneath becomes tenant-aware. `status`
-    drives the widget readiness gate (TEN-8) once the widget exists; `allowed_origins`
-    and `max_agent_runs_per_hour` are part of the target schema but unused until the
-    tracker SDK / rate-limiting phases land."""
+    """A company embedding TrailMind (docs/design/09-Platform-Pivot-Decision.md).
+    `status` is platform-level governance only (approved/suspended by a platform
+    admin — see TEN-1/TEN-8's pending_approval flow) — it no longer gates whether any
+    one widget renders; that's `Widget.status`, since a tenant can now run several
+    widgets (e.g. "Credit Cards", "Personal Loans") independently. `allowed_origins`,
+    tracker verification, and feed config all moved to `Widget` for the same reason —
+    see its docstring."""
 
     __tablename__ = "tenants"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(20), default="active")
-    allowed_origins: Mapped[list[str]] = mapped_column(JSON, default=list)
     max_agent_runs_per_hour: Mapped[int] = mapped_column(Integer, default=500)
-    # Set once, on the first successful tracker-SDK ingestion for this tenant (see
-    # POST /api/track/events) — the "tracker verified" half of the TEN-8 widget
-    # readiness gate. Null until then.
-    first_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    # Feed/API catalog ingestion (ING-1) config. `feed_auth_token` is a bearer token
-    # for *their* feed endpoint, not a TrailMind credential, so it's stored as-is
-    # rather than hashed like a TenantApiKey.
-    feed_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    feed_auth_token: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class TenantApiKey(Base):
-    """Schema only in this phase — no issuance/rotation/request-auth logic yet
-    (TEN-1/TEN-4/TEN-5 land with the tracker SDK phase). `status` supports the
-    grace-period rotation design from docs/design/09-Platform-Pivot-Decision.md §5."""
+    """Retired as of the per-widget key cutover (see Widget/WidgetApiKey) — a tracker/
+    widget snippet now authenticates with a WidgetApiKey, not a tenant-wide key.
+    Table (and any already-hashed rows) kept only so the migration that moves off it
+    has something to read; nothing issues, checks, or rotates a TenantApiKey anymore.
+    """
 
     __tablename__ = "tenant_api_keys"
 
@@ -76,21 +69,38 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
-class Model(Base):
-    __tablename__ = "models"
+class CatalogItem(Base):
+    """A tenant's catalog entry recommended by the widget. Originally AI-model-shaped
+    (a fixed `modality` enum, `latency_ms`/`context_window`) from the hackathon's
+    narrower AI-model-catalog scope; generalized for arbitrary product catalogs
+    (loans, cards, whatever a tenant sells) — `category` is now free text instead of
+    a fixed enum, and `specs` replaces the two AI-specific typed columns with
+    arbitrary label/value highlight pairs (docs/design/09-Platform-Pivot-Decision.md).
+    """
+
+    __tablename__ = "catalog_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int | None] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
+    # Nullable at the schema level (existing rows predate widgets and were backfilled
+    # to their tenant's auto-created "Default" widget — see db.py's migration), but
+    # every new item is created within a widget context and always has one — this is
+    # the actual scope retrieval/tracking isolate on, not tenant_id.
+    widget_id: Mapped[int | None] = mapped_column(
+        ForeignKey("widgets.id"), nullable=True, index=True
+    )
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text)
     story: Mapped[str | None] = mapped_column(Text, nullable=True)
     provider: Mapped[str] = mapped_column(String(120))
-    modality: Mapped[str] = mapped_column(String(40))
+    category: Mapped[str] = mapped_column(String(60))
     price: Mapped[str] = mapped_column(String(120))
-    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    context_window: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Arbitrary label -> value highlight pairs (e.g. {"Rate": "10.5-16% p.a."} for a
+    # loan, {"Latency": "~135ms"} for an AI model) — replaces the old fixed
+    # latency_ms/context_window columns. See catalog.py's SPEC_KEY_LIMIT.
+    specs: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     use_case_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     vector_synced: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -122,12 +132,20 @@ class Event(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
+    # The widget whose key authenticated this event — retrieval/behavior-summary
+    # scoping now happens at this level, not tenant_id (tenant_id is kept for
+    # tenant-wide admin aggregation, e.g. the Overview page's totals).
+    widget_id: Mapped[int | None] = mapped_column(
+        ForeignKey("widgets.id"), nullable=True, index=True
+    )
     # An anonymous, tracker-assigned identity (see app/static/js/tracker.js) — not a
     # User row. The AI-engineer cookie-session `user_id` this replaced was removed
     # along with that login surface (docs/design/09-Platform-Pivot-Decision.md).
     visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     event_type: Mapped[str] = mapped_column(String(40))
-    model_id: Mapped[int | None] = mapped_column(ForeignKey("models.id"), nullable=True)
+    catalog_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("catalog_items.id"), nullable=True
+    )
     metadata_json: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -139,9 +157,12 @@ class Recommendation(Base):
     tenant_id: Mapped[int | None] = mapped_column(
         ForeignKey("tenants.id"), nullable=True, index=True
     )
+    widget_id: Mapped[int | None] = mapped_column(
+        ForeignKey("widgets.id"), nullable=True, index=True
+    )
     visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
-    model_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    catalog_item_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
     retrieval_meta: Mapped[list[dict]] = mapped_column(JSON, default=list)
     behavior_summary: Mapped[str] = mapped_column(Text, default="")
     activity_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -172,7 +193,56 @@ class WidgetSession(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    # The actual push-routing scope (matches app.state.widget_connections' key) —
+    # nullable only for rows written before this column existed; every new row always
+    # sets it.
+    widget_id: Mapped[int | None] = mapped_column(
+        ForeignKey("widgets.id"), nullable=True, index=True
+    )
     visitor_id: Mapped[str] = mapped_column(String(64), index=True)
     connection_id: Mapped[str] = mapped_column(String(64))
     opened_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class Widget(Base):
+    """One embeddable unit under a tenant (e.g. "Credit Cards" vs "Personal Loans"),
+    each with its own key, allowed origins, and catalog subset — the actual scope
+    the tracker/widget SDK authenticates against and retrieval is isolated to
+    (docs/design/09-Platform-Pivot-Decision.md). `status` is this widget's own TEN-8
+    readiness gate (tracker verified + catalog ready — see
+    app/services/widgets.py::onboarding_status), independent of its tenant's
+    platform-governance `status`; both must be "active"/approved for the widget to
+    actually render on the host page."""
+
+    __tablename__ = "widgets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default="onboarding")
+    allowed_origins: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Set once, on this widget's first successful tracker-SDK ingestion (see
+    # POST /api/track/events) — the "tracker verified" half of TEN-8. Null until then.
+    first_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Feed/API catalog ingestion (ING-1) config, scoped per widget now — two widgets
+    # under the same tenant can sync from two different feeds. `feed_auth_token` is a
+    # bearer token for *their* feed endpoint, not a TrailMind credential, so it's
+    # stored as-is rather than hashed like a WidgetApiKey.
+    feed_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    feed_auth_token: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WidgetApiKey(Base):
+    """Mirrors TenantApiKey (same hash/grace-period rotation design) but scoped to one
+    Widget instead of one Tenant — see Widget's docstring for why both exist."""
+
+    __tablename__ = "widget_api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    widget_id: Mapped[int] = mapped_column(ForeignKey("widgets.id"), index=True)
+    key_hash: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

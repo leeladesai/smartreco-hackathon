@@ -5,25 +5,24 @@ TestClient reading an infinite server-sent-events generator is a good way to wri
 test that hangs; the auth/gate checks that fail before the stream ever opens are
 covered below, and the push mechanism itself is tested at the service layer
 (prepare_retrieval_recommendation's push_callback), independent of any real
-connection.
+connection. Updated for the per-widget key cutover — every wire-level test now
+authenticates with a widget key, not a tenant key (see Widget's docstring in
+app/models.py).
 """
 
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Tenant
+from app.models import CatalogItem, Event, Tenant, Widget
 from app.services.agent_graph import (
     NO_ANSWER_MESSAGE,
     answer_visitor_question,
     prepare_retrieval_recommendation,
 )
 from app.services.mesh import QAResult
-from app.services.tenants import (
-    create_tenant,
-    get_or_create_reference_tenant,
-    issue_api_key,
-)
+from app.services.tenants import create_tenant, get_or_create_reference_tenant
+from app.services.widgets import create_widget
 
 
 class FakeVectorStore:
@@ -31,24 +30,24 @@ class FakeVectorStore:
         self.scored = scored
 
     def query_scored(
-        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+        self, text: str, widget_id: int, limit: int = 5, where: dict | None = None
     ):
         return self.scored
 
     @staticmethod
-    def document(model) -> str:
-        return f"{model.title}. {model.provider}. {model.modality}. {model.description}"
+    def document(item) -> str:
+        return f"{item.title}. {item.provider}. {item.category}. {item.description}"
 
 
 class FakeMeshGenerator:
     enabled = True
 
-    def __init__(self, answer: str, model_ids: list[int]) -> None:
+    def __init__(self, answer: str, catalog_item_ids: list[int]) -> None:
         self._answer = answer
-        self._model_ids = model_ids
+        self._catalog_item_ids = catalog_item_ids
 
     def answer_question(self, question, candidates):
-        return QAResult(answer=self._answer, model_ids=self._model_ids)
+        return QAResult(answer=self._answer, catalog_item_ids=self._catalog_item_ids)
 
 
 def _make_session_factory(tmp_path):
@@ -59,25 +58,27 @@ def _make_session_factory(tmp_path):
     return build_session_factory(settings)
 
 
-def _make_tenant_and_model(session) -> tuple[Tenant, Model]:
+def _make_tenant_widget_and_item(session) -> tuple[Tenant, Widget, CatalogItem]:
     tenant = Tenant(name="Test Tenant", status="active")
     session.add(tenant)
     session.commit()
     session.refresh(tenant)
-    model = Model(
+    widget, _ = create_widget(session, tenant, "Test Widget")
+    item = CatalogItem(
         tenant_id=tenant.id,
+        widget_id=widget.id,
         title="Travel Card",
         provider="Acme",
-        modality="LLM",
+        category="LLM",
         price="$0",
-        latency_ms=200,
+        specs={"Latency": "~200ms"},
         description="A travel rewards card with no annual fee.",
         use_case_tags=["travel"],
     )
-    session.add(model)
+    session.add(item)
     session.commit()
-    session.refresh(model)
-    return tenant, model
+    session.refresh(item)
+    return tenant, widget, item
 
 
 def test_answer_visitor_question_returns_fixed_message_with_no_candidates(
@@ -85,11 +86,11 @@ def test_answer_visitor_question_returns_fixed_message_with_no_candidates(
 ) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        tenant, _ = _make_tenant_and_model(session)
+        _, widget, _ = _make_tenant_widget_and_item(session)
         result = answer_visitor_question(
-            session, FakeVectorStore([]), tenant.id, "v-1", "what is the fee?"
+            session, FakeVectorStore([]), widget.id, "v-1", "what is the fee?"
         )
-        assert result == {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+        assert result == {"answer": NO_ANSWER_MESSAGE, "catalog_item_ids": []}
 
 
 def test_answer_visitor_question_returns_fixed_message_on_weak_retrieval(
@@ -97,29 +98,30 @@ def test_answer_visitor_question_returns_fixed_message_on_weak_retrieval(
 ) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        tenant, model = _make_tenant_and_model(session)
+        _, widget, item = _make_tenant_widget_and_item(session)
         # Above WEAK_RETRIEVAL_DISTANCE (1.5) — not a groundable match, must never
         # reach the LLM (AGT-8).
         result = answer_visitor_question(
             session,
-            FakeVectorStore([(model.id, 1.9)]),
-            tenant.id,
+            FakeVectorStore([(item.id, 1.9)]),
+            widget.id,
             "v-1",
             "unrelated question",
-            mesh_generator=FakeMeshGenerator("should never be returned", [model.id]),
+            mesh_generator=FakeMeshGenerator("should never be returned", [item.id]),
         )
-        assert result == {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+        assert result == {"answer": NO_ANSWER_MESSAGE, "catalog_item_ids": []}
 
 
 def test_answer_visitor_question_grounds_to_retrieved_candidates(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        tenant, model = _make_tenant_and_model(session)
-        other = Model(
+        tenant, widget, item = _make_tenant_widget_and_item(session)
+        other = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Other Card",
             provider="Acme",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
@@ -128,30 +130,31 @@ def test_answer_visitor_question_grounds_to_retrieved_candidates(tmp_path) -> No
         session.commit()
         session.refresh(other)
 
-        # The LLM (fake) tries to cite a model that wasn't actually retrieved —
+        # The LLM (fake) tries to cite an item that wasn't actually retrieved —
         # filtered out, same grounding-guard discipline as _generate_narrative.
-        fake_mesh = FakeMeshGenerator("No annual fee.", [model.id, other.id + 999])
+        fake_mesh = FakeMeshGenerator("No annual fee.", [item.id, other.id + 999])
         result = answer_visitor_question(
             session,
-            FakeVectorStore([(model.id, 0.2)]),
-            tenant.id,
+            FakeVectorStore([(item.id, 0.2)]),
+            widget.id,
             "v-1",
             "does it have an annual fee?",
             mesh_generator=fake_mesh,
         )
-        assert result == {"answer": "No annual fee.", "model_ids": [model.id]}
+        assert result == {"answer": "No annual fee.", "catalog_item_ids": [item.id]}
 
 
 def test_widget_push_sets_pushed_at_when_a_connection_is_open(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        tenant, model = _make_tenant_and_model(session)
+        tenant, widget, item = _make_tenant_widget_and_item(session)
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id="v-push",
                 event_type="model_view",
-                model_id=model.id,
+                catalog_item_id=item.id,
                 metadata_json={},
             )
         )
@@ -159,7 +162,8 @@ def test_widget_push_sets_pushed_at_when_a_connection_is_open(tmp_path) -> None:
 
         recommendation = prepare_retrieval_recommendation(
             session,
-            FakeVectorStore([(model.id, 0.2)]),
+            FakeVectorStore([(item.id, 0.2)]),
+            widget.id,
             tenant.id,
             "v-push",
             mesh_generator=None,
@@ -172,13 +176,14 @@ def test_widget_push_sets_pushed_at_when_a_connection_is_open(tmp_path) -> None:
 def test_widget_push_leaves_pushed_at_null_with_no_connection(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
-        tenant, model = _make_tenant_and_model(session)
+        tenant, widget, item = _make_tenant_widget_and_item(session)
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id="v-nopush",
                 event_type="model_view",
-                model_id=model.id,
+                catalog_item_id=item.id,
                 metadata_json={},
             )
         )
@@ -186,7 +191,8 @@ def test_widget_push_leaves_pushed_at_null_with_no_connection(tmp_path) -> None:
 
         recommendation = prepare_retrieval_recommendation(
             session,
-            FakeVectorStore([(model.id, 0.2)]),
+            FakeVectorStore([(item.id, 0.2)]),
+            widget.id,
             tenant.id,
             "v-nopush",
             mesh_generator=None,
@@ -196,11 +202,11 @@ def test_widget_push_leaves_pushed_at_null_with_no_connection(tmp_path) -> None:
         assert recommendation.pushed_at is None
 
 
-def test_widget_ask_endpoint_rejects_unknown_tenant_key(client: TestClient) -> None:
+def test_widget_ask_endpoint_rejects_unknown_widget_key(client: TestClient) -> None:
     response = client.post(
         "/api/widget/ask",
         json={
-            "tenant_key": "tk_live_bogus",
+            "widget_key": "wk_live_bogus",
             "visitor_id": "v-1",
             "question": "anything",
         },
@@ -208,13 +214,14 @@ def test_widget_ask_endpoint_rejects_unknown_tenant_key(client: TestClient) -> N
     assert response.status_code == 401
 
 
-def test_widget_ask_endpoint_rejects_onboarding_tenant(client: TestClient) -> None:
+def test_widget_ask_endpoint_rejects_onboarding_widget(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
-        _, raw_key = create_tenant(session, "Not Ready Yet")
+        tenant = create_tenant(session, "Not Ready Yet")
+        _, raw_key = create_widget(session, tenant, "Not Ready Widget")
 
     response = client.post(
         "/api/widget/ask",
-        json={"tenant_key": raw_key, "visitor_id": "v-1", "question": "anything"},
+        json={"widget_key": raw_key, "visitor_id": "v-1", "question": "anything"},
     )
     assert response.status_code == 403
 
@@ -222,17 +229,19 @@ def test_widget_ask_endpoint_rejects_onboarding_tenant(client: TestClient) -> No
 def test_widget_ask_endpoint_answers_with_no_mesh_configured(
     client: TestClient,
 ) -> None:
-    # The client fixture's reference tenant has no Mesh key configured — a question
-    # with no LLM available still returns AGT-8's explicit "don't know" response
-    # rather than erroring.
+    # The client fixture's session has no Mesh key configured — a question with no
+    # LLM available still returns AGT-8's explicit "don't know" response rather than
+    # erroring.
     with client.app.state.session_factory() as session:
         tenant = get_or_create_reference_tenant(session)
-        raw_key = issue_api_key(session, tenant)
+        widget, raw_key = create_widget(session, tenant, "Ask Widget")
+        widget.status = "active"
+        session.commit()
 
     response = client.post(
         "/api/widget/ask",
         json={
-            "tenant_key": raw_key,
+            "widget_key": raw_key,
             "visitor_id": "v-1",
             "question": "what's the cheapest option?",
         },
@@ -244,10 +253,12 @@ def test_widget_ask_endpoint_answers_with_no_mesh_configured(
 def test_widget_activity_endpoint_returns_recent_events(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
         tenant = get_or_create_reference_tenant(session)
-        raw_key = issue_api_key(session, tenant)
+        widget, raw_key = create_widget(session, tenant, "Activity Widget")
+        widget.status = "active"
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id="v-activity",
                 event_type="search",
                 metadata_json={"query": "travel"},
@@ -256,7 +267,7 @@ def test_widget_activity_endpoint_returns_recent_events(client: TestClient) -> N
         session.commit()
 
     response = client.get(
-        f"/api/widget/activity?tenant_key={raw_key}&visitor_id=v-activity"
+        f"/api/widget/activity?widget_key={raw_key}&visitor_id=v-activity"
     )
     assert response.status_code == 200
     body = response.json()
@@ -265,19 +276,21 @@ def test_widget_activity_endpoint_returns_recent_events(client: TestClient) -> N
     assert body["pipeline"] is None
 
 
-def test_widget_activity_endpoint_rejects_onboarding_tenant(
+def test_widget_activity_endpoint_rejects_onboarding_widget(
     client: TestClient,
 ) -> None:
     with client.app.state.session_factory() as session:
-        _, raw_key = create_tenant(session, "Not Ready Yet")
+        tenant = create_tenant(session, "Not Ready Yet")
+        _, raw_key = create_widget(session, tenant, "Not Ready Widget")
 
-    response = client.get(f"/api/widget/activity?tenant_key={raw_key}&visitor_id=v-1")
+    response = client.get(f"/api/widget/activity?widget_key={raw_key}&visitor_id=v-1")
     assert response.status_code == 403
 
 
-def test_widget_stream_rejects_onboarding_tenant(client: TestClient) -> None:
+def test_widget_stream_rejects_onboarding_widget(client: TestClient) -> None:
     with client.app.state.session_factory() as session:
-        _, raw_key = create_tenant(session, "Not Ready Yet")
+        tenant = create_tenant(session, "Not Ready Yet")
+        _, raw_key = create_widget(session, tenant, "Not Ready Widget")
 
-    response = client.get(f"/api/widget/stream?tenant_key={raw_key}&visitor_id=v-1")
+    response = client.get(f"/api/widget/stream?widget_key={raw_key}&visitor_id=v-1")
     assert response.status_code == 403

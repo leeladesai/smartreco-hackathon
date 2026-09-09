@@ -2,9 +2,9 @@
  * TrailMind tracker SDK (TRK-1..7, docs/design/09-Platform-Pivot-Decision.md).
  *
  * Embed on a tenant's own page:
- *   <script src="https://<this-host>/static/js/tracker.js" data-tenant-key="tk_live_..."></script>
+ *   <script src="https://<this-host>/static/js/tracker.js" data-widget-key="wk_live_..."></script>
  *
- * The host page calls window.TrailMind.track(eventType, modelId, metadata) to record
+ * The host page calls window.TrailMind.track(eventType, catalogItemId, metadata) to record
  * behavioral signal (item views, searches, an explicit "compare" action, etc.) — this
  * file has no opinion about the host page's own catalog UI, it only batches and ships
  * events to POST /api/track/events. Anonymous by design: the only identity is a
@@ -15,9 +15,9 @@
   'use strict';
 
   var CURRENT_SCRIPT = document.currentScript;
-  var TENANT_KEY = CURRENT_SCRIPT ? CURRENT_SCRIPT.getAttribute('data-tenant-key') : null;
-  if (!TENANT_KEY) {
-    console.error('[TrailMind] tracker.js loaded without a data-tenant-key attribute — not tracking.');
+  var WIDGET_KEY = CURRENT_SCRIPT ? CURRENT_SCRIPT.getAttribute('data-widget-key') : null;
+  if (!WIDGET_KEY) {
+    console.error('[TrailMind] tracker.js loaded without a data-widget-key attribute — not tracking.');
     return;
   }
 
@@ -73,7 +73,7 @@
     if (!eventQueue.length) return;
     var events = eventQueue.splice(0, EVENT_BATCH_SIZE);
     var body = JSON.stringify({
-      tenant_key: TENANT_KEY,
+      widget_key: WIDGET_KEY,
       visitor_id: visitorId,
       events: events
     });
@@ -97,13 +97,13 @@
     });
   }
 
-  function track(eventType, modelId, metadata) {
+  function track(eventType, catalogItemId, metadata) {
     var event = { event_type: eventType, metadata: metadata || {} };
     // Number(null) is 0, not NaN — the explicit null/undefined check avoids ever
-    // shipping model_id: 0 for a model-less event (search, catalog_filter, etc.).
-    if (modelId !== null && modelId !== undefined) {
-      var numericModelId = Number(modelId);
-      if (Number.isInteger(numericModelId)) event.model_id = numericModelId;
+    // shipping catalog_item_id: 0 for an item-less event (search, catalog_filter, etc.).
+    if (catalogItemId !== null && catalogItemId !== undefined) {
+      var numericCatalogItemId = Number(catalogItemId);
+      if (Number.isInteger(numericCatalogItemId)) event.catalog_item_id = numericCatalogItemId;
     }
     eventQueue.push(event);
     if (eventQueue.length >= EVENT_BATCH_SIZE) {

@@ -4,9 +4,9 @@ the reference tenant (id=1 — see tests/conftest.py), then proves tenant A's se
 cannot see tenant B's catalog/events/recommendations, and vice versa, through the
 public API rather than by inspecting internals directly.
 
-The event-ingestion cross-tenant model_id guard (dropping a foreign-tenant model_id
-rather than storing it) is covered in tests/test_tracker.py against the tracker SDK's
-own POST /api/track/events, which replaced the old cookie-session
+The event-ingestion cross-tenant catalog_item_id guard (dropping a foreign-tenant
+catalog_item_id rather than storing it) is covered in tests/test_tracker.py against
+the tracker SDK's own POST /api/track/events, which replaced the old cookie-session
 POST /api/events/batch. This file's own tracker-key test below covers a different
 angle: tenant A's key must never surface tenant B's stored data.
 """
@@ -14,9 +14,9 @@ angle: tenant A's key must never surface tenant B's stored data.
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from app.models import Model, Tenant, User
+from app.models import CatalogItem, Tenant, User
 from app.security import hash_password
-from app.services.tenants import create_tenant
+from app.services.widgets import create_widget
 
 
 def _make_second_tenant(client: TestClient) -> Tenant:
@@ -25,6 +25,7 @@ def _make_second_tenant(client: TestClient) -> Tenant:
         session.add(tenant)
         session.commit()
         session.refresh(tenant)
+        widget, _raw_key = create_widget(session, tenant, "Second Widget")
 
         admin = User(
             tenant_id=tenant.id,
@@ -32,38 +33,47 @@ def _make_second_tenant(client: TestClient) -> Tenant:
             password_hash=hash_password("password123"),
             role="admin",
         )
-        model = Model(
+        item = CatalogItem(
             tenant_id=tenant.id,
-            title="Tenant B Only Model",
+            widget_id=widget.id,
+            title="Tenant B Only Item",
             provider="Tenant B Provider",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="Only visible inside tenant B.",
             use_case_tags=[],
         )
-        session.add_all([admin, model])
+        session.add_all([admin, item])
         session.commit()
-        session.refresh(model)
-        tenant.only_model_id = model.id  # stash for the assertions below
+        session.refresh(item)
+        tenant.only_catalog_item_id = item.id  # stash for the assertions below
+        tenant.only_widget_id = widget.id
         return tenant
 
 
-def test_catalog_list_never_returns_another_tenants_models(client: TestClient) -> None:
+def test_catalog_list_never_returns_another_tenants_items(
+    client: TestClient, reference_widget
+) -> None:
+    reference_widget_id = reference_widget[0].id
     second_tenant = _make_second_tenant(client)
-    # GET /api/models is admin-only in this build (no tenant API key / public catalog
-    # surface exists yet — that returns with the tracker SDK phase), so tenant A's own
-    # admin is what proves the isolation here.
+    # GET /api/admin/widgets/{widget_id}/catalog-items is admin-only, own-widget-only —
+    # tenant A's own admin, listing tenant A's own widget's catalog, is what proves the
+    # isolation here.
     client.post(
         "/api/admin/login",
         json={"email": "curator@test.dev", "password": "password123"},
     )
 
-    response = client.get("/api/models")
+    response = client.get(f"/api/admin/widgets/{reference_widget_id}/catalog-items")
     assert response.status_code == 200
-    titles = {model["title"] for model in response.json()}
-    assert "Tenant B Only Model" not in titles
+    titles = {item["title"] for item in response.json()}
+    assert "Tenant B Only Item" not in titles
 
-    detail = client.get(f"/api/models/{second_tenant.only_model_id}")
+    # Tenant A's admin can't even reach tenant B's widget to look inside it.
+    detail = client.get(
+        f"/api/admin/widgets/{second_tenant.only_widget_id}/catalog-items/"
+        f"{second_tenant.only_catalog_item_id}"
+    )
     assert detail.status_code == 404
 
 
@@ -94,9 +104,9 @@ def test_admin_overview_totals_exclude_another_tenants_data(client: TestClient) 
     # Ground truth computed directly, scoped to the reference tenant only — comparing
     # against this (rather than an absolute expected number, or a before/after delta)
     # is immune to the app's own background demo-seed task racing in in the
-    # background and adding more of the *reference* tenant's own users/models mid-test;
+    # background and adding more of the *reference* tenant's own users/items mid-test;
     # what actually proves isolation is that the API's totals match a query scoped to
-    # tenant A alone, i.e. tenant B's admin/model never entered the count.
+    # tenant A alone, i.e. tenant B's admin/item never entered the count.
     with client.app.state.session_factory() as session:
         reference_tenant = session.scalar(
             select(Tenant).where(Tenant.name == "TrailMind Reference")
@@ -104,53 +114,64 @@ def test_admin_overview_totals_exclude_another_tenants_data(client: TestClient) 
         expected_users = session.scalar(
             select(func.count(User.id)).where(User.tenant_id == reference_tenant.id)
         )
-        expected_models = session.scalar(
-            select(func.count(Model.id)).where(Model.tenant_id == reference_tenant.id)
+        expected_items = session.scalar(
+            select(func.count(CatalogItem.id)).where(
+                CatalogItem.tenant_id == reference_tenant.id
+            )
         )
 
     assert totals["users"] == expected_users
-    assert totals["models"] == expected_models
+    assert totals["catalog_items"] == expected_items
 
 
-def test_tracker_key_never_surfaces_another_tenants_recommendation(
+def test_widget_key_never_surfaces_another_widgets_recommendation(
     client: TestClient,
 ) -> None:
-    """A visitor_id is just a client-chosen string, not scoped to any tenant on its
-    own — two tenants' visitors could easily collide on the same id (e.g. both using
-    "v-1" from a fresh browser). Isolation must come entirely from the tenant key,
+    """A visitor_id is just a client-chosen string, not scoped to any widget on its
+    own — two widgets' visitors could easily collide on the same id (e.g. both using
+    "v-1" from a fresh browser). Isolation must come entirely from the widget key,
     not from visitor_id happening to be unique."""
     with client.app.state.session_factory() as session:
-        tenant_a, key_a = create_tenant(session, "Tenant A")
-        tenant_b, key_b = create_tenant(session, "Tenant B")
-        model_b = Model(
+        tenant_a = Tenant(name="Tenant A")
+        tenant_b = Tenant(name="Tenant B")
+        session.add_all([tenant_a, tenant_b])
+        session.commit()
+        widget_a, key_a = create_widget(session, tenant_a, "Widget A")
+        widget_b, key_b = create_widget(session, tenant_b, "Widget B")
+        item_b = CatalogItem(
             tenant_id=tenant_b.id,
-            title="Tenant B Secret Model",
+            widget_id=widget_b.id,
+            title="Widget B Secret Item",
             provider="P",
-            modality="LLM",
+            category="LLM",
             price="$0",
-            description="Only for tenant B.",
+            description="Only for widget B.",
             use_case_tags=[],
         )
-        session.add(model_b)
+        session.add(item_b)
         session.commit()
-        model_b_id = model_b.id
+        item_b_id = item_b.id
 
     same_visitor_id = "v-shared"
     client.post(
         "/api/track/events",
         json={
-            "tenant_key": key_b,
+            "widget_key": key_b,
             "visitor_id": same_visitor_id,
             "events": [
-                {"event_type": "model_view", "model_id": model_b_id, "metadata": {}}
+                {
+                    "event_type": "model_view",
+                    "catalog_item_id": item_b_id,
+                    "metadata": {},
+                }
             ],
         },
     )
 
-    # Tenant A, querying with the same visitor_id string, must see nothing of
-    # tenant B's — the tenant key is what scopes this, not the visitor_id value.
+    # Widget A, querying with the same visitor_id string, must see nothing of
+    # widget B's — the widget key is what scopes this, not the visitor_id value.
     response = client.get(
-        f"/api/recommendations/latest?tenant_key={key_a}&visitor_id={same_visitor_id}"
+        f"/api/recommendations/latest?widget_key={key_a}&visitor_id={same_visitor_id}"
     )
     assert response.status_code == 200
     assert response.json()["status"] == "pending"

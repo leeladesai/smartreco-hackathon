@@ -20,46 +20,52 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from jinja2 import ChoiceLoader, FileSystemLoader
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import Settings
 from app.db import build_session_factory
 from app.models import (
+    CatalogItem,
     Event,
-    Model,
     Recommendation,
     Tenant,
-    TenantApiKey,
     User,
+    Widget,
+    WidgetApiKey,
     WidgetSession,
 )
 from app.schemas import (
     ApiKeyResponse,
     AuthCredentials,
     BulkImportResponse,
+    CatalogItemCreate,
+    CatalogItemResponse,
     FeedConfigRequest,
     FeedSyncResponse,
     IngestionStatusResponse,
-    ModelCreate,
-    ModelResponse,
+    LoginResponse,
     OnboardingStatusResponse,
     ScrapeConfirmRequest,
     ScrapeConfirmResponse,
     ScrapePreviewRequest,
     ScrapePreviewResponse,
+    SignupRequest,
+    SignupResponse,
     TenantCreateRequest,
     TenantCreateResponse,
     TrackEventBatch,
     UserResponse,
     WidgetAskRequest,
     WidgetAskResponse,
+    WidgetCreateRequest,
+    WidgetCreateResponse,
+    WidgetResponse,
 )
 from app.security import (
     create_session_token,
+    hash_password,
     make_role_dependency,
     verify_password,
 )
@@ -70,10 +76,10 @@ from app.services.admin_overview import (
     usage_totals,
 )
 from app.services.catalog import (
-    approve_model as approve_model_service,
-    create_model as create_model_service,
-    delete_model as delete_model_service,
-    update_model as update_model_service,
+    approve_catalog_item as approve_catalog_item_service,
+    create_catalog_item as create_catalog_item_service,
+    delete_catalog_item as delete_catalog_item_service,
+    update_catalog_item as update_catalog_item_service,
 )
 from app.services.catalog_import import (
     CatalogParseError,
@@ -83,7 +89,6 @@ from app.services.catalog_import import (
 from app.services.ingestion import (
     FeedSyncError,
     ScrapeError,
-    configure_feed,
     ingestion_status,
     scrape_confirm,
     scrape_preview,
@@ -112,28 +117,54 @@ from app.services.observability import (
     fetch_run_detail,
 )
 from app.services.tenants import (
+    approve_tenant,
     create_tenant,
-    onboarding_status,
-    resolve_tenant_by_api_key,
-    revoke_api_key,
-    rotate_api_key,
+    reactivate_tenant,
+    reject_tenant,
+    suspend_tenant,
 )
 from app.services.tracing import configure_langsmith
-from app.vector import ModelVectorStore, build_embedding_function
-from seed_data import seed_demo_data
+from app.services.widgets import (
+    configure_feed,
+    create_widget,
+    onboarding_status as widget_onboarding_status,
+    reactivate_widget,
+    resolve_widget_by_api_key,
+    revoke_api_key,
+    rotate_api_key,
+    suspend_widget,
+)
+from app.vector import CatalogItemVectorStore, build_embedding_function
+from seed_data import seed_demo_accounts
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_ROOT = PROJECT_ROOT / "app" / "templates"
 BULK_UPLOAD_MAX_BYTES = 2 * 1024 * 1024  # plenty for a few hundred catalog rows
-TEMPLATES = Jinja2Templates(directory=TEMPLATE_ROOT)
-TEMPLATES.env.loader = ChoiceLoader(
-    [FileSystemLoader(TEMPLATE_ROOT), FileSystemLoader(PROJECT_ROOT)]
-)
+# TEN-1/TEN-8: a widget only actually renders when its own tenant is in good standing
+# too — a suspended/rejected/still-pending-approval tenant must dark out every widget
+# under it, not just ones an admin remembered to suspend individually.
+WIDGET_BLOCKING_TENANT_STATUSES = {"suspended", "rejected", "pending_approval"}
 
 
-def model_response(model: Model) -> ModelResponse:
-    return ModelResponse.model_validate(model)
+def catalog_item_response(item: CatalogItem) -> CatalogItemResponse:
+    return CatalogItemResponse.model_validate(item)
+
+
+def widget_response(session, widget: Widget) -> WidgetResponse:
+    readiness = widget_onboarding_status(session, widget)
+    return WidgetResponse(
+        id=widget.id,
+        tenant_id=widget.tenant_id,
+        name=widget.name,
+        status=readiness["status"],
+        allowed_origins=widget.allowed_origins,
+        first_event_at=as_utc(widget.first_event_at),
+        feed_url=widget.feed_url,
+        tracker_verified=readiness["tracker_verified"],
+        catalog_ready=readiness["catalog_ready"],
+        ready=readiness["ready"],
+        created_at=as_utc(widget.created_at),
+    )
 
 
 def as_utc(value):
@@ -152,7 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or Settings()
     configure_langsmith(app_settings)
     session_factory = build_session_factory(app_settings)
-    vector_store = ModelVectorStore(
+    vector_store = CatalogItemVectorStore(
         app_settings.chroma_db_path,
         collection_name=app_settings.chroma_collection_name,
         embedding_function=build_embedding_function(app_settings),
@@ -175,6 +206,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     current_platform_admin = make_role_dependency(
         session_factory, app_settings, required_role="platform_admin"
     )
+    # Any signed-in staff account — used where an endpoint's own scoping check (not
+    # this dependency) decides what a given role may act on.
+    current_staff = make_role_dependency(
+        session_factory, app_settings, required_role=("admin", "platform_admin")
+    )
 
     # DLV-3 (bonus scheduled digest) is disabled, not redesigned, now that the
     # AI-engineer `user` role it iterated over is gone — app/services/digest.py stays
@@ -184,28 +220,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def run_seed() -> None:
         try:
-            seed_demo_data(session_factory, vector_store)
+            # Accounts only — a real multi-tenant deployment has no use for the
+            # hackathon-era mock catalog, so that part (seed_demo_catalog) only runs
+            # when explicitly invoked via `python seed_data.py --with-catalog`, not on
+            # every boot. See seed_data.py's docstrings for the split.
+            seed_demo_accounts(session_factory)
         except Exception:
-            # Best-effort: demo accounts/catalog staying stale (or briefly missing)
-            # on a slow/unreachable DB is far better than taking the whole service
-            # down for it — request handlers below still work against whatever's
-            # already in the DB. Logged so a broken seed doesn't go unnoticed.
-            logging.exception("Background seed_demo_data failed")
+            # Best-effort: demo accounts staying stale (or briefly missing) on a
+            # slow/unreachable DB is far better than taking the whole service down for
+            # it — request handlers below still work against whatever's already in
+            # the DB. Logged so a broken seed doesn't go unnoticed.
+            logging.exception("Background seed_demo_accounts failed")
 
     def run_scheduled_feed_syncs() -> None:
         """ING-1's sync cadence: sync-on-save (the manual endpoint below) plus this
-        hourly sweep of every tenant with a feed configured, so a feed that changes
-        upstream without an admin manually re-triggering still stays current."""
+        hourly sweep of every widget with a feed configured, so a feed that changes
+        upstream without an admin manually re-triggering still stays current. Scoped
+        per widget now, not per tenant — two widgets under the same tenant can sync
+        from two different feeds (see Widget's docstring)."""
         with session_factory() as session:
-            tenants = session.scalars(
-                select(Tenant).where(Tenant.feed_url.is_not(None))
+            widgets = session.scalars(
+                select(Widget).where(Widget.feed_url.is_not(None))
             ).all()
-            for tenant in tenants:
+            for widget in widgets:
                 try:
-                    sync_feed(session, vector_store, tenant)
+                    sync_feed(session, vector_store, widget)
                 except FeedSyncError:
                     logging.warning(
-                        "Scheduled feed sync failed for tenant_id=%s", tenant.id
+                        "Scheduled feed sync failed for widget_id=%s", widget.id
                     )
 
     @asynccontextmanager
@@ -224,7 +266,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="TrailMind",
         description="Multi-tenant embeddable behavioral recommendation platform",
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
     app.state.settings = app_settings
@@ -235,79 +277,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.pipeline_locks = {}
     app.state.pipeline_locks_guard = asyncio.Lock()
-    # DLV-2: (tenant_id, visitor_id) -> list of open SSE connections' asyncio.Queue.
+    # DLV-2: (widget_id, visitor_id) -> list of open SSE connections' asyncio.Queue.
     # In-process only (no Redis/pub-sub) — consistent with this repo's other
     # single-process-deployment choices (pipeline_locks above, the TEN-6 rate cap);
-    # a multi-worker deploy would need this revisited.
+    # a multi-worker deploy would need this revisited. Keyed by widget_id (not
+    # tenant_id) now — the per-widget key cutover moved every auth/retrieval scope
+    # one level deeper (see Widget's docstring in app/models.py).
     app.state.widget_connections = {}
     app.state.widget_connections_guard = asyncio.Lock()
     # Permissive at the CORSMiddleware layer on purpose — the tracker SDK and widget
     # both run on arbitrary tenant domains we can't enumerate in advance, and
-    # per-tenant origin scoping (`Tenant.allowed_origins`) is checked inside the
-    # handler instead (see POST /api/track/events and _resolve_widget_tenant below).
-    # CORS itself is a browser-only, spoofable convenience; the tenant API key is the
-    # real boundary (docs/design/09-Platform-Pivot-Decision.md §5). GET is needed for
-    # the widget's SSE stream/activity endpoints, not just the tracker's POSTs.
+    # per-widget origin scoping (`Widget.allowed_origins`) is checked inside the
+    # handler instead (see POST /api/track/events and _resolve_widget below). CORS
+    # itself is a browser-only, spoofable convenience; the widget API key is the real
+    # boundary (docs/design/09-Platform-Pivot-Decision.md §5). The React admin
+    # frontend (a separate origin as of the frontend/backend split) rides this same
+    # wildcard policy safely because it authenticates with a bearer token, not a
+    # cookie — no credentials, so `allow_origins=["*"]` stays valid for it too.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
+    # Still needed for tracker.js/widget.js — the embeddable SDK a tenant's own site
+    # loads. The admin console itself moved to the separate React app (frontend/);
+    # this backend no longer serves any HTML of its own.
     app.mount(
         "/static",
         StaticFiles(directory=PROJECT_ROOT / "app" / "static"),
         name="static",
     )
-
-    def asset_version(relative_path: str) -> int:
-        """Cache-busts static CSS/JS by mtime, not just server restart — otherwise a
-        browser can keep serving a stale cached copy after an edit even on a normal reload.
-        """
-        return int((PROJECT_ROOT / "app" / "static" / relative_path).stat().st_mtime)
-
-    def render_page(request: Request, page: str, template: str, session_role=None):
-        return TEMPLATES.TemplateResponse(
-            template,
-            {
-                "request": request,
-                "initial_page": page,
-                "session_role": session_role,
-                "css_version": asset_version("css/app.css"),
-                "js_version": asset_version("js/app.js"),
-            },
-        )
-
-    def render_admin_page(
-        request: Request, page: str = "admin", template: str = "admin.html"
-    ):
-        try:
-            current_admin(request)
-        except HTTPException:
-            return RedirectResponse(
-                "/admin/login", status_code=status.HTTP_303_SEE_OTHER
-            )
-        return render_page(request, page, template, session_role="admin")
-
-    @app.get("/admin/login", include_in_schema=False)
-    async def admin_login_page(request: Request):
-        return render_page(request, "admin-auth", "admin_login.html")
-
-    @app.get("/admin", include_in_schema=False)
-    async def admin_page(request: Request):
-        return render_admin_page(request, "admin-overview", "overview.html")
-
-    @app.get("/admin/models", include_in_schema=False)
-    async def admin_models_page(request: Request):
-        return render_admin_page(request, "admin-models", "admin.html")
-
-    @app.get("/admin/observability", include_in_schema=False)
-    async def admin_observability_page(request: Request):
-        return render_admin_page(request, "observability", "observability.html")
-
-    @app.get("/admin/users", include_in_schema=False)
-    async def admin_users_page(request: Request):
-        return render_admin_page(request, "admin-users", "users.html")
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, str]:
@@ -316,10 +316,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["Access-Control-Allow-Origin"] = "*"
         return {"status": "ok", "service": "trailmind"}
 
-    @app.post("/api/admin/login", response_model=UserResponse)
+    @app.post("/api/admin/login", response_model=LoginResponse)
     async def admin_login(
         credentials: AuthCredentials, response: Response
-    ) -> UserResponse:
+    ) -> LoginResponse:
         with session_factory() as session:
             user = session.scalar(
                 select(User).where(User.email == credentials.email.lower())
@@ -327,7 +327,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             valid = user and verify_password(credentials.password, user.password_hash)
             if not valid or user.role not in ("admin", "platform_admin"):
                 raise HTTPException(status_code=401, detail="Invalid email or password")
+            if user.role == "admin":
+                tenant = session.get(Tenant, user.tenant_id)
+                if tenant and tenant.status == "pending_approval":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"{tenant.name} is still awaiting approval. You'll be "
+                            "able to sign in once a TrailMind platform admin "
+                            "approves the account."
+                        ),
+                    )
+                if tenant and tenant.status == "rejected":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="This account's signup request was not approved.",
+                    )
             token = create_session_token(user, app_settings)
+            # The React admin frontend reads `token` from the response body and sends
+            # it back as a bearer token (see app/security.py's get_current_user) — the
+            # cookie is set alongside it only for anything still relying on that path
+            # during the frontend migration.
             response.set_cookie(
                 app_settings.session_cookie_name,
                 token,
@@ -336,7 +356,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 secure=app_settings.session_cookie_secure,
                 max_age=60 * 60 * 12,
             )
-            return UserResponse.model_validate(user)
+            return LoginResponse(
+                id=user.id,
+                email=user.email,
+                role=user.role,
+                telegram_chat_id=user.telegram_chat_id,
+                token=token,
+            )
+
+    @app.post("/api/auth/signup", response_model=SignupResponse)
+    async def signup(payload: SignupRequest) -> SignupResponse:
+        """Self-serve tenant signup — the counterpart to platform-admin-created
+        tenants (POST /api/tenants). Creates the tenant `pending_approval` (not
+        `onboarding`) so login stays blocked until a platform admin approves it
+        (see admin_login above, and approve_tenant_endpoint below)."""
+        with session_factory() as session:
+            email = payload.email.lower()
+            if session.scalar(select(User).where(User.email == email)):
+                raise HTTPException(
+                    status_code=409, detail="An account with this email already exists"
+                )
+            tenant = create_tenant(
+                session, payload.company_name, status="pending_approval"
+            )
+            user = User(
+                tenant_id=tenant.id,
+                email=email,
+                password_hash=hash_password(payload.password),
+                role="admin",
+            )
+            session.add(user)
+            session.commit()
+            return SignupResponse(
+                tenant_id=tenant.id, email=email, status=tenant.status
+            )
 
     @app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     async def logout(response: Response) -> None:
@@ -344,191 +397,119 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/admin/me", response_model=UserResponse)
     async def current_admin_profile(
-        admin: User = Depends(current_admin),
+        staff: User = Depends(current_staff),
     ) -> UserResponse:
-        return UserResponse.model_validate(admin)
+        return UserResponse.model_validate(staff)
 
-    @app.get("/api/models", response_model=list[ModelResponse])
-    async def list_models(
+    def _get_owned_widget(session, widget_id: int, admin: User) -> Widget:
+        widget = session.get(Widget, widget_id)
+        if not widget or widget.tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=404, detail="Widget not found")
+        return widget
+
+    # --- Widget management (business admin, own tenant only) -------------------
+
+    @app.post("/api/admin/widgets", response_model=WidgetCreateResponse)
+    async def create_widget_endpoint(
+        payload: WidgetCreateRequest, admin: User = Depends(current_admin)
+    ) -> WidgetCreateResponse:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            widget, raw_key = create_widget(
+                session, tenant, payload.name, payload.allowed_origins
+            )
+            return WidgetCreateResponse(
+                widget=widget_response(session, widget), api_key=raw_key
+            )
+
+    @app.get("/api/admin/widgets")
+    async def list_widgets(
         admin: User = Depends(current_admin),
-        q: str | None = Query(default=None),
-        modality: str | None = Query(default=None),
-        provider: str | None = Query(default=None),
-    ) -> list[ModelResponse]:
+    ) -> list[WidgetResponse]:
         with session_factory() as session:
-            statement = (
-                select(Model)
-                .where(Model.tenant_id == admin.tenant_id)
-                .order_by(Model.title)
-            )
-            if q:
-                statement = statement.where(
-                    Model.title.ilike(f"%{q}%") | Model.description.ilike(f"%{q}%")
-                )
-            if modality:
-                statement = statement.where(Model.modality == modality)
-            if provider:
-                statement = statement.where(Model.provider == provider)
-            return [model_response(model) for model in session.scalars(statement).all()]
+            widgets = session.scalars(
+                select(Widget)
+                .where(Widget.tenant_id == admin.tenant_id)
+                .order_by(Widget.created_at.desc(), Widget.id.desc())
+            ).all()
+            return [widget_response(session, widget) for widget in widgets]
 
-    @app.get("/api/models/{model_id}", response_model=ModelResponse)
-    async def get_model(
-        model_id: int, admin: User = Depends(current_admin)
-    ) -> ModelResponse:
+    @app.get("/api/admin/widgets/{widget_id}", response_model=WidgetResponse)
+    async def get_widget(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> WidgetResponse:
         with session_factory() as session:
-            model = session.get(Model, model_id)
-            if not model or model.tenant_id != admin.tenant_id:
-                raise HTTPException(status_code=404, detail="Model not found")
-            return model_response(model)
-
-    def content_similarity_reason(distance: float, source_title: str) -> str:
-        """Same distance thresholds as retrieval_reason (AGT-4), but worded for content-based
-        similarity to a specific model rather than a match to the user's activity — using
-        retrieval_reason's "your recent activity" phrasing here would misattribute why this
-        model showed up."""
-        if distance <= STRONG_RETRIEVAL_DISTANCE:
-            return f"Strong match to {source_title}"
-        if distance <= WEAK_RETRIEVAL_DISTANCE:
-            return f"Similar to {source_title}"
-        return "Broader catalog match"
-
-    @app.get("/api/models/{model_id}/related")
-    async def related_models(
-        model_id: int, admin: User = Depends(current_admin), limit: int = 3
-    ) -> list[dict[str, object]]:
-        """Content-based "you might also be interested in": queries the same Chroma vector
-        store the recommendation pipeline uses, but keyed on *this model's own* embedding
-        text (title/provider/modality/description/tags — see ModelVectorStore.document)
-        rather than a user's activity summary. Grounded in real similarity, not activity.
-        """
-        with session_factory() as session:
-            model = session.get(Model, model_id)
-            if not model or model.tenant_id != admin.tenant_id:
-                raise HTTPException(status_code=404, detail="Model not found")
-            query_text = ModelVectorStore.document(model)
-            # Prefer same-modality matches first — the deterministic hashed bag-of-words
-            # embedding (app/vector.py) has weak semantics, so an unfiltered query can surface
-            # a cross-modality "match" (e.g. an LLM as "similar to" an image model) purely on
-            # shared generic words. Only fall back to an unfiltered query if same-modality
-            # doesn't yield enough candidates (e.g. this modality has too few catalog entries).
-            same_modality = vector_store.query_scored(
-                query_text,
-                admin.tenant_id,
-                limit=limit + 1,
-                where={"modality": model.modality},
-            )
-            seen_ids = {model_id}
-            results: list[dict[str, object]] = []
-
-            def _add_candidates(scored: list[tuple[int, float]]) -> None:
-                for candidate_id, distance in scored:
-                    if len(results) >= limit or candidate_id in seen_ids:
-                        continue
-                    seen_ids.add(candidate_id)
-                    candidate = session.get(Model, candidate_id)
-                    if not candidate or candidate.tenant_id != admin.tenant_id:
-                        continue
-                    results.append(
-                        {
-                            **model_response(candidate).model_dump(mode="json"),
-                            "why_this": content_similarity_reason(
-                                distance, model.title
-                            ),
-                        }
-                    )
-
-            _add_candidates(same_modality)
-            if len(results) < limit:
-                _add_candidates(
-                    vector_store.query_scored(
-                        query_text, admin.tenant_id, limit=limit + 1
-                    )
-                )
-            return results
+            widget = _get_owned_widget(session, widget_id, admin)
+            return widget_response(session, widget)
 
     @app.post(
-        "/api/admin/models",
-        response_model=ModelResponse,
-        status_code=status.HTTP_201_CREATED,
+        "/api/admin/widgets/{widget_id}/rotate-key", response_model=ApiKeyResponse
     )
-    async def create_model(
-        payload: ModelCreate, admin: User = Depends(current_admin)
-    ) -> ModelResponse:
+    async def rotate_widget_key(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> ApiKeyResponse:
         with session_factory() as session:
-            model = create_model_service(
-                session, vector_store, admin.tenant_id, payload
-            )
-            return model_response(model)
+            widget = _get_owned_widget(session, widget_id, admin)
+            raw_key = rotate_api_key(session, widget)
+            return ApiKeyResponse(api_key=raw_key)
 
-    @app.put("/api/admin/models/{model_id}", response_model=ModelResponse)
-    async def update_model(
-        model_id: int, payload: ModelCreate, admin: User = Depends(current_admin)
-    ) -> ModelResponse:
+    @app.post(
+        "/api/admin/widgets/{widget_id}/revoke-key/{key_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def revoke_widget_key(
+        widget_id: int, key_id: int, admin: User = Depends(current_admin)
+    ) -> None:
         with session_factory() as session:
-            model = session.get(Model, model_id)
-            if not model or model.tenant_id != admin.tenant_id:
-                raise HTTPException(status_code=404, detail="Model not found")
-            update_model_service(session, vector_store, admin.tenant_id, model, payload)
-            return model_response(model)
+            _get_owned_widget(session, widget_id, admin)
+            key = session.get(WidgetApiKey, key_id)
+            if not key or key.widget_id != widget_id:
+                raise HTTPException(status_code=404, detail="Key not found")
+            revoke_api_key(session, key_id)
 
-    @app.delete("/api/admin/models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
-    async def delete_model(model_id: int, admin: User = Depends(current_admin)) -> None:
+    @app.post(
+        "/api/admin/widgets/{widget_id}/suspend",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def suspend_widget_endpoint(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> None:
         with session_factory() as session:
-            model = session.get(Model, model_id)
-            if not model or model.tenant_id != admin.tenant_id:
-                raise HTTPException(status_code=404, detail="Model not found")
-            delete_model_service(session, vector_store, admin.tenant_id, model)
+            widget = _get_owned_widget(session, widget_id, admin)
+            suspend_widget(session, widget)
 
-    @app.post("/api/admin/models/bulk-upload", response_model=BulkImportResponse)
-    async def bulk_upload_models(
-        file: UploadFile = File(...), admin: User = Depends(current_admin)
-    ) -> BulkImportResponse:
-        content = await file.read()
-        if len(content) > BULK_UPLOAD_MAX_BYTES:
-            raise HTTPException(status_code=413, detail="File too large (max 2MB).")
-        try:
-            raw_rows = parse_catalog_file(file.filename or "", content)
-        except CatalogParseError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+    @app.post(
+        "/api/admin/widgets/{widget_id}/reactivate",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def reactivate_widget_endpoint(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> None:
         with session_factory() as session:
-            rows = import_catalog_rows(session, vector_store, admin.tenant_id, raw_rows)
-        return BulkImportResponse(
-            inserted=sum(1 for row in rows if row["status"] == "inserted"),
-            skipped_duplicate=sum(
-                1 for row in rows if row["status"] == "skipped_duplicate"
-            ),
-            invalid=sum(1 for row in rows if row["status"] == "invalid"),
-            rows=rows,
-        )
+            widget = _get_owned_widget(session, widget_id, admin)
+            reactivate_widget(session, widget)
 
-    @app.post("/api/admin/catalog/{model_id}/approve", response_model=ModelResponse)
-    async def approve_model(
-        model_id: int, admin: User = Depends(current_admin)
-    ) -> ModelResponse:
-        with session_factory() as session:
-            model = session.get(Model, model_id)
-            if not model or model.tenant_id != admin.tenant_id:
-                raise HTTPException(status_code=404, detail="Model not found")
-            approve_model_service(session, vector_store, admin.tenant_id, model)
-            return model_response(model)
-
-    @app.post("/api/admin/ingestion/feed")
+    @app.post("/api/admin/widgets/{widget_id}/feed")
     async def set_feed_config(
-        payload: FeedConfigRequest, admin: User = Depends(current_admin)
+        widget_id: int,
+        payload: FeedConfigRequest,
+        admin: User = Depends(current_admin),
     ) -> dict[str, str]:
         with session_factory() as session:
-            tenant = session.get(Tenant, admin.tenant_id)
-            configure_feed(session, tenant, str(payload.feed_url), payload.auth_token)
+            widget = _get_owned_widget(session, widget_id, admin)
+            configure_feed(session, widget, str(payload.feed_url), payload.auth_token)
         return {"status": "configured"}
 
-    @app.post("/api/admin/ingestion/feed/sync", response_model=FeedSyncResponse)
+    @app.post(
+        "/api/admin/widgets/{widget_id}/feed/sync", response_model=FeedSyncResponse
+    )
     async def trigger_feed_sync(
-        admin: User = Depends(current_admin),
+        widget_id: int, admin: User = Depends(current_admin)
     ) -> FeedSyncResponse:
         with session_factory() as session:
-            tenant = session.get(Tenant, admin.tenant_id)
+            widget = _get_owned_widget(session, widget_id, admin)
             try:
-                rows = sync_feed(session, vector_store, tenant)
+                rows = sync_feed(session, vector_store, widget)
             except FeedSyncError as exc:
                 raise HTTPException(status_code=502, detail=str(exc))
         return FeedSyncResponse(
@@ -540,12 +521,240 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rows=rows,
         )
 
+    @app.get(
+        "/api/admin/widgets/{widget_id}/ingestion/status",
+        response_model=IngestionStatusResponse,
+    )
+    async def get_ingestion_status(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> IngestionStatusResponse:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            return IngestionStatusResponse(**ingestion_status(session, widget_id))
+
+    @app.get(
+        "/api/admin/widgets/{widget_id}/onboarding/status",
+        response_model=OnboardingStatusResponse,
+    )
+    async def get_widget_onboarding_status(
+        widget_id: int, admin: User = Depends(current_admin)
+    ) -> OnboardingStatusResponse:
+        with session_factory() as session:
+            widget = _get_owned_widget(session, widget_id, admin)
+            return OnboardingStatusResponse(**widget_onboarding_status(session, widget))
+
+    # --- Catalog items (scoped to one widget under the admin's tenant) ---------
+
+    @app.get(
+        "/api/admin/widgets/{widget_id}/catalog-items",
+        response_model=list[CatalogItemResponse],
+    )
+    async def list_catalog_items(
+        widget_id: int,
+        admin: User = Depends(current_admin),
+        q: str | None = Query(default=None),
+        category: str | None = Query(default=None),
+        provider: str | None = Query(default=None),
+    ) -> list[CatalogItemResponse]:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            statement = (
+                select(CatalogItem)
+                .where(CatalogItem.widget_id == widget_id)
+                .order_by(CatalogItem.title)
+            )
+            if q:
+                statement = statement.where(
+                    CatalogItem.title.ilike(f"%{q}%")
+                    | CatalogItem.description.ilike(f"%{q}%")
+                )
+            if category:
+                statement = statement.where(CatalogItem.category == category)
+            if provider:
+                statement = statement.where(CatalogItem.provider == provider)
+            return [
+                catalog_item_response(item) for item in session.scalars(statement).all()
+            ]
+
+    def _get_owned_catalog_item(
+        session, widget_id: int, catalog_item_id: int
+    ) -> CatalogItem:
+        item = session.get(CatalogItem, catalog_item_id)
+        if not item or item.widget_id != widget_id:
+            raise HTTPException(status_code=404, detail="Catalog item not found")
+        return item
+
+    @app.get(
+        "/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}",
+        response_model=CatalogItemResponse,
+    )
+    async def get_catalog_item(
+        widget_id: int, catalog_item_id: int, admin: User = Depends(current_admin)
+    ) -> CatalogItemResponse:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            item = _get_owned_catalog_item(session, widget_id, catalog_item_id)
+            return catalog_item_response(item)
+
+    def content_similarity_reason(distance: float, source_title: str) -> str:
+        """Same distance thresholds as retrieval_reason (AGT-4), but worded for content-based
+        similarity to a specific item rather than a match to the user's activity — using
+        retrieval_reason's "your recent activity" phrasing here would misattribute why this
+        item showed up."""
+        if distance <= STRONG_RETRIEVAL_DISTANCE:
+            return f"Strong match to {source_title}"
+        if distance <= WEAK_RETRIEVAL_DISTANCE:
+            return f"Similar to {source_title}"
+        return "Broader catalog match"
+
+    @app.get("/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}/related")
+    async def related_catalog_items(
+        widget_id: int,
+        catalog_item_id: int,
+        admin: User = Depends(current_admin),
+        limit: int = 3,
+    ) -> list[dict[str, object]]:
+        """Content-based "you might also be interested in": queries the same Chroma vector
+        store the recommendation pipeline uses, but keyed on *this item's own* embedding
+        text (title/provider/category/description/tags — see
+        CatalogItemVectorStore.document) rather than a user's activity summary. Grounded
+        in real similarity, not activity.
+        """
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            item = _get_owned_catalog_item(session, widget_id, catalog_item_id)
+            query_text = CatalogItemVectorStore.document(item)
+            # Prefer same-category matches first — the deterministic hashed bag-of-words
+            # embedding (app/vector.py) has weak semantics, so an unfiltered query can surface
+            # a cross-category "match" (e.g. an LLM as "similar to" an image model) purely on
+            # shared generic words. Only fall back to an unfiltered query if same-category
+            # doesn't yield enough candidates (e.g. this category has too few catalog entries).
+            same_category = vector_store.query_scored(
+                query_text,
+                widget_id,
+                limit=limit + 1,
+                where={"category": item.category},
+            )
+            seen_ids = {catalog_item_id}
+            results: list[dict[str, object]] = []
+
+            def _add_candidates(scored: list[tuple[int, float]]) -> None:
+                for candidate_id, distance in scored:
+                    if len(results) >= limit or candidate_id in seen_ids:
+                        continue
+                    seen_ids.add(candidate_id)
+                    candidate = session.get(CatalogItem, candidate_id)
+                    if not candidate or candidate.widget_id != widget_id:
+                        continue
+                    results.append(
+                        {
+                            **catalog_item_response(candidate).model_dump(mode="json"),
+                            "why_this": content_similarity_reason(distance, item.title),
+                        }
+                    )
+
+            _add_candidates(same_category)
+            if len(results) < limit:
+                _add_candidates(
+                    vector_store.query_scored(query_text, widget_id, limit=limit + 1)
+                )
+            return results
+
     @app.post(
-        "/api/admin/ingestion/scrape/preview", response_model=ScrapePreviewResponse
+        "/api/admin/widgets/{widget_id}/catalog-items",
+        response_model=CatalogItemResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_catalog_item(
+        widget_id: int,
+        payload: CatalogItemCreate,
+        admin: User = Depends(current_admin),
+    ) -> CatalogItemResponse:
+        with session_factory() as session:
+            widget = _get_owned_widget(session, widget_id, admin)
+            item = create_catalog_item_service(session, vector_store, widget, payload)
+            return catalog_item_response(item)
+
+    @app.put(
+        "/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}",
+        response_model=CatalogItemResponse,
+    )
+    async def update_catalog_item(
+        widget_id: int,
+        catalog_item_id: int,
+        payload: CatalogItemCreate,
+        admin: User = Depends(current_admin),
+    ) -> CatalogItemResponse:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            item = _get_owned_catalog_item(session, widget_id, catalog_item_id)
+            update_catalog_item_service(session, vector_store, widget_id, item, payload)
+            return catalog_item_response(item)
+
+    @app.delete(
+        "/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_catalog_item(
+        widget_id: int, catalog_item_id: int, admin: User = Depends(current_admin)
+    ) -> None:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            item = _get_owned_catalog_item(session, widget_id, catalog_item_id)
+            delete_catalog_item_service(session, vector_store, widget_id, item)
+
+    @app.post(
+        "/api/admin/widgets/{widget_id}/catalog-items/bulk-upload",
+        response_model=BulkImportResponse,
+    )
+    async def bulk_upload_catalog_items(
+        widget_id: int,
+        file: UploadFile = File(...),
+        admin: User = Depends(current_admin),
+    ) -> BulkImportResponse:
+        content = await file.read()
+        if len(content) > BULK_UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File too large (max 2MB).")
+        try:
+            raw_rows = parse_catalog_file(file.filename or "", content)
+        except CatalogParseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        with session_factory() as session:
+            widget = _get_owned_widget(session, widget_id, admin)
+            rows = import_catalog_rows(session, vector_store, widget, raw_rows)
+        return BulkImportResponse(
+            inserted=sum(1 for row in rows if row["status"] == "inserted"),
+            skipped_duplicate=sum(
+                1 for row in rows if row["status"] == "skipped_duplicate"
+            ),
+            invalid=sum(1 for row in rows if row["status"] == "invalid"),
+            rows=rows,
+        )
+
+    @app.post(
+        "/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}/approve",
+        response_model=CatalogItemResponse,
+    )
+    async def approve_catalog_item(
+        widget_id: int, catalog_item_id: int, admin: User = Depends(current_admin)
+    ) -> CatalogItemResponse:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
+            item = _get_owned_catalog_item(session, widget_id, catalog_item_id)
+            approve_catalog_item_service(session, vector_store, widget_id, item)
+            return catalog_item_response(item)
+
+    @app.post(
+        "/api/admin/widgets/{widget_id}/ingestion/scrape/preview",
+        response_model=ScrapePreviewResponse,
     )
     async def preview_scrape(
-        payload: ScrapePreviewRequest, admin: User = Depends(current_admin)
+        widget_id: int,
+        payload: ScrapePreviewRequest,
+        admin: User = Depends(current_admin),
     ) -> ScrapePreviewResponse:
+        with session_factory() as session:
+            _get_owned_widget(session, widget_id, admin)
         try:
             result = scrape_preview(str(payload.url), payload.selectors or None)
         except ScrapeError as exc:
@@ -553,28 +762,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ScrapePreviewResponse(**result)
 
     @app.post(
-        "/api/admin/ingestion/scrape/confirm", response_model=ScrapeConfirmResponse
+        "/api/admin/widgets/{widget_id}/ingestion/scrape/confirm",
+        response_model=ScrapeConfirmResponse,
     )
     async def confirm_scrape(
-        payload: ScrapeConfirmRequest, admin: User = Depends(current_admin)
+        widget_id: int,
+        payload: ScrapeConfirmRequest,
+        admin: User = Depends(current_admin),
     ) -> ScrapeConfirmResponse:
         with session_factory() as session:
+            widget = _get_owned_widget(session, widget_id, admin)
             rows = scrape_confirm(
                 session,
                 vector_store,
-                admin.tenant_id,
+                widget,
                 str(payload.url),
                 payload.markup_type,
                 payload.rows,
             )
         return ScrapeConfirmResponse(rows=rows)
 
-    @app.get("/api/admin/ingestion/status", response_model=IngestionStatusResponse)
-    async def get_ingestion_status(
-        admin: User = Depends(current_admin),
-    ) -> IngestionStatusResponse:
-        with session_factory() as session:
-            return IngestionStatusResponse(**ingestion_status(session, admin.tenant_id))
+    # --- Tenant governance (platform admin) -------------------------------------
 
     @app.post("/api/tenants", response_model=TenantCreateResponse)
     async def create_tenant_endpoint(
@@ -582,46 +790,111 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         platform_admin: User = Depends(current_platform_admin),
     ) -> TenantCreateResponse:
         with session_factory() as session:
-            tenant, raw_key = create_tenant(
-                session, payload.name, payload.allowed_origins
-            )
+            tenant = create_tenant(session, payload.name)
             return TenantCreateResponse(
-                id=tenant.id, name=tenant.name, status=tenant.status, api_key=raw_key
+                id=tenant.id, name=tenant.name, status=tenant.status
             )
 
-    @app.post("/api/tenants/{tenant_id}/rotate-key", response_model=ApiKeyResponse)
-    async def rotate_tenant_key(
-        tenant_id: int, admin: User = Depends(current_admin)
-    ) -> ApiKeyResponse:
-        if tenant_id != admin.tenant_id:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+    def _tenant_summary(session, tenant: Tenant) -> dict[str, object]:
+        widget_count = session.scalar(
+            select(func.count())
+            .select_from(Widget)
+            .where(Widget.tenant_id == tenant.id)
+        )
+        return {
+            "id": tenant.id,
+            "name": tenant.name,
+            "status": tenant.status,
+            "created_at": as_utc(tenant.created_at).isoformat(),
+            "widget_count": widget_count,
+        }
+
+    @app.get("/api/tenants")
+    async def list_tenants(
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0),
+        platform_admin: User = Depends(current_platform_admin),
+    ) -> dict[str, object]:
+        """Platform-admin tenant roster — newest-onboarded first."""
+        with session_factory() as session:
+            rows = session.scalars(
+                select(Tenant)
+                .order_by(Tenant.created_at.desc(), Tenant.id.desc())
+                .offset(offset)
+                .limit(limit + 1)
+            ).all()
+            has_more = len(rows) > limit
+            page = rows[:limit]
+            return {
+                "tenants": [_tenant_summary(session, tenant) for tenant in page],
+                "has_more": has_more,
+            }
+
+    @app.get("/api/tenants/{tenant_id}")
+    async def get_tenant_detail(
+        tenant_id: int, platform_admin: User = Depends(current_platform_admin)
+    ) -> dict[str, object]:
         with session_factory() as session:
             tenant = session.get(Tenant, tenant_id)
-            raw_key = rotate_api_key(session, tenant)
-            return ApiKeyResponse(api_key=raw_key)
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            summary = _tenant_summary(session, tenant)
+            widgets = session.scalars(
+                select(Widget)
+                .where(Widget.tenant_id == tenant_id)
+                .order_by(Widget.created_at.desc(), Widget.id.desc())
+            ).all()
+            summary["widgets"] = [
+                widget_response(session, widget).model_dump(mode="json")
+                for widget in widgets
+            ]
+            return summary
 
     @app.post(
-        "/api/tenants/{tenant_id}/revoke-key/{key_id}",
-        status_code=status.HTTP_204_NO_CONTENT,
+        "/api/tenants/{tenant_id}/suspend", status_code=status.HTTP_204_NO_CONTENT
     )
-    async def revoke_tenant_key(
-        tenant_id: int, key_id: int, admin: User = Depends(current_admin)
+    async def suspend_tenant_endpoint(
+        tenant_id: int, platform_admin: User = Depends(current_platform_admin)
     ) -> None:
-        if tenant_id != admin.tenant_id:
-            raise HTTPException(status_code=404, detail="Tenant not found")
         with session_factory() as session:
-            key = session.get(TenantApiKey, key_id)
-            if not key or key.tenant_id != tenant_id:
-                raise HTTPException(status_code=404, detail="Key not found")
-            revoke_api_key(session, key_id)
+            tenant = session.get(Tenant, tenant_id)
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            suspend_tenant(session, tenant)
 
-    @app.get("/api/admin/onboarding/status", response_model=OnboardingStatusResponse)
-    async def get_onboarding_status(
-        admin: User = Depends(current_admin),
-    ) -> OnboardingStatusResponse:
+    @app.post(
+        "/api/tenants/{tenant_id}/reactivate", status_code=status.HTTP_204_NO_CONTENT
+    )
+    async def reactivate_tenant_endpoint(
+        tenant_id: int, platform_admin: User = Depends(current_platform_admin)
+    ) -> None:
         with session_factory() as session:
-            tenant = session.get(Tenant, admin.tenant_id)
-            return OnboardingStatusResponse(**onboarding_status(session, tenant))
+            tenant = session.get(Tenant, tenant_id)
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            reactivate_tenant(session, tenant)
+
+    @app.post(
+        "/api/tenants/{tenant_id}/approve", status_code=status.HTTP_204_NO_CONTENT
+    )
+    async def approve_tenant_endpoint(
+        tenant_id: int, platform_admin: User = Depends(current_platform_admin)
+    ) -> None:
+        with session_factory() as session:
+            tenant = session.get(Tenant, tenant_id)
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            approve_tenant(session, tenant)
+
+    @app.post("/api/tenants/{tenant_id}/reject", status_code=status.HTTP_204_NO_CONTENT)
+    async def reject_tenant_endpoint(
+        tenant_id: int, platform_admin: User = Depends(current_platform_admin)
+    ) -> None:
+        with session_factory() as session:
+            tenant = session.get(Tenant, tenant_id)
+            if not tenant:
+                raise HTTPException(status_code=404, detail="Tenant not found")
+            reject_tenant(session, tenant)
 
     @app.get("/api/admin/observability/runs")
     async def observability_runs(
@@ -717,9 +990,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin: User = Depends(current_admin),
     ) -> dict[str, object]:
         """Platform-usage summary for the admin landing page — totals, event-type
-        breakdown, and explicit-feedback sentiment. Distinct from
-        /api/admin/observability/*, which is AI-pipeline/LangSmith technical health;
-        this is business/usage metrics, computed straight from our own tables."""
+        breakdown, and explicit-feedback sentiment. Tenant-wide (across every widget
+        under the tenant), distinct from /api/admin/observability/* (AI-pipeline/
+        LangSmith technical health); this is business/usage metrics, computed straight
+        from our own tables."""
         with session_factory() as session:
             return {
                 "totals": usage_totals(session, admin.tenant_id),
@@ -803,8 +1077,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Mesh cost/latency/token rollup, aggregated straight from our own DB
         (`Recommendation.mesh_*` columns, captured in app/services/mesh.py at
         generation time) — deliberately not another LangSmith query, so this stays
-        available even without tracing configured, and demonstrates the "efficiency"
-        story with real numbers rather than a trace count."""
+        available even without tracing configured. Tenant-wide (across every widget
+        under the tenant), consistent with the rest of the admin Overview surface."""
         with session_factory() as session:
             rollup = mesh_cost_rollup(session, admin.tenant_id)
         return {
@@ -828,20 +1102,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ],
         }
 
-    def _origin_allowed(tenant: Tenant, request: Request) -> bool:
+    def _origin_allowed(widget: Widget, request: Request) -> bool:
         """Soft, browser-only defense (docs/design/09-Platform-Pivot-Decision.md §5)
-        — an empty `allowed_origins` (no tenant-onboarding UI exists yet to set it,
-        see TEN-1) means "not configured", so every origin is allowed rather than
-        every request being rejected. A non-browser client can always spoof
-        `Origin`/`Referer`; the tenant key is the real boundary, this only stops the
-        most naive cross-site misuse from a real browser."""
-        if not tenant.allowed_origins:
+        — an empty `allowed_origins` means "not configured", so every origin is
+        allowed rather than every request being rejected. A non-browser client can
+        always spoof `Origin`/`Referer`; the widget key is the real boundary, this
+        only stops the most naive cross-site misuse from a real browser."""
+        if not widget.allowed_origins:
             return True
         origin = request.headers.get("origin") or request.headers.get("referer") or ""
-        return any(origin.startswith(allowed) for allowed in tenant.allowed_origins)
+        return any(origin.startswith(allowed) for allowed in widget.allowed_origins)
 
-    async def _get_visitor_lock(tenant_id: int, visitor_id: str) -> asyncio.Lock:
-        key = (tenant_id, visitor_id)
+    async def _get_visitor_lock(widget_id: int, visitor_id: str) -> asyncio.Lock:
+        key = (widget_id, visitor_id)
         async with app.state.pipeline_locks_guard:
             lock = app.state.pipeline_locks.get(key)
             if lock is None:
@@ -850,42 +1123,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return lock
 
     async def _register_widget_connection(
-        tenant_id: int, visitor_id: str
+        widget_id: int, visitor_id: str
     ) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue()
         async with app.state.widget_connections_guard:
-            app.state.widget_connections.setdefault((tenant_id, visitor_id), []).append(
+            app.state.widget_connections.setdefault((widget_id, visitor_id), []).append(
                 queue
             )
         return queue
 
     async def _unregister_widget_connection(
-        tenant_id: int, visitor_id: str, queue: asyncio.Queue
+        widget_id: int, visitor_id: str, queue: asyncio.Queue
     ) -> None:
         async with app.state.widget_connections_guard:
-            queues = app.state.widget_connections.get((tenant_id, visitor_id))
+            queues = app.state.widget_connections.get((widget_id, visitor_id))
             if queues and queue in queues:
                 queues.remove(queue)
                 if not queues:
-                    del app.state.widget_connections[(tenant_id, visitor_id)]
+                    del app.state.widget_connections[(widget_id, visitor_id)]
 
     def _broadcast_widget_update(
-        tenant_id: int, visitor_id: str, payload: dict
+        widget_id: int, visitor_id: str, payload: dict
     ) -> None:
         # Runs on the event loop thread (scheduled via loop.call_soon_threadsafe from
         # the background-thread pipeline run below) — safe to touch asyncio.Queue
         # objects and app.state directly here, unlike from the worker thread itself.
-        for queue in app.state.widget_connections.get((tenant_id, visitor_id), []):
+        for queue in app.state.widget_connections.get((widget_id, visitor_id), []):
             queue.put_nowait(payload)
 
     async def run_tracker_pipeline_in_background(
-        tenant_id: int, visitor_id: str
+        widget_id: int, tenant_id: int, visitor_id: str
     ) -> None:
         """Same shape/reasoning as the retired cookie-session
         run_pipeline_in_background (NFR-1: keep the Mesh round trip off the ingestion
-        request path; per-(tenant, visitor) asyncio.Lock to prevent a duplicate
+        request path; per-(widget, visitor) asyncio.Lock to prevent a duplicate
         Recommendation row from two near-simultaneous qualifying batches)."""
-        lock = await _get_visitor_lock(tenant_id, visitor_id)
+        lock = await _get_visitor_lock(widget_id, visitor_id)
         loop = asyncio.get_running_loop()
 
         def push_callback(payload: dict) -> bool:
@@ -893,11 +1166,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # (asyncio.to_thread below) — asyncio.Queue isn't thread-safe, so the
             # actual put has to happen back on the loop thread.
             has_connection = bool(
-                app.state.widget_connections.get((tenant_id, visitor_id))
+                app.state.widget_connections.get((widget_id, visitor_id))
             )
             if has_connection:
                 loop.call_soon_threadsafe(
-                    _broadcast_widget_update, tenant_id, visitor_id, payload
+                    _broadcast_widget_update, widget_id, visitor_id, payload
                 )
             return has_connection
 
@@ -907,6 +1180,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     prepare_retrieval_recommendation,
                     session,
                     vector_store,
+                    widget_id,
                     tenant_id,
                     visitor_id,
                     app.state.mesh_generator,
@@ -922,66 +1196,76 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         background_tasks: BackgroundTasks,
         request: Request,
     ) -> dict[str, object]:
-        """TRK-4: the tracker SDK's ingestion endpoint. Authenticated by tenant API
-        key (`tenant_key`, travels in the body — see TrackEventBatch), not a cookie
+        """TRK-4: the tracker SDK's ingestion endpoint. Authenticated by widget API
+        key (`widget_key`, travels in the body — see TrackEventBatch), not a cookie
         session; identity is an anonymous, client-generated `visitor_id`, not a
         `User` row."""
         with session_factory() as session:
-            tenant = resolve_tenant_by_api_key(session, batch.tenant_key)
-            if tenant is None:
-                raise HTTPException(status_code=401, detail="Invalid tenant key")
-            if not _origin_allowed(tenant, request):
+            widget = resolve_widget_by_api_key(session, batch.widget_key)
+            if widget is None:
+                raise HTTPException(status_code=401, detail="Invalid widget key")
+            if not _origin_allowed(widget, request):
                 raise HTTPException(status_code=403, detail="Origin not allowed")
 
-            # A model_id that doesn't belong to this tenant is dropped rather than
-            # stored — an event referencing another tenant's catalog item id must
-            # never let that item's title/modality leak into this visitor's behavior
-            # summary later (TEN-3/NFR-8).
-            model_ids = {event.model_id for event in batch.events if event.model_id}
-            valid_model_ids = (
+            # A catalog_item_id that doesn't belong to this widget is dropped rather
+            # than stored — an event referencing another widget's catalog item id
+            # must never let that item's title/category leak into this visitor's
+            # behavior summary later (TEN-3/NFR-8).
+            catalog_item_ids = {
+                event.catalog_item_id for event in batch.events if event.catalog_item_id
+            }
+            valid_catalog_item_ids = (
                 set(
                     session.scalars(
-                        select(Model.id).where(
-                            Model.id.in_(model_ids), Model.tenant_id == tenant.id
+                        select(CatalogItem.id).where(
+                            CatalogItem.id.in_(catalog_item_ids),
+                            CatalogItem.widget_id == widget.id,
                         )
                     ).all()
                 )
-                if model_ids
+                if catalog_item_ids
                 else set()
             )
             events = [
                 Event(
-                    tenant_id=tenant.id,
+                    tenant_id=widget.tenant_id,
+                    widget_id=widget.id,
                     visitor_id=batch.visitor_id,
                     event_type=event.event_type,
-                    model_id=event.model_id
-                    if event.model_id in valid_model_ids
+                    catalog_item_id=event.catalog_item_id
+                    if event.catalog_item_id in valid_catalog_item_ids
                     else None,
                     metadata_json=event.metadata,
                 )
                 for event in batch.events
             ]
             session.add_all(events)
-            if tenant.first_event_at is None:
+            if widget.first_event_at is None:
                 # Client-side timestamp, not an Event's own server-generated
                 # created_at — that column is a server_default (func.now()), so it's
                 # not populated on the Python object until after commit/refresh.
-                tenant.first_event_at = datetime.utcnow()
+                widget.first_event_at = datetime.utcnow()
             session.commit()
 
-            triggered = should_trigger(session, tenant.id, batch.visitor_id)
-            if triggered and tenant_rate_limited(session, tenant):
-                # TEN-6: the tenant-aggregate ceiling wins over an individually
-                # qualifying visitor — see tenant_rate_limited's docstring for why a
-                # per-visitor check alone isn't enough (the key is public).
-                triggered = False
+            triggered = should_trigger(session, widget.id, batch.visitor_id)
             if triggered:
-                lock = app.state.pipeline_locks.get((tenant.id, batch.visitor_id))
+                tenant = session.get(Tenant, widget.tenant_id)
+                if tenant_rate_limited(session, tenant):
+                    # TEN-6: the tenant-aggregate ceiling wins over an individually
+                    # qualifying visitor — see tenant_rate_limited's docstring for why
+                    # a per-visitor check alone isn't enough (the key is public).
+                    triggered = False
+            if triggered:
+                lock = app.state.pipeline_locks.get((widget.id, batch.visitor_id))
                 if lock is not None and lock.locked():
                     triggered = False
+            widget_id, tenant_id = widget.id, widget.tenant_id
         if triggered:
             background_tasks.add_task(
-                run_tracker_pipeline_in_background, tenant.id, batch.visitor_id
+                run_tracker_pipeline_in_background,
+                widget_id,
+                tenant_id,
+                batch.visitor_id,
             )
         return {
             "accepted": len(events),
@@ -990,27 +1274,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/recommendations/latest")
     async def latest_recommendation_for_visitor(
-        tenant_key: str = Query(...),
+        widget_key: str = Query(...),
         visitor_id: str = Query(...),
     ) -> dict[str, object]:
-        """Read fallback for when no real-time push connection is open (the widget
-        phase's `GET /api/widget/stream` doesn't exist yet) — same tenant-key
-        authentication as ingestion, no separate widget-session mechanism yet."""
+        """Read fallback for when no real-time push connection is open — same
+        widget-key authentication as ingestion, no separate widget-session mechanism
+        yet."""
         with session_factory() as session:
-            tenant = resolve_tenant_by_api_key(session, tenant_key)
-            if tenant is None:
-                raise HTTPException(status_code=401, detail="Invalid tenant key")
+            widget = resolve_widget_by_api_key(session, widget_key)
+            if widget is None:
+                raise HTTPException(status_code=401, detail="Invalid widget key")
 
             latest = session.scalar(
                 select(Recommendation)
                 .where(
-                    Recommendation.tenant_id == tenant.id,
+                    Recommendation.widget_id == widget.id,
                     Recommendation.visitor_id == visitor_id,
                 )
                 .order_by(Recommendation.created_at.desc())
             )
-            current_events = recent_events(session, tenant.id, visitor_id)
-            evidence = session_evidence(session, tenant.id, current_events)
+            current_events = recent_events(session, widget.id, visitor_id)
+            evidence = session_evidence(session, widget.id, current_events)
             evidence_payload = [
                 {
                     "label": item["label"],
@@ -1021,29 +1305,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
 
             if latest:
-                models = session.scalars(
-                    select(Model).where(
-                        Model.id.in_(latest.model_ids), Model.tenant_id == tenant.id
+                items = session.scalars(
+                    select(CatalogItem).where(
+                        CatalogItem.id.in_(latest.catalog_item_ids),
+                        CatalogItem.widget_id == widget.id,
                     )
                 ).all()
-                models_by_id = {model.id: model for model in models}
+                catalog_items_by_id = {item.id: item for item in items}
                 reason_by_id = {
-                    entry["model_id"]: entry["reason"]
+                    entry["catalog_item_id"]: entry["reason"]
                     for entry in latest.retrieval_meta or []
                 }
                 return {
                     "id": latest.id,
                     "status": "ready" if latest.narrative else "retrieval_ready",
                     "narrative": latest.narrative,
-                    "models": [
+                    "catalog_items": [
                         {
-                            **model_response(models_by_id[model_id]).model_dump(
-                                mode="json"
-                            ),
-                            "why_this": reason_by_id.get(model_id),
+                            **catalog_item_response(
+                                catalog_items_by_id[catalog_item_id]
+                            ).model_dump(mode="json"),
+                            "why_this": reason_by_id.get(catalog_item_id),
                         }
-                        for model_id in latest.model_ids
-                        if model_id in models_by_id
+                        for catalog_item_id in latest.catalog_item_ids
+                        if catalog_item_id in catalog_items_by_id
                     ],
                     "behavior_summary": latest.behavior_summary,
                     "activity_hash": latest.activity_hash,
@@ -1055,78 +1340,85 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return {
                     "status": "pending",
                     "narrative": None,
-                    "models": [],
+                    "catalog_items": [],
                     "evidence": [],
                 }
 
-            summary = activity_summary(session, tenant.id, current_events)
-            scored = vector_store.query_scored(summary, tenant.id)
+            summary = activity_summary(session, widget.id, current_events)
+            scored = vector_store.query_scored(summary, widget.id)
             if not scored:
                 return {
                     "status": "pending",
                     "narrative": None,
-                    "models": [],
+                    "catalog_items": [],
                     "trigger_reason": "no_retrieval_candidates",
                     "evidence": evidence_payload,
                 }
-            candidate_ids = [model_id for model_id, _ in scored]
-            models_by_id = {
-                model.id: model
-                for model in session.scalars(
-                    select(Model).where(
-                        Model.id.in_(candidate_ids), Model.tenant_id == tenant.id
+            candidate_ids = [catalog_item_id for catalog_item_id, _ in scored]
+            catalog_items_by_id = {
+                item.id: item
+                for item in session.scalars(
+                    select(CatalogItem).where(
+                        CatalogItem.id.in_(candidate_ids),
+                        CatalogItem.widget_id == widget.id,
                     )
                 ).all()
             }
             candidates = [
                 {
-                    **model_response(models_by_id[model_id]).model_dump(mode="json"),
+                    **catalog_item_response(
+                        catalog_items_by_id[catalog_item_id]
+                    ).model_dump(mode="json"),
                     "why_this": contextual_reason(
-                        models_by_id[model_id], distance, False, evidence
+                        catalog_items_by_id[catalog_item_id], distance, False, evidence
                     ),
                 }
-                for model_id, distance in scored
-                if model_id in models_by_id
+                for catalog_item_id, distance in scored
+                if catalog_item_id in catalog_items_by_id
             ]
             return {
                 "status": "retrieval_ready",
                 "narrative": None,
-                "models": candidates,
+                "catalog_items": candidates,
                 "trigger_reason": "activity_retrieval",
                 "evidence": evidence_payload,
             }
 
-    def _resolve_widget_tenant(tenant_key: str, request: Request) -> Tenant:
-        """Shared auth for every /api/widget/* route: resolves the tenant key, checks
+    def _resolve_widget(widget_key: str, request: Request) -> Widget:
+        """Shared auth for every /api/widget/* route: resolves the widget key, checks
         the soft origin allowlist, and enforces TEN-8's render-gate — a widget must
-        stay dark on the host page until the tenant is verified + catalog-ready, not
-        just have a valid key."""
+        stay dark on the host page until it's verified + catalog-ready AND its parent
+        tenant is in good standing, not just have a valid key."""
         with session_factory() as session:
-            tenant = resolve_tenant_by_api_key(session, tenant_key)
-            if tenant is None:
-                raise HTTPException(status_code=401, detail="Invalid tenant key")
-            if not _origin_allowed(tenant, request):
+            widget = resolve_widget_by_api_key(session, widget_key)
+            if widget is None:
+                raise HTTPException(status_code=401, detail="Invalid widget key")
+            if not _origin_allowed(widget, request):
                 raise HTTPException(status_code=403, detail="Origin not allowed")
-            if tenant.status != "active":
+            if widget.status != "active":
+                raise HTTPException(status_code=403, detail="Widget not active")
+            tenant = session.get(Tenant, widget.tenant_id)
+            if tenant is None or tenant.status in WIDGET_BLOCKING_TENANT_STATUSES:
                 raise HTTPException(status_code=403, detail="Tenant not active")
-            session.expunge(tenant)
-            return tenant
+            session.expunge(widget)
+            return widget
 
     @app.get("/api/widget/stream")
     async def widget_stream(
         request: Request,
-        tenant_key: str = Query(...),
+        widget_key: str = Query(...),
         visitor_id: str = Query(...),
     ) -> StreamingResponse:
         """DLV-2: server-sent-events push. A visitor's open widget gets a
         `recommendation` event the moment `_store_and_deliver` finishes generating one
         for them (app/services/agent_graph.py); GET /api/recommendations/latest stays
         the polling fallback for a visitor with no live connection open."""
-        tenant = _resolve_widget_tenant(tenant_key, request)
+        widget = _resolve_widget(widget_key, request)
         connection_id = secrets.token_hex(16)
         with session_factory() as session:
             widget_session = WidgetSession(
-                tenant_id=tenant.id,
+                tenant_id=widget.tenant_id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
                 connection_id=connection_id,
             )
@@ -1135,7 +1427,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.refresh(widget_session)
             widget_session_id = widget_session.id
 
-        queue = await _register_widget_connection(tenant.id, visitor_id)
+        queue = await _register_widget_connection(widget.id, visitor_id)
 
         async def event_generator():
             try:
@@ -1153,7 +1445,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     else:
                         yield f"event: recommendation\ndata: {json.dumps(payload)}\n\n"
             finally:
-                await _unregister_widget_connection(tenant.id, visitor_id, queue)
+                await _unregister_widget_connection(widget.id, visitor_id, queue)
                 with session_factory() as session:
                     row = session.get(WidgetSession, widget_session_id)
                     if row is not None:
@@ -1170,12 +1462,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def widget_ask(
         payload: WidgetAskRequest, request: Request
     ) -> WidgetAskResponse:
-        tenant = _resolve_widget_tenant(payload.tenant_key, request)
+        widget = _resolve_widget(payload.widget_key, request)
         with session_factory() as session:
             result = answer_visitor_question(
                 session,
                 vector_store,
-                tenant.id,
+                widget.id,
                 payload.visitor_id,
                 payload.question,
                 app.state.mesh_generator,
@@ -1185,20 +1477,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/widget/activity")
     async def widget_activity(
         request: Request,
-        tenant_key: str = Query(...),
+        widget_key: str = Query(...),
         visitor_id: str = Query(...),
     ) -> dict[str, object]:
         """DLV-6: read-only view over already-persisted events/recommendations, no new
         backend logic — the same shape /api/recommendations/latest already assembles
         inline, exposed as its own endpoint for the widget's "why am I seeing this"
         panel."""
-        tenant = _resolve_widget_tenant(tenant_key, request)
+        widget = _resolve_widget(widget_key, request)
         with session_factory() as session:
-            events = recent_events(session, tenant.id, visitor_id)
+            events = recent_events(session, widget.id, visitor_id)
             latest = session.scalar(
                 select(Recommendation)
                 .where(
-                    Recommendation.tenant_id == tenant.id,
+                    Recommendation.widget_id == widget.id,
                     Recommendation.visitor_id == visitor_id,
                 )
                 .order_by(Recommendation.created_at.desc())
@@ -1207,7 +1499,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "events": [
                     {
                         "type": event.event_type,
-                        "model_id": event.model_id,
+                        "catalog_item_id": event.catalog_item_id,
                         "metadata": event.metadata_json,
                         "created_at": as_utc(event.created_at),
                     }

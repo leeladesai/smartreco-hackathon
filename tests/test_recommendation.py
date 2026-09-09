@@ -4,7 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant
+from app.models import CatalogItem, Event, Recommendation, Tenant, Widget
 from app.services.recommendation import (
     SESSION_COOLDOWN,
     SESSION_GAP,
@@ -12,10 +12,11 @@ from app.services.recommendation import (
     activity_hash,
     is_recommendation_stale,
     mesh_cost_rollup,
-    recent_feedback_by_model,
+    recent_feedback_by_catalog_item,
     session_evidence,
     should_trigger,
 )
+from app.services.widgets import create_widget
 
 
 def _make_session_factory(tmp_path):
@@ -34,25 +35,33 @@ def _make_tenant(session) -> Tenant:
     return tenant
 
 
+def _make_widget(session, tenant: Tenant) -> Widget:
+    widget, _raw_key = create_widget(session, tenant, "Test Widget")
+    return widget
+
+
 def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-evidence"
-        old_model = Model(
+        old_model = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Old Model",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        new_model = Model(
+        new_model = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="New Model",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
@@ -66,18 +75,20 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
                 # Older session, well outside SESSION_GAP of the events below.
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=old_model.id,
+                    catalog_item_id=old_model.id,
                     metadata_json={},
                     created_at=now - SESSION_GAP - timedelta(hours=1),
                 ),
                 # Current session.
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=new_model.id,
+                    catalog_item_id=new_model.id,
                     metadata_json={},
                     created_at=now,
                 ),
@@ -86,7 +97,7 @@ def test_session_evidence_scopes_to_current_session_only(tmp_path) -> None:
         session.commit()
 
         events = session.query(Event).order_by(Event.created_at.desc()).all()
-        evidence = session_evidence(session, tenant.id, events)
+        evidence = session_evidence(session, widget.id, events)
 
         assert len(evidence) == 1
         assert evidence[0]["label"] == "New Model"
@@ -97,12 +108,14 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-dedupe"
-        model = Model(
+        model = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Cartesia Sonic",
             provider="Cartesia",
-            modality="Voice",
+            category="Voice",
             price="$0",
             description="d",
             use_case_tags=[],
@@ -115,6 +128,7 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
             [
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "multilingual"},
@@ -122,17 +136,19 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=model.id,
+                    catalog_item_id=model.id,
                     metadata_json={},
                     created_at=now - timedelta(minutes=1),
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=model.id,
+                    catalog_item_id=model.id,
                     metadata_json={},
                     created_at=now,
                 ),
@@ -141,19 +157,19 @@ def test_session_evidence_dedupes_repeat_views_and_includes_search(tmp_path) -> 
         session.commit()
 
         events = session.query(Event).order_by(Event.created_at.desc()).all()
-        evidence = session_evidence(session, tenant.id, events)
+        evidence = session_evidence(session, widget.id, events)
 
         # Two model_view events for the same model dedupe to one "viewed" entry.
         assert [item["action"] for item in evidence] == ["viewed", "searched"]
         assert evidence[1]["label"] == '"multilingual"'
 
 
-def _make_visitor_with_events(session, tenant_id, visitor_id, event_count=2):
+def _make_visitor_with_events(session, widget_id, visitor_id, event_count=2):
     now = datetime.utcnow()
     session.add_all(
         [
             Event(
-                tenant_id=tenant_id,
+                widget_id=widget_id,
                 visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": f"query {i}"},
@@ -170,20 +186,22 @@ def test_should_trigger_false_below_session_threshold(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = _make_visitor_with_events(
-            session, tenant.id, "v-below", event_count=1
+            session, widget.id, "v-below", event_count=1
         )
-        assert should_trigger(session, tenant.id, visitor_id) is False
+        assert should_trigger(session, widget.id, visitor_id) is False
 
 
 def test_should_trigger_true_with_no_prior_recommendation(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = _make_visitor_with_events(
-            session, tenant.id, "v-fresh", event_count=2
+            session, widget.id, "v-fresh", event_count=2
         )
-        assert should_trigger(session, tenant.id, visitor_id) is True
+        assert should_trigger(session, widget.id, visitor_id) is True
 
 
 def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
@@ -195,8 +213,9 @@ def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = _make_visitor_with_events(
-            session, tenant.id, "v-unchanged", event_count=2
+            session, widget.id, "v-unchanged", event_count=2
         )
         events = list(
             session.query(Event)
@@ -206,8 +225,9 @@ def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
-                model_ids=[],
+                catalog_item_ids=[],
                 behavior_summary="",
                 activity_hash=activity_hash(events),
                 trigger_reason="event_threshold",
@@ -215,7 +235,7 @@ def test_should_trigger_false_when_activity_unchanged_since_last_recommendation(
         )
         session.commit()
 
-        assert should_trigger(session, tenant.id, visitor_id) is False
+        assert should_trigger(session, widget.id, visitor_id) is False
 
 
 def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
@@ -224,14 +244,16 @@ def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = _make_visitor_with_events(
-            session, tenant.id, "v-changed", event_count=2
+            session, widget.id, "v-changed", event_count=2
         )
         session.add(
             Recommendation(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
-                model_ids=[],
+                catalog_item_ids=[],
                 behavior_summary="",
                 activity_hash="a-different-hash-entirely",
                 trigger_reason="event_threshold",
@@ -240,7 +262,7 @@ def test_should_trigger_true_when_activity_changed_after_cooldown_expires(
         )
         session.commit()
 
-        assert should_trigger(session, tenant.id, visitor_id) is True
+        assert should_trigger(session, widget.id, visitor_id) is True
 
 
 def test_is_recommendation_stale_true_with_no_prior_recommendation() -> None:
@@ -254,7 +276,7 @@ def test_is_recommendation_stale_false_on_matching_hash() -> None:
     recommendation = Recommendation(
         tenant_id=1,
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="",
         activity_hash=activity_hash([event]),
         trigger_reason="event_threshold",
@@ -275,7 +297,7 @@ def test_is_recommendation_stale_false_within_cooldown_same_session() -> None:
     recommendation = Recommendation(
         tenant_id=1,
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="",
         activity_hash="different-hash",
         trigger_reason="event_threshold",
@@ -296,7 +318,7 @@ def test_is_recommendation_stale_true_once_cooldown_expires() -> None:
     recommendation = Recommendation(
         tenant_id=1,
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="",
         activity_hash="different-hash",
         trigger_reason="event_threshold",
@@ -305,45 +327,52 @@ def test_is_recommendation_stale_true_once_cooldown_expires() -> None:
     assert is_recommendation_stale([event], recommendation) is True
 
 
-def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> None:
+def test_recent_feedback_by_catalog_item_returns_latest_rating_per_item(
+    tmp_path,
+) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-feedback"
         now = datetime.utcnow()
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="recommendation_feedback",
-                    model_id=1,
+                    catalog_item_id=1,
                     metadata_json={"rating": "up", "recommendation_id": 10},
                     created_at=now - timedelta(minutes=5),
                 ),
                 # Visitor changed their mind about model 1 — the newer "down" must win.
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="recommendation_feedback",
-                    model_id=1,
+                    catalog_item_id=1,
                     metadata_json={"rating": "down", "recommendation_id": 11},
                     created_at=now,
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="recommendation_feedback",
-                    model_id=2,
+                    catalog_item_id=2,
                     metadata_json={"rating": "up", "recommendation_id": 11},
                     created_at=now,
                 ),
                 # Not feedback — must not pollute the result.
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=3,
+                    catalog_item_id=3,
                     metadata_json={},
                     created_at=now,
                 ),
@@ -351,24 +380,26 @@ def test_recent_feedback_by_model_returns_latest_rating_per_model(tmp_path) -> N
         )
         session.commit()
 
-        feedback = recent_feedback_by_model(session, tenant.id, visitor_id)
+        feedback = recent_feedback_by_catalog_item(session, widget.id, visitor_id)
         assert feedback == {
             1: FeedbackRecord(rating="down", context_query=""),
             2: FeedbackRecord(rating="up", context_query=""),
         }
 
 
-def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendation(
+def test_recent_feedback_by_catalog_item_resolves_context_query_from_linked_recommendation(
     tmp_path,
 ) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-context"
         recommendation = Recommendation(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             visitor_id=visitor_id,
-            model_ids=[1],
+            catalog_item_ids=[1],
             behavior_summary="rack based server model",
             activity_hash="hash-1",
             trigger_reason="event_threshold",
@@ -378,9 +409,10 @@ def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendat
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
                 event_type="recommendation_feedback",
-                model_id=1,
+                catalog_item_id=1,
                 metadata_json={
                     "rating": "down",
                     "recommendation_id": recommendation.id,
@@ -390,43 +422,47 @@ def test_recent_feedback_by_model_resolves_context_query_from_linked_recommendat
         )
         session.commit()
 
-        feedback = recent_feedback_by_model(session, tenant.id, visitor_id)
+        feedback = recent_feedback_by_catalog_item(session, widget.id, visitor_id)
         assert feedback == {
             1: FeedbackRecord(rating="down", context_query="rack based server model")
         }
 
 
-def test_recent_feedback_by_model_ignores_stale_feedback(tmp_path) -> None:
+def test_recent_feedback_by_catalog_item_ignores_stale_feedback(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-stale"
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
                 event_type="recommendation_feedback",
-                model_id=1,
+                catalog_item_id=1,
                 metadata_json={"rating": "down"},
                 created_at=datetime.utcnow() - timedelta(days=30),
             )
         )
         session.commit()
 
-        assert recent_feedback_by_model(session, tenant.id, visitor_id) == {}
+        assert recent_feedback_by_catalog_item(session, widget.id, visitor_id) == {}
 
 
 def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-cost"
         session.add_all(
             [
                 Recommendation(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
-                    model_ids=[],
+                    catalog_item_ids=[],
                     behavior_summary="",
                     activity_hash="hash-1",
                     trigger_reason="event_threshold",
@@ -437,8 +473,9 @@ def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) ->
                 ),
                 Recommendation(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
-                    model_ids=[],
+                    catalog_item_ids=[],
                     behavior_summary="",
                     activity_hash="hash-2",
                     trigger_reason="event_threshold",
@@ -450,8 +487,9 @@ def test_mesh_cost_rollup_aggregates_only_generated_recommendations(tmp_path) ->
                 # Retrieval-only (no Mesh call) — must not be counted or averaged in.
                 Recommendation(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
-                    model_ids=[],
+                    catalog_item_ids=[],
                     behavior_summary="",
                     activity_hash="hash-3",
                     trigger_reason="event_threshold",

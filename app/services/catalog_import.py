@@ -7,10 +7,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Model
-from app.schemas import ModelCreate
-from app.services.catalog import create_model
-from app.vector import ModelVectorStore
+from app.models import CatalogItem, Widget
+from app.schemas import CatalogItemCreate
+from app.services.catalog import create_catalog_item
+from app.vector import CatalogItemVectorStore
 
 
 class CatalogParseError(ValueError):
@@ -28,13 +28,17 @@ MAX_BULK_IMPORT_ROWS = 500
 _ROW_FIELDS = (
     "title",
     "provider",
-    "modality",
+    "category",
     "price",
     "description",
     "story",
-    "context_window",
     "source_url",
 )
+
+# Optional spec_N_label/spec_N_value column pairs a CSV can provide — collapsed into
+# CatalogItem.specs (see _coerce_row). JSON uploads can instead just provide a
+# "specs" object directly (handled inline in _coerce_row).
+_SPEC_COLUMN_COUNT = 4
 
 
 def _split_tags(raw: str) -> list[str]:
@@ -50,8 +54,9 @@ def _split_tags(raw: str) -> list[str]:
 
 
 def _coerce_row(raw: dict) -> dict:
-    """Normalizes one raw row into the shape ModelCreate expects. CSV cells always
-    arrive as strings (or missing); JSON rows may already be correctly typed."""
+    """Normalizes one raw row into the shape CatalogItemCreate expects. CSV cells
+    always arrive as strings (or missing); JSON rows may already be correctly typed.
+    """
     row = {str(key).strip().lower(): value for key, value in raw.items() if key}
     coerced: dict = {}
     for field in _ROW_FIELDS:
@@ -72,20 +77,32 @@ def _coerce_row(raw: dict) -> dict:
     elif isinstance(tags, str) and tags.strip():
         coerced["use_case_tags"] = _split_tags(tags)
 
-    latency = row.get("latency_ms")
-    if isinstance(latency, str):
-        latency = latency.strip()
-    if latency not in (None, ""):
-        coerced["latency_ms"] = int(latency)
+    specs_field = row.get("specs")
+    if isinstance(specs_field, dict):
+        coerced["specs"] = {str(k): str(v) for k, v in specs_field.items()}
+    else:
+        specs: dict[str, str] = {}
+        for n in range(1, _SPEC_COLUMN_COUNT + 1):
+            label = row.get(f"spec_{n}_label")
+            value = row.get(f"spec_{n}_value")
+            if isinstance(label, str):
+                label = label.strip()
+            if isinstance(value, str):
+                value = value.strip()
+            if label and value:
+                specs[str(label)] = str(value)
+        if specs:
+            coerced["specs"] = specs
 
     return coerced
 
 
 def parse_catalog_file(filename: str, content: bytes) -> list[dict]:
     """Accepts a CSV or JSON catalog file and returns a list of raw row dicts, not yet
-    validated against ModelCreate (see import_catalog_rows for that). JSON may be a
-    bare array of model objects, or {"models": [...]} — the same shape
-    scripts/expand_catalog_via_mesh.py already produces.
+    validated against CatalogItemCreate (see import_catalog_rows for that). JSON may
+    be a bare array of item objects, or {"models": [...]} (envelope key kept as-is —
+    matches scripts/expand_catalog_via_mesh.py's existing output format; not part of
+    the CatalogItem entity/API rename).
     """
     try:
         text = content.decode("utf-8-sig")
@@ -101,7 +118,7 @@ def parse_catalog_file(filename: str, content: bytes) -> list[dict]:
             data = data.get("models")
         if not isinstance(data, list):
             raise CatalogParseError(
-                'Expected a JSON array of models, or {"models": [...]}.'
+                'Expected a JSON array of items, or {"models": [...]}.'
             )
         rows = [row for row in data if isinstance(row, dict)]
     else:
@@ -119,25 +136,26 @@ def parse_catalog_file(filename: str, content: bytes) -> list[dict]:
 
 def import_catalog_rows(
     session: Session,
-    vector_store: ModelVectorStore,
-    tenant_id: int,
+    vector_store: CatalogItemVectorStore,
+    widget: Widget,
     raw_rows: list[dict],
     *,
     ingestion_adapter: str = "manual",
     last_synced_at: datetime | None = None,
 ) -> list[dict]:
-    """Validates and inserts each row independently — reuses catalog.create_model so a
-    bulk import writes through the exact same DB+vector-store path (and the same
-    resiliency around a failed Chroma upsert) as the single-model admin API. One bad
-    row never aborts the rest of the batch, mirroring
-    scripts/expand_catalog_via_mesh.py's per-row validate/dedupe/insert pattern. Each
-    result dict is `{row, title, status, errors}` with status one of "inserted",
-    "skipped_duplicate", "invalid".
+    """Validates and inserts each row independently — reuses
+    catalog.create_catalog_item so a bulk import writes through the exact same
+    DB+vector-store path (and the same resiliency around a failed Chroma upsert) as
+    the single-item admin API. One bad row never aborts the rest of the batch,
+    mirroring scripts/expand_catalog_via_mesh.py's per-row validate/dedupe/insert
+    pattern. Each result dict is `{row, title, status, errors}` with status one of
+    "inserted", "skipped_duplicate", "invalid".
 
     `ingestion_adapter`/`last_synced_at` are passed straight through to
-    `create_model` for every inserted row — the manual admin bulk-upload endpoint
-    leaves them at their defaults, while the feed adapter (app/services/ingestion.py)
-    tags its rows `ingestion_adapter="feed"` and stamps the sync time.
+    `create_catalog_item` for every inserted row — the manual admin bulk-upload
+    endpoint leaves them at their defaults, while the feed adapter
+    (app/services/ingestion.py) tags its rows `ingestion_adapter="feed"` and stamps
+    the sync time.
     """
     results = []
     for index, raw in enumerate(raw_rows, start=1):
@@ -155,7 +173,7 @@ def import_catalog_rows(
             )
             continue
         try:
-            payload = ModelCreate(**coerced)
+            payload = CatalogItemCreate(**coerced)
         except ValidationError as exc:
             errors = [
                 f"{'.'.join(str(part) for part in err['loc'])}: {err['msg']}"
@@ -172,8 +190,9 @@ def import_catalog_rows(
             continue
 
         existing = session.scalars(
-            select(Model).where(
-                Model.title.ilike(payload.title), Model.tenant_id == tenant_id
+            select(CatalogItem).where(
+                CatalogItem.title.ilike(payload.title),
+                CatalogItem.widget_id == widget.id,
             )
         ).first()
         if existing:
@@ -188,10 +207,10 @@ def import_catalog_rows(
             continue
 
         try:
-            create_model(
+            create_catalog_item(
                 session,
                 vector_store,
-                tenant_id,
+                widget,
                 payload,
                 ingestion_adapter=ingestion_adapter,
                 last_synced_at=last_synced_at,

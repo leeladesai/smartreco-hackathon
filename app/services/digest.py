@@ -24,18 +24,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
-from app.models import Model, Recommendation, User
+from app.models import CatalogItem, Recommendation, User
 from app.services.agent_graph import prepare_retrieval_recommendation
 from app.services.email_template import render_recommendation_email_html
 from app.services.narrative import decode_narrative, narrative_as_plain_text
-from app.vector import ModelVectorStore
+from app.vector import CatalogItemVectorStore
 
 logger = logging.getLogger(__name__)
 
 
 class Notifier(Protocol):
     def send(
-        self, user: User, recommendation: Recommendation, models: list[dict]
+        self, user: User, recommendation: Recommendation, catalog_items: list[dict]
     ) -> None:
         ...
 
@@ -46,13 +46,13 @@ class LoggingNotifier:
     scheduled digest ran and what it would have delivered."""
 
     def send(
-        self, user: User, recommendation: Recommendation, models: list[dict]
+        self, user: User, recommendation: Recommendation, catalog_items: list[dict]
     ) -> None:
         logger.info(
             "[digest:log-only] would notify user_id=%s (%s) about %s: %s",
             user.id,
             user.email,
-            [model["title"] for model in models],
+            [catalog_item["title"] for catalog_item in catalog_items],
             narrative_as_plain_text(
                 recommendation.narrative, recommendation.behavior_summary
             ),
@@ -71,14 +71,12 @@ class EmailNotifier:
     app_url: str | None = None
 
     def send(
-        self, user: User, recommendation: Recommendation, models: list[dict]
+        self, user: User, recommendation: Recommendation, catalog_items: list[dict]
     ) -> None:
         message = EmailMessage()
         subject = "Your TrailMind recommendation digest"
-        if models:
-            subject = (
-                f"Your TrailMind picks: {len(models)} models based on your activity"
-            )
+        if catalog_items:
+            subject = f"Your TrailMind picks: {len(catalog_items)} picks based on your activity"
         message["Subject"] = subject
         message["From"] = self.from_email
         message["To"] = user.email
@@ -91,7 +89,7 @@ class EmailNotifier:
         message.add_alternative(
             render_recommendation_email_html(
                 decode_narrative(recommendation.narrative),
-                models,
+                catalog_items,
                 fallback_summary,
                 app_url=self.app_url,
             ),
@@ -112,7 +110,7 @@ class TelegramNotifier:
     fallback_chat_id: str | None = None
 
     def send(
-        self, user: User, recommendation: Recommendation, models: list[dict]
+        self, user: User, recommendation: Recommendation, catalog_items: list[dict]
     ) -> None:
         chat_id = user.telegram_chat_id or self.fallback_chat_id
         if not chat_id:
@@ -124,8 +122,8 @@ class TelegramNotifier:
             recommendation.narrative, recommendation.behavior_summary
         )
         text = f"TrailMind digest for {user.email}:\n{body}"
-        if models:
-            titles = ", ".join(model["title"] for model in models)
+        if catalog_items:
+            titles = ", ".join(catalog_item["title"] for catalog_item in catalog_items)
             text += f"\n\nRecommended: {titles}"
         response = httpx.post(
             f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
@@ -157,44 +155,44 @@ def build_notifier(settings: Settings) -> Notifier:
     return LoggingNotifier()
 
 
-def _recommendation_models(
+def _recommendation_catalog_items(
     session: Session, recommendation: Recommendation
 ) -> list[dict]:
     """Resolves the plain-dict shape both notifiers render from — title/provider/
-    modality/price plus the same deterministic `why_this` reason the dashboard shows
+    category/price plus the same deterministic `why_this` reason the dashboard shows
     (`Recommendation.retrieval_meta`, computed in agent_graph.py, never re-derived
     here)."""
-    if not recommendation.model_ids:
+    if not recommendation.catalog_item_ids:
         return []
-    models_by_id = {
-        model.id: model
-        for model in session.scalars(
-            select(Model).where(
-                Model.id.in_(recommendation.model_ids),
-                Model.tenant_id == recommendation.tenant_id,
+    catalog_items_by_id = {
+        item.id: item
+        for item in session.scalars(
+            select(CatalogItem).where(
+                CatalogItem.id.in_(recommendation.catalog_item_ids),
+                CatalogItem.tenant_id == recommendation.tenant_id,
             )
         ).all()
     }
     reason_by_id = {
-        entry["model_id"]: entry.get("reason")
+        entry["catalog_item_id"]: entry.get("reason")
         for entry in recommendation.retrieval_meta or []
     }
     return [
         {
-            "title": models_by_id[model_id].title,
-            "provider": models_by_id[model_id].provider,
-            "modality": models_by_id[model_id].modality,
-            "price": models_by_id[model_id].price,
-            "why_this": reason_by_id.get(model_id),
+            "title": catalog_items_by_id[catalog_item_id].title,
+            "provider": catalog_items_by_id[catalog_item_id].provider,
+            "category": catalog_items_by_id[catalog_item_id].category,
+            "price": catalog_items_by_id[catalog_item_id].price,
+            "why_this": reason_by_id.get(catalog_item_id),
         }
-        for model_id in recommendation.model_ids
-        if model_id in models_by_id
+        for catalog_item_id in recommendation.catalog_item_ids
+        if catalog_item_id in catalog_items_by_id
     ]
 
 
 def run_digest(
     session_factory: sessionmaker[Session],
-    vector_store: ModelVectorStore,
+    vector_store: CatalogItemVectorStore,
     mesh_generator,
     notifier: Notifier,
 ) -> dict[str, int]:
@@ -235,7 +233,9 @@ def run_digest(
                 skipped += 1
                 continue
             try:
-                notifier.send(user, latest, _recommendation_models(session, latest))
+                notifier.send(
+                    user, latest, _recommendation_catalog_items(session, latest)
+                )
                 sent += 1
             except Exception:
                 logger.exception("Digest delivery failed for user_id=%s", user.id)

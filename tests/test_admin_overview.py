@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant, User
+from app.models import CatalogItem, Event, Recommendation, Tenant, User
 from app.security import create_session_token, hash_password
 from app.services.admin_overview import (
     event_type_counts,
@@ -40,16 +40,16 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
             password_hash=hash_password("x"),
             role="admin",
         )
-        model = Model(
+        item = CatalogItem(
             tenant_id=tenant.id,
             title="M1",
             provider="P",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        session.add_all([user, model])
+        session.add_all([user, item])
         session.commit()
         session.add_all(
             [
@@ -64,7 +64,7 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
                     tenant_id=tenant.id,
                     visitor_id="v1",
                     narrative="hi",
-                    model_ids=[],
+                    catalog_item_ids=[],
                     behavior_summary="s",
                     activity_hash="h1",
                     trigger_reason="event_threshold",
@@ -75,7 +75,7 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
                     tenant_id=tenant.id,
                     visitor_id="v1",
                     narrative=None,
-                    model_ids=[],
+                    catalog_item_ids=[],
                     behavior_summary="s",
                     activity_hash="h2",
                     trigger_reason="event_threshold",
@@ -85,7 +85,12 @@ def test_usage_totals_counts_generated_recommendations_only(tmp_path) -> None:
         session.commit()
 
         totals = usage_totals(session, tenant.id)
-        assert totals == {"users": 1, "models": 1, "events": 1, "recommendations": 1}
+        assert totals == {
+            "users": 1,
+            "catalog_items": 1,
+            "events": 1,
+            "recommendations": 1,
+        }
 
 
 def test_event_type_counts_groups_by_type(tmp_path) -> None:
@@ -265,19 +270,3 @@ def test_admin_overview_endpoint_returns_real_aggregates(client: TestClient) -> 
     assert activity_response.status_code == 200
     events = activity_response.json()["events"]
     assert any(e["visitor_id"] == "v-overview" for e in events)
-
-
-def test_admin_page_at_root_serves_overview_and_models_moved_to_subpath(
-    client: TestClient,
-) -> None:
-    client.post(
-        "/api/admin/login",
-        json={"email": "curator@test.dev", "password": "password123"},
-    )
-    overview = client.get("/admin")
-    assert overview.status_code == 200
-    assert "overview-totals" in overview.text
-
-    models_page = client.get("/admin/models")
-    assert models_page.status_code == 200
-    assert 'id="admin-model-table"' in models_page.text

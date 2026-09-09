@@ -1,13 +1,13 @@
 """Platform-usage metrics for the admin "Overview" landing page — distinct from
 app/services/observability.py (AI pipeline/LangSmith technical health). Everything
-here is a plain aggregation over our own tables (User/Model/Event/Recommendation);
-no external calls, no new instrumentation required.
+here is a plain aggregation over our own tables (User/CatalogItem/Event/
+Recommendation); no external calls, no new instrumentation required.
 """
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Event, Model, Recommendation, User
+from app.models import CatalogItem, Event, Recommendation, User
 
 
 def usage_totals(session: Session, tenant_id: int) -> dict[str, int]:
@@ -16,8 +16,8 @@ def usage_totals(session: Session, tenant_id: int) -> dict[str, int]:
             select(func.count(User.id)).where(User.tenant_id == tenant_id)
         )
         or 0,
-        "models": session.scalar(
-            select(func.count(Model.id)).where(Model.tenant_id == tenant_id)
+        "catalog_items": session.scalar(
+            select(func.count(CatalogItem.id)).where(CatalogItem.tenant_id == tenant_id)
         )
         or 0,
         "events": session.scalar(
@@ -90,7 +90,7 @@ def recent_activity(
                 "id": event.id,
                 "visitor_id": event.visitor_id,
                 "event_type": event.event_type,
-                "model_id": event.model_id,
+                "catalog_item_id": event.catalog_item_id,
                 "metadata": event.metadata_json,
                 "created_at": event.created_at,
             }

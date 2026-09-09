@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class QAResult:
     answer: str
-    model_ids: list[int]
+    catalog_item_ids: list[int]
     latency_ms: float | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -34,7 +34,7 @@ class QAResult:
 @dataclass(frozen=True)
 class NarrativeResult:
     narrative: str
-    model_ids: list[int]
+    catalog_item_ids: list[int]
     # Cost/latency rollup (bonus, efficiency polish) — captured here, at the one place
     # the real Mesh call happens, and persisted straight onto the Recommendation row
     # (app/services/agent_graph.py) so the admin cost dashboard reads it back from our
@@ -122,14 +122,14 @@ class MeshNarrativeGenerator:
 
     @staticmethod
     def _candidate_facts(candidate: dict) -> str:
-        # Only include facts that are actually set — most fields are modality-
-        # specific (Voice has latency, LLM has context_window, neither always has
-        # both), and an absent field must not silently read as "0"/"None" here.
+        # Only include facts that are actually set — `specs` is arbitrary
+        # label/value pairs (a loan's Rate/Tenure, a voice model's Latency, whatever
+        # this tenant's catalog cares about), so nothing here is a fixed field that
+        # might silently read as "0"/"None" when absent.
         facts = [f"price {candidate['price']}"] if candidate.get("price") else []
-        if candidate.get("latency_ms"):
-            facts.append(f"latency ~{candidate['latency_ms']}ms")
-        if candidate.get("context_window"):
-            facts.append(f"context window {candidate['context_window']}")
+        for label, value in (candidate.get("specs") or {}).items():
+            if value:
+                facts.append(f"{label.lower()} {value}")
         if candidate.get("use_case_tags"):
             facts.append(f"use cases: {', '.join(candidate['use_case_tags'])}")
         return f" [{'; '.join(facts)}]" if facts else ""
@@ -138,7 +138,7 @@ class MeshNarrativeGenerator:
     def _candidate_text(cls, candidates: Sequence[dict]) -> str:
         # candidate_id is kept out of the human-readable description entirely — it's
         # only needed so the model can echo back which candidates it picked in
-        # model_ids, never as part of the name/description the narrative/answer is
+        # catalog_item_ids, never as part of the name/description the narrative/answer is
         # built from.
         return "\n".join(
             f"- {candidate['title']} ({candidate['provider']}, "
@@ -184,10 +184,10 @@ class MeshNarrativeGenerator:
             payload = json.loads(content)
         except json.JSONDecodeError:
             payload = {"activity_understanding": content, "recommendation_points": []}
-        model_ids = []
-        for model_id in payload.get("model_ids", []):
+        catalog_item_ids = []
+        for raw_id in payload.get("catalog_item_ids", []):
             try:
-                model_ids.append(int(model_id))
+                catalog_item_ids.append(int(raw_id))
             except (TypeError, ValueError):
                 continue
 
@@ -203,7 +203,7 @@ class MeshNarrativeGenerator:
         narrative = encode_narrative(understanding, points)
         return NarrativeResult(
             narrative=narrative,
-            model_ids=model_ids,
+            catalog_item_ids=catalog_item_ids,
             latency_ms=latency_ms,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -240,18 +240,18 @@ class MeshNarrativeGenerator:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError:
-            payload = {"answer": content, "model_ids": []}
-        model_ids = []
-        for model_id in payload.get("model_ids", []):
+            payload = {"answer": content, "catalog_item_ids": []}
+        catalog_item_ids = []
+        for raw_id in payload.get("catalog_item_ids", []):
             try:
-                model_ids.append(int(model_id))
+                catalog_item_ids.append(int(raw_id))
             except (TypeError, ValueError):
                 continue
 
         answer = _strip_id_mentions(str(payload.get("answer", "")))
         return QAResult(
             answer=answer,
-            model_ids=model_ids,
+            catalog_item_ids=catalog_item_ids,
             latency_ms=latency_ms,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,

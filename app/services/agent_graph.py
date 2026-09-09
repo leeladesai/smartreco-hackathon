@@ -17,21 +17,21 @@ from langsmith import traceable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Model, Recommendation
+from app.models import CatalogItem, Recommendation
 from app.services.mesh import NarrativeResult
 from app.services.recommendation import (
     FeedbackRecord,
     _summarize_bucket,
     activity_hash,
     activity_summary,
-    dominant_modality,
+    dominant_category,
     is_recommendation_stale,
     recent_events,
-    recent_feedback_by_model,
+    recent_feedback_by_catalog_item,
     session_bucket_events,
     session_evidence,
 )
-from app.vector import ModelVectorStore
+from app.vector import CatalogItemVectorStore
 
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,10 @@ NO_ANSWER_MESSAGE = "I don't have that information in this catalog."
 
 
 class AgentState(TypedDict, total=False):
+    widget_id: int
+    # Carried alongside widget_id only for _store_and_deliver's Recommendation row,
+    # which keeps both columns (widget_id is the real retrieval scope; tenant_id is
+    # for tenant-wide admin aggregation — see Recommendation's docstring).
     tenant_id: int
     visitor_id: str
     trigger_reason: str
@@ -83,13 +87,13 @@ class AgentState(TypedDict, total=False):
     refined_query: str
     activity_hash: str
     retry_count: int
-    modality_filter: str | None
+    category_filter: str | None
     evidence: list[dict]
     candidates_scored: list[tuple[int, float]]
     query_refined: bool
     grade_action: str
     narrative: str | None
-    model_ids: list[int]
+    catalog_item_ids: list[int]
     retrieval_meta: list[dict]
     mesh_latency_ms: float | None
     mesh_prompt_tokens: int | None
@@ -111,31 +115,13 @@ def retrieval_reason(distance: float, query_refined: bool) -> str:
     return "Broader catalog match"
 
 
-def _latency_beats(candidate: Model, evidence: list[dict], action: str) -> str | None:
-    peers = [
-        item["model"]
-        for item in evidence
-        if item["action"] == action
-        and item.get("model")
-        and item["model"].id != candidate.id
-        and item["model"].modality == candidate.modality
-        and item["model"].latency_ms is not None
-    ]
-    if candidate.latency_ms is None or not peers:
-        return None
-    beaten = [peer for peer in peers if candidate.latency_ms < peer.latency_ms]
-    if not beaten:
-        return None
-    names = list(dict.fromkeys(peer.title for peer in beaten))[:2]
-    return f"beats {' + '.join(names)} on latency"
-
-
 def _story_snippet(story: str | None, max_len: int = 60) -> str | None:
-    """The curator's own "why this model" copy (`Model.story`) is a genuine, authored
-    reason — a better fallback than a vague distance label when nothing in the user's
-    own activity grounds this pick (see the "related to your recent activity" feedback
-    this was added from). Truncated to a word boundary so every card's badge stays a
-    consistent width regardless of how long a given curator wrote their story."""
+    """The curator's own "why this item" copy (`CatalogItem.story`) is a genuine,
+    authored reason — a better fallback than a vague distance label when nothing in
+    the user's own activity grounds this pick (see the "related to your recent
+    activity" feedback this was added from). Truncated to a word boundary so every
+    card's badge stays a consistent width regardless of how long a given curator wrote
+    their story."""
     if not story or not story.strip():
         return None
     text = story.strip()
@@ -146,23 +132,20 @@ def _story_snippet(story: str | None, max_len: int = 60) -> str | None:
 
 
 def contextual_reason(
-    candidate: Model, distance: float, query_refined: bool, evidence: list[dict]
+    candidate: CatalogItem, distance: float, query_refined: bool, evidence: list[dict]
 ) -> str:
     """Grounds `why_this` in what the user actually did this session, computed
     deterministically from real fields (never asked of the LLM — see the "story" field
-    grounding discussion this was added from). Tries, in order: a latency win against
-    models the user explicitly compared, then against models the user merely viewed,
-    then a search term matching this candidate's own use-case tags/description, then
-    the curator's own authored "story" for this model. Falls back to the distance-only
-    `retrieval_reason` only when none of that exists — never invents a reason with no
-    real backing."""
-    reason = _latency_beats(candidate, evidence, "compared")
-    if reason:
-        return reason
-    reason = _latency_beats(candidate, evidence, "viewed")
-    if reason:
-        return reason
+    grounding discussion this was added from). Tries, in order: a search term matching
+    this candidate's own use-case tags/description, then the curator's own authored
+    "story" for this item. Falls back to the distance-only `retrieval_reason` only when
+    none of that exists — never invents a reason with no real backing.
 
+    A past version of this also tried a "beats X on latency" comparison first, backed
+    by the old fixed `latency_ms` field — removed along with that field (see
+    CatalogItem's docstring): `specs` is now arbitrary per-tenant label/value pairs
+    with no guaranteed numeric "latency" key to compare candidates on.
+    """
     tags = [tag.lower() for tag in (candidate.use_case_tags or [])]
     description = (candidate.description or "").lower()
     for item in evidence:
@@ -184,14 +167,14 @@ def contextual_reason(
 def _analyze_activity(session: Session):
     @traceable(run_type="chain", name="analyze_activity")
     def node(state: AgentState) -> AgentState:
-        tenant_id = state["tenant_id"]
-        events = recent_events(session, tenant_id, state["visitor_id"])
-        summary = activity_summary(session, tenant_id, events)
+        widget_id = state["widget_id"]
+        events = recent_events(session, widget_id, state["visitor_id"])
+        summary = activity_summary(session, widget_id, events)
         event_hash = activity_hash(events)
         latest = session.scalar(
             select(Recommendation)
             .where(
-                Recommendation.tenant_id == tenant_id,
+                Recommendation.widget_id == widget_id,
                 Recommendation.visitor_id == state["visitor_id"],
             )
             .order_by(Recommendation.created_at.desc())
@@ -206,8 +189,8 @@ def _analyze_activity(session: Session):
         buckets = session_bucket_events(events)
         current_bucket = buckets[0] if buckets else []
         older_events = [event for bucket in buckets[1:] for event in bucket]
-        current_text = _summarize_bucket(session, tenant_id, current_bucket)
-        older_text = _summarize_bucket(session, tenant_id, older_events)
+        current_text = _summarize_bucket(session, widget_id, current_bucket)
+        older_text = _summarize_bucket(session, widget_id, older_events)
         # Weight the current session 2x relative to older sessions in the retrieval
         # query text (via repetition) — the deterministic hashed bag-of-words embedding
         # in app/vector.py has no real semantics to lean on, so query-text weighting via
@@ -223,16 +206,16 @@ def _analyze_activity(session: Session):
             "retrieval_query": retrieval_query,
             "activity_hash": event_hash,
             "retry_count": 0,
-            "modality_filter": dominant_modality(session, tenant_id, events),
-            "evidence": session_evidence(session, tenant_id, events),
+            "category_filter": dominant_category(session, widget_id, events),
+            "evidence": session_evidence(session, widget_id, events),
             "short_circuit": False,
         }
 
     return node
 
 
-def _retrieve_models(vector_store: ModelVectorStore):
-    @traceable(run_type="retriever", name="retrieve_models")
+def _retrieve_catalog_items(vector_store: CatalogItemVectorStore):
+    @traceable(run_type="retriever", name="retrieve_catalog_items")
     def node(state: AgentState) -> AgentState:
         query = (
             state.get("refined_query")
@@ -241,12 +224,12 @@ def _retrieve_models(vector_store: ModelVectorStore):
         )
         # Only pre-filter on the first pass — a retry already broadens the query text
         # because the narrower search came back weak, so keep the candidate pool wide too.
-        modality_filter = (
-            state.get("modality_filter") if state.get("retry_count") == 0 else None
+        category_filter = (
+            state.get("category_filter") if state.get("retry_count") == 0 else None
         )
-        where = {"modality": modality_filter} if modality_filter else None
+        where = {"category": category_filter} if category_filter else None
         scored = vector_store.query_scored(
-            query, state["tenant_id"], limit=RETRIEVAL_TOP_K, where=where
+            query, state["widget_id"], limit=RETRIEVAL_TOP_K, where=where
         )
         return {**state, "candidates_scored": scored}
 
@@ -278,15 +261,15 @@ def rerank_by_lexical_overlap(
         return scored
     reranked = [
         (
-            model_id,
+            catalog_item_id,
             distance
             - bonus_weight
             * (
-                len(query_terms & _tokenize(documents_by_id.get(model_id, "")))
+                len(query_terms & _tokenize(documents_by_id.get(catalog_item_id, "")))
                 / len(query_terms)
             ),
         )
-        for model_id, distance in scored
+        for catalog_item_id, distance in scored
     ]
     reranked.sort(key=lambda pair: pair[1])
     return reranked
@@ -312,13 +295,13 @@ def _feedback_context_matches(
 
 def apply_feedback_adjustment(
     scored: list[tuple[int, float]],
-    feedback_by_model_id: dict[int, FeedbackRecord],
+    feedback_by_catalog_item_id: dict[int, FeedbackRecord],
     current_query: str = "",
 ) -> list[tuple[int, float]]:
     """Closes the recommendation loop: an explicit thumbs up/down on a past
     recommendation card (recorded as an `Event`, see
-    `recommendation.recent_feedback_by_model`) adjusts this candidate's distance
-    before final selection — a downvoted model doesn't just get relabeled, it
+    `recommendation.recent_feedback_by_catalog_item`) adjusts this candidate's
+    distance before final selection — a downvoted item doesn't just get relabeled, it
     genuinely ranks worse (and, past WEAK_RETRIEVAL_DISTANCE, effectively drops out)
     the next time it's retrieved. Additive, same distance units as the lexical rerank
     above; asymmetric (down penalizes more than up rewards) — see the constants'
@@ -326,15 +309,15 @@ def apply_feedback_adjustment(
 
     Scoped to context: a rating only applies if `current_query` is similar enough to
     the query it was originally given under (see `_feedback_context_matches`) — a
-    rating is an opinion about "this model for that kind of ask", not a verdict on the
-    model in general.
+    rating is an opinion about "this item for that kind of ask", not a verdict on the
+    item in general.
     """
-    if not feedback_by_model_id:
+    if not feedback_by_catalog_item_id:
         return scored
     current_query_terms = _tokenize(current_query)
     adjusted = []
-    for model_id, distance in scored:
-        record = feedback_by_model_id.get(model_id)
+    for catalog_item_id, distance in scored:
+        record = feedback_by_catalog_item_id.get(catalog_item_id)
         if record is not None and _feedback_context_matches(
             current_query_terms, record.context_query
         ):
@@ -342,7 +325,7 @@ def apply_feedback_adjustment(
                 distance += FEEDBACK_DOWN_PENALTY
             elif record.rating == "up":
                 distance -= FEEDBACK_UP_BONUS
-        adjusted.append((model_id, distance))
+        adjusted.append((catalog_item_id, distance))
     adjusted.sort(key=lambda pair: pair[1])
     return adjusted
 
@@ -353,12 +336,13 @@ def _rerank_candidates(session: Session):
         scored = state.get("candidates_scored", [])
         if not scored:
             return state
-        model_ids = [model_id for model_id, _ in scored]
+        catalog_item_ids = [catalog_item_id for catalog_item_id, _ in scored]
         documents_by_id = {
-            model.id: ModelVectorStore.document(model)
-            for model in session.scalars(
-                select(Model).where(
-                    Model.id.in_(model_ids), Model.tenant_id == state["tenant_id"]
+            item.id: CatalogItemVectorStore.document(item)
+            for item in session.scalars(
+                select(CatalogItem).where(
+                    CatalogItem.id.in_(catalog_item_ids),
+                    CatalogItem.widget_id == state["widget_id"],
                 )
             ).all()
         }
@@ -368,10 +352,12 @@ def _rerank_candidates(session: Session):
             or state["behavior_summary"]
         )
         reranked = rerank_by_lexical_overlap(scored, query, documents_by_id)
-        feedback_by_model_id = recent_feedback_by_model(
-            session, state["tenant_id"], state["visitor_id"]
+        feedback_by_catalog_item_id = recent_feedback_by_catalog_item(
+            session, state["widget_id"], state["visitor_id"]
         )
-        reranked = apply_feedback_adjustment(reranked, feedback_by_model_id, query)
+        reranked = apply_feedback_adjustment(
+            reranked, feedback_by_catalog_item_id, query
+        )
         return {**state, "candidates_scored": reranked}
 
     return node
@@ -417,20 +403,27 @@ def _grade_refine(state: AgentState) -> AgentState:
 def _generate_narrative(session: Session, mesh_generator):
     @traceable(run_type="chain", name="generate_narrative")
     def node(state: AgentState) -> AgentState:
-        model_ids = [model_id for model_id, _ in state.get("candidates_scored", [])]
-        models_by_id = (
+        catalog_item_ids = [
+            catalog_item_id for catalog_item_id, _ in state.get("candidates_scored", [])
+        ]
+        catalog_items_by_id = (
             {
-                model.id: model
-                for model in session.scalars(
-                    select(Model).where(
-                        Model.id.in_(model_ids), Model.tenant_id == state["tenant_id"]
+                item.id: item
+                for item in session.scalars(
+                    select(CatalogItem).where(
+                        CatalogItem.id.in_(catalog_item_ids),
+                        CatalogItem.widget_id == state["widget_id"],
                     )
                 ).all()
             }
-            if model_ids
+            if catalog_item_ids
             else {}
         )
-        ordered_ids = [model_id for model_id in model_ids if model_id in models_by_id]
+        ordered_ids = [
+            catalog_item_id
+            for catalog_item_id in catalog_item_ids
+            if catalog_item_id in catalog_items_by_id
+        ]
 
         narrative: str | None = None
         final_ids = ordered_ids
@@ -441,18 +434,17 @@ def _generate_narrative(session: Session, mesh_generator):
         if mesh_generator is not None and mesh_generator.enabled and ordered_ids:
             candidates = [
                 {
-                    "id": models_by_id[model_id].id,
-                    "title": models_by_id[model_id].title,
-                    "provider": models_by_id[model_id].provider,
-                    "modality": models_by_id[model_id].modality,
-                    "price": models_by_id[model_id].price,
-                    "latency_ms": models_by_id[model_id].latency_ms,
-                    "context_window": models_by_id[model_id].context_window,
-                    "use_case_tags": models_by_id[model_id].use_case_tags,
-                    "description": models_by_id[model_id].description,
-                    "story": models_by_id[model_id].story,
+                    "id": catalog_items_by_id[catalog_item_id].id,
+                    "title": catalog_items_by_id[catalog_item_id].title,
+                    "provider": catalog_items_by_id[catalog_item_id].provider,
+                    "category": catalog_items_by_id[catalog_item_id].category,
+                    "price": catalog_items_by_id[catalog_item_id].price,
+                    "specs": catalog_items_by_id[catalog_item_id].specs,
+                    "use_case_tags": catalog_items_by_id[catalog_item_id].use_case_tags,
+                    "description": catalog_items_by_id[catalog_item_id].description,
+                    "story": catalog_items_by_id[catalog_item_id].story,
                 }
-                for model_id in ordered_ids
+                for catalog_item_id in ordered_ids
             ]
             try:
                 result = mesh_generator.generate(state["behavior_summary"], candidates)
@@ -464,21 +456,23 @@ def _generate_narrative(session: Session, mesh_generator):
                 )
             else:
                 if isinstance(result, NarrativeResult):
-                    narrative, generated_ids = result.narrative, result.model_ids
+                    narrative = result.narrative
+                    generated_ids = result.catalog_item_ids
                     mesh_latency_ms = result.latency_ms
                     mesh_prompt_tokens = result.prompt_tokens
                     mesh_completion_tokens = result.completion_tokens
                     mesh_cost_usd = result.cost_usd
                 elif isinstance(result, dict):
                     narrative = str(result.get("narrative", ""))
-                    generated_ids = result.get("model_ids", [])
+                    generated_ids = result.get("catalog_item_ids", [])
                 else:
                     narrative, generated_ids = str(result), []
                 candidate_id_set = set(ordered_ids)
                 filtered = [
-                    int(model_id)
-                    for model_id in generated_ids
-                    if str(model_id).isdigit() and int(model_id) in candidate_id_set
+                    int(catalog_item_id)
+                    for catalog_item_id in generated_ids
+                    if str(catalog_item_id).isdigit()
+                    and int(catalog_item_id) in candidate_id_set
                 ]
                 final_ids = filtered or ordered_ids
 
@@ -487,22 +481,22 @@ def _generate_narrative(session: Session, mesh_generator):
         evidence = state.get("evidence", [])
         retrieval_meta = [
             {
-                "model_id": model_id,
-                "distance": distances.get(model_id),
+                "catalog_item_id": catalog_item_id,
+                "distance": distances.get(catalog_item_id),
                 "reason": contextual_reason(
-                    models_by_id[model_id],
-                    distances.get(model_id, WEAK_RETRIEVAL_DISTANCE),
+                    catalog_items_by_id[catalog_item_id],
+                    distances.get(catalog_item_id, WEAK_RETRIEVAL_DISTANCE),
                     query_refined,
                     evidence,
                 ),
             }
-            for model_id in final_ids
-            if model_id in models_by_id
+            for catalog_item_id in final_ids
+            if catalog_item_id in catalog_items_by_id
         ]
 
         return {
             **state,
-            "model_ids": final_ids,
+            "catalog_item_ids": final_ids,
             "narrative": narrative,
             "retrieval_meta": retrieval_meta,
             "mesh_latency_ms": mesh_latency_ms,
@@ -519,8 +513,9 @@ def _store_and_deliver(session: Session, push_callback=None):
     def node(state: AgentState) -> AgentState:
         recommendation = Recommendation(
             tenant_id=state["tenant_id"],
+            widget_id=state["widget_id"],
             visitor_id=state["visitor_id"],
-            model_ids=state.get("model_ids") or [],
+            catalog_item_ids=state.get("catalog_item_ids") or [],
             retrieval_meta=state.get("retrieval_meta") or [],
             narrative=state.get("narrative"),
             mesh_latency_ms=state.get("mesh_latency_ms"),
@@ -546,14 +541,14 @@ def _store_and_deliver(session: Session, push_callback=None):
                     {
                         "recommendation_id": recommendation.id,
                         "narrative": recommendation.narrative,
-                        "model_ids": recommendation.model_ids,
+                        "catalog_item_ids": recommendation.catalog_item_ids,
                         "retrieval_meta": recommendation.retrieval_meta,
                     }
                 )
             except Exception:
                 logger.exception(
-                    "Widget push callback failed for tenant_id=%s visitor_id=%s",
-                    state["tenant_id"],
+                    "Widget push callback failed for widget_id=%s visitor_id=%s",
+                    state["widget_id"],
                     state["visitor_id"],
                 )
             else:
@@ -567,13 +562,13 @@ def _store_and_deliver(session: Session, push_callback=None):
 
 def build_agent_graph(
     session: Session,
-    vector_store: ModelVectorStore,
+    vector_store: CatalogItemVectorStore,
     mesh_generator=None,
     push_callback=None,
 ):
     graph = StateGraph(AgentState)
     graph.add_node("analyze", _analyze_activity(session))
-    graph.add_node("retrieve", _retrieve_models(vector_store))
+    graph.add_node("retrieve", _retrieve_catalog_items(vector_store))
     graph.add_node("rerank", _rerank_candidates(session))
     graph.add_node("grade_refine", _grade_refine)
     graph.add_node("generate", _generate_narrative(session, mesh_generator))
@@ -603,7 +598,8 @@ def build_agent_graph(
 
 def prepare_retrieval_recommendation(
     session: Session,
-    vector_store: ModelVectorStore,
+    vector_store: CatalogItemVectorStore,
+    widget_id: int,
     tenant_id: int,
     visitor_id: str,
     mesh_generator=None,
@@ -630,10 +626,10 @@ def prepare_retrieval_recommendation(
         # `list_runs(filter='has(tags, "visitor:<id>")')`, verified live against the
         # real API) rather than only being visible by re-reading raw trace inputs —
         # powers the admin observability page's per-visitor filter.
-        tags=[f"visitor:{visitor_id}", f"tenant:{tenant_id}"],
+        tags=[f"visitor:{visitor_id}", f"widget:{widget_id}"],
     )
     def _run(
-        tenant_id: int, visitor_id: str, trigger_reason: str
+        widget_id: int, tenant_id: int, visitor_id: str, trigger_reason: str
     ) -> Recommendation | None:
         graph = build_agent_graph(session, vector_store, mesh_generator, push_callback)
         # LangGraph's internal step-counting consumes recursion budget faster than the
@@ -645,6 +641,7 @@ def prepare_retrieval_recommendation(
         # addition doesn't reintroduce this.
         result = graph.invoke(
             {
+                "widget_id": widget_id,
                 "tenant_id": tenant_id,
                 "visitor_id": visitor_id,
                 "trigger_reason": trigger_reason,
@@ -653,13 +650,13 @@ def prepare_retrieval_recommendation(
         )
         return result.get("recommendation")
 
-    return _run(tenant_id, visitor_id, trigger_reason)
+    return _run(widget_id, tenant_id, visitor_id, trigger_reason)
 
 
 def answer_visitor_question(
     session: Session,
-    vector_store: ModelVectorStore,
-    tenant_id: int,
+    vector_store: CatalogItemVectorStore,
+    widget_id: int,
     visitor_id: str,
     question: str,
     mesh_generator=None,
@@ -676,51 +673,58 @@ def answer_visitor_question(
     @traceable(
         run_type="chain",
         name="widget_ask",
-        tags=[f"visitor:{visitor_id}", f"tenant:{tenant_id}"],
+        tags=[f"visitor:{visitor_id}", f"widget:{widget_id}"],
     )
-    def _run(tenant_id: int, visitor_id: str, question: str) -> dict:
-        scored = vector_store.query_scored(question, tenant_id, limit=RETRIEVAL_TOP_K)
+    def _run(widget_id: int, visitor_id: str, question: str) -> dict:
+        scored = vector_store.query_scored(question, widget_id, limit=RETRIEVAL_TOP_K)
         best_distance = min((distance for _, distance in scored), default=None)
         if best_distance is None or best_distance > WEAK_RETRIEVAL_DISTANCE:
-            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+            return {"answer": NO_ANSWER_MESSAGE, "catalog_item_ids": []}
 
-        model_ids = [model_id for model_id, _ in scored]
-        models = session.scalars(
-            select(Model).where(Model.id.in_(model_ids), Model.tenant_id == tenant_id)
+        catalog_item_ids = [catalog_item_id for catalog_item_id, _ in scored]
+        items = session.scalars(
+            select(CatalogItem).where(
+                CatalogItem.id.in_(catalog_item_ids), CatalogItem.widget_id == widget_id
+            )
         ).all()
-        models_by_id = {model.id: model for model in models}
+        catalog_items_by_id = {item.id: item for item in items}
         documents_by_id = {
-            model.id: ModelVectorStore.document(model) for model in models
+            item.id: CatalogItemVectorStore.document(item) for item in items
         }
         reranked = rerank_by_lexical_overlap(scored, question, documents_by_id)
-        ordered_ids = [model_id for model_id, _ in reranked if model_id in models_by_id]
+        ordered_ids = [
+            catalog_item_id
+            for catalog_item_id, _ in reranked
+            if catalog_item_id in catalog_items_by_id
+        ]
 
         if mesh_generator is None or not mesh_generator.enabled or not ordered_ids:
-            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+            return {"answer": NO_ANSWER_MESSAGE, "catalog_item_ids": []}
 
         candidates = [
             {
-                "id": models_by_id[model_id].id,
-                "title": models_by_id[model_id].title,
-                "provider": models_by_id[model_id].provider,
-                "modality": models_by_id[model_id].modality,
-                "price": models_by_id[model_id].price,
-                "latency_ms": models_by_id[model_id].latency_ms,
-                "context_window": models_by_id[model_id].context_window,
-                "use_case_tags": models_by_id[model_id].use_case_tags,
-                "description": models_by_id[model_id].description,
-                "story": models_by_id[model_id].story,
+                "id": catalog_items_by_id[catalog_item_id].id,
+                "title": catalog_items_by_id[catalog_item_id].title,
+                "provider": catalog_items_by_id[catalog_item_id].provider,
+                "category": catalog_items_by_id[catalog_item_id].category,
+                "price": catalog_items_by_id[catalog_item_id].price,
+                "specs": catalog_items_by_id[catalog_item_id].specs,
+                "use_case_tags": catalog_items_by_id[catalog_item_id].use_case_tags,
+                "description": catalog_items_by_id[catalog_item_id].description,
+                "story": catalog_items_by_id[catalog_item_id].story,
             }
-            for model_id in ordered_ids
+            for catalog_item_id in ordered_ids
         ]
         try:
             result = mesh_generator.answer_question(question, candidates)
         except Exception:
             logger.exception("Mesh Q&A generation failed for visitor_id=%s", visitor_id)
-            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+            return {"answer": NO_ANSWER_MESSAGE, "catalog_item_ids": []}
 
         candidate_id_set = set(ordered_ids)
-        filtered_ids = [mid for mid in result.model_ids if mid in candidate_id_set]
-        return {"answer": result.answer, "model_ids": filtered_ids}
+        filtered_ids = [
+            mid for mid in result.catalog_item_ids if mid in candidate_id_set
+        ]
+        return {"answer": result.answer, "catalog_item_ids": filtered_ids}
 
-    return _run(tenant_id, visitor_id, question)
+    return _run(widget_id, visitor_id, question)
