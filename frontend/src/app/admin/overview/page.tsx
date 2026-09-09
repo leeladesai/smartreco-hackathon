@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useApi } from "@/lib/useApi";
 import { ApiError } from "@/lib/api";
 import type { ActivityResponse, OverviewResponse } from "@/lib/overview";
@@ -74,6 +75,14 @@ export default function OverviewPage() {
       </p>
 
       {error && <p className="font-mono text-[11px] text-rose">{error}</p>}
+
+      {overview && overview.totals.catalog_items === 0 && overview.totals.events === 0 && (
+        <p className="mb-5 rounded-md border border-line bg-panel-2 px-4 py-3.5 text-[13px] leading-relaxed text-muted">
+          Nothing tracked yet. <Link href="/admin/widgets" className="text-rose hover:underline">Create a widget</Link>{" "}
+          to get a tracker key, then <Link href="/admin/catalog" className="text-rose hover:underline">add catalog
+          items</Link> for it to recommend.
+        </p>
+      )}
 
       {overview && (
         <>

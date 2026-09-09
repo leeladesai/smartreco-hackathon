@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { useApi } from "@/lib/useApi";
-import { ApiError } from "@/lib/api";
+import { ApiError, API_BASE } from "@/lib/api";
 import type { ApiKeyResponse, WidgetCreateResponse, WidgetResponse } from "@/lib/widgets";
 import { StatusPill, Modal, Drawer, CloseButton } from "@/components/admin-ui";
 import { Field, PrimaryButton, SecondaryButton } from "@/components/ui";
@@ -21,10 +21,39 @@ const labelCls = "mb-1.5 block font-mono text-[10.5px] tracking-wide text-muted 
 const inputCls =
   "w-full rounded-md border border-line bg-panel-2 px-3 py-2.5 text-[13.5px] text-text focus:border-rose focus:outline-none";
 
-function RevealedKey({ apiKey }: { apiKey: string }) {
-  function copyKey() {
-    navigator.clipboard?.writeText(apiKey).catch(() => {});
+function CopyBlock({ label, code, mono = true }: { label: string; code: string; mono?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard
+      ?.writeText(code)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
   }
+  return (
+    <div className="mb-3">
+      <div className="mb-1.5 flex items-center justify-between">
+        <label className={`${labelCls} mb-0`}>{label}</label>
+        <SecondaryButton type="button" onClick={copy} className="shrink-0 px-2.5 py-1 text-[11px]">
+          {copied ? "Copied ✓" : "Copy"}
+        </SecondaryButton>
+      </div>
+      <pre
+        className={`overflow-x-auto rounded-lg border border-line bg-panel-2 px-3.5 py-3 text-[12px] leading-relaxed text-text ${
+          mono ? "font-mono" : ""
+        }`}
+      >
+        <code className="whitespace-pre-wrap break-all">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function RevealedKey({ apiKey }: { apiKey: string }) {
+  const trackerSnippet = `<script src="${API_BASE}/static/js/tracker.js" data-widget-key="${apiKey}"></script>`;
+  const widgetSnippet = `<script src="${API_BASE}/static/js/widget.js" data-widget-key="${apiKey}"></script>`;
   return (
     <div className="mb-4">
       <div className="mb-1.5 flex items-center justify-between">
@@ -33,17 +62,39 @@ function RevealedKey({ apiKey }: { apiKey: string }) {
           Shown once
         </span>
       </div>
-      <div className="flex items-center gap-2.5 rounded-lg border border-amber bg-panel-2 px-3.5 py-3 shadow-[0_0_0_3px_var(--amber-dim)]">
+      <div className="mb-3 flex items-center gap-2.5 rounded-lg border border-amber bg-panel-2 px-3.5 py-3 shadow-[0_0_0_3px_var(--amber-dim)]">
         <code className="flex-1 font-mono text-[12.5px] break-all text-text">{apiKey}</code>
-        <SecondaryButton type="button" onClick={copyKey} className="shrink-0 px-2.5 py-1.5 text-[11.5px]">
-          Copy
-        </SecondaryButton>
+        <CopyIconButton value={apiKey} />
       </div>
-      <p className="mt-2 text-[11.5px] leading-relaxed text-muted">
-        Paste this into the widget&rsquo;s tracker snippet (<code>data-widget-key</code>) now &mdash; it won&rsquo;t
-        be shown again.
+      <p className="mb-4 text-[11.5px] leading-relaxed text-muted">
+        This key won&rsquo;t be shown again &mdash; copy the snippets below into the site this widget runs on before
+        closing this dialog.
+      </p>
+      <CopyBlock label="Tracker snippet — paste before &lt;/body&gt; on every page" code={trackerSnippet} />
+      <CopyBlock label="Widget snippet — paste where the recommendation panel should render" code={widgetSnippet} />
+      <p className="text-[11.5px] leading-relaxed text-muted">
+        The widget stays dark until this widget is both tracker-verified (a real event has reached the backend) and
+        catalog-ready (at least one approved item) &mdash; see the checklist on this widget&rsquo;s detail page.
       </p>
     </div>
+  );
+}
+
+function CopyIconButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  function copy() {
+    navigator.clipboard
+      ?.writeText(value)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  }
+  return (
+    <SecondaryButton type="button" onClick={copy} className="shrink-0 px-2.5 py-1.5 text-[11.5px]">
+      {copied ? "Copied ✓" : "Copy"}
+    </SecondaryButton>
   );
 }
 
@@ -337,9 +388,20 @@ function WidgetDrawer({ widgetId, onClose }: { widgetId: number; onClose: () => 
                 <RevealedKey apiKey={revealedKey} />
               </div>
             ) : (
-              <p className="mt-3 text-[12.5px] text-muted">
-                Keys are shown once, at creation or rotation &mdash; there&rsquo;s nothing to display here otherwise.
-              </p>
+              <div className="mt-3">
+                <p className="mb-3 text-[12.5px] text-muted">
+                  Keys are shown once, at creation or rotation &mdash; not retrievable after that. If you still have
+                  it installed, here&rsquo;s the snippet shape for reference (swap in the real key):
+                </p>
+                <CopyBlock
+                  label="Tracker snippet"
+                  code={`<script src="${API_BASE}/static/js/tracker.js" data-widget-key="<your-widget-key>"></script>`}
+                />
+                <CopyBlock
+                  label="Widget snippet"
+                  code={`<script src="${API_BASE}/static/js/widget.js" data-widget-key="<your-widget-key>"></script>`}
+                />
+              </div>
             )}
 
             <form className="mt-5.5" onSubmit={saveFeed}>
