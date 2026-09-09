@@ -11,9 +11,24 @@ from openai import OpenAI
 
 from app.config import Settings
 from app.services.narrative import encode_narrative
-from app.services.prompts import NARRATIVE_SYSTEM_PROMPT, build_narrative_user_message
+from app.services.prompts import (
+    NARRATIVE_SYSTEM_PROMPT,
+    QA_SYSTEM_PROMPT,
+    build_narrative_user_message,
+    build_qa_user_message,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class QAResult:
+    answer: str
+    model_ids: list[int]
+    latency_ms: float | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -105,34 +120,30 @@ class MeshNarrativeGenerator:
             completion_tokens / 1_000_000
         ) * completion_price
 
-    @traceable(run_type="llm", name="mesh_generate_narrative")
-    def generate(
-        self, behavior_summary: str, candidates: Sequence[dict]
-    ) -> NarrativeResult:
-        if not self.enabled:
-            raise RuntimeError("Mesh narrative generation is not configured")
+    @staticmethod
+    def _candidate_facts(candidate: dict) -> str:
+        # Only include facts that are actually set — most fields are modality-
+        # specific (Voice has latency, LLM has context_window, neither always has
+        # both), and an absent field must not silently read as "0"/"None" here.
+        facts = [f"price {candidate['price']}"] if candidate.get("price") else []
+        if candidate.get("latency_ms"):
+            facts.append(f"latency ~{candidate['latency_ms']}ms")
+        if candidate.get("context_window"):
+            facts.append(f"context window {candidate['context_window']}")
+        if candidate.get("use_case_tags"):
+            facts.append(f"use cases: {', '.join(candidate['use_case_tags'])}")
+        return f" [{'; '.join(facts)}]" if facts else ""
 
-        def _facts(candidate: dict) -> str:
-            # Only include facts that are actually set — most fields are modality-
-            # specific (Voice has latency, LLM has context_window, neither always has
-            # both), and an absent field must not silently read as "0"/"None" here.
-            facts = [f"price {candidate['price']}"] if candidate.get("price") else []
-            if candidate.get("latency_ms"):
-                facts.append(f"latency ~{candidate['latency_ms']}ms")
-            if candidate.get("context_window"):
-                facts.append(f"context window {candidate['context_window']}")
-            if candidate.get("use_case_tags"):
-                facts.append(f"use cases: {', '.join(candidate['use_case_tags'])}")
-            return f" [{'; '.join(facts)}]" if facts else ""
-
+    @classmethod
+    def _candidate_text(cls, candidates: Sequence[dict]) -> str:
         # candidate_id is kept out of the human-readable description entirely — it's
         # only needed so the model can echo back which candidates it picked in
-        # `model_ids`, never as part of the name/description the narrative is built
-        # from.
-        candidate_text = "\n".join(
+        # model_ids, never as part of the name/description the narrative/answer is
+        # built from.
+        return "\n".join(
             f"- {candidate['title']} ({candidate['provider']}, "
             f"candidate_id={candidate['id']})."
-            f"{_facts(candidate)} {candidate.get('description', '')} "
+            f"{cls._candidate_facts(candidate)} {candidate.get('description', '')} "
             + (
                 f"Why it stands out: {candidate['story']}"
                 if candidate.get("story")
@@ -140,6 +151,15 @@ class MeshNarrativeGenerator:
             )
             for candidate in candidates
         )
+
+    @traceable(run_type="llm", name="mesh_generate_narrative")
+    def generate(
+        self, behavior_summary: str, candidates: Sequence[dict]
+    ) -> NarrativeResult:
+        if not self.enabled:
+            raise RuntimeError("Mesh narrative generation is not configured")
+
+        candidate_text = self._candidate_text(candidates)
         started_at = time.monotonic()
         response = self.client.chat.completions.create(
             model=self.model,
@@ -183,6 +203,54 @@ class MeshNarrativeGenerator:
         narrative = encode_narrative(understanding, points)
         return NarrativeResult(
             narrative=narrative,
+            model_ids=model_ids,
+            latency_ms=latency_ms,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )
+
+    @traceable(run_type="llm", name="mesh_answer_question")
+    def answer_question(self, question: str, candidates: Sequence[dict]) -> QAResult:
+        """DLV-4: a visitor's direct follow-up question, grounded the same way as
+        `generate` (AGT-5/AGT-8) but answering a question rather than narrating
+        behavior — see QA_SYSTEM_PROMPT."""
+        if not self.enabled:
+            raise RuntimeError("Mesh narrative generation is not configured")
+
+        candidate_text = self._candidate_text(candidates)
+        started_at = time.monotonic()
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": QA_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": build_qa_user_message(question, candidate_text),
+                },
+            ],
+        )
+        latency_ms = (time.monotonic() - started_at) * 1000
+        usage = getattr(response, "usage", None)
+        prompt_tokens = usage.prompt_tokens if usage else None
+        completion_tokens = usage.completion_tokens if usage else None
+        cost_usd = self._estimate_cost_usd(prompt_tokens, completion_tokens)
+
+        content = response.choices[0].message.content or "{}"
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            payload = {"answer": content, "model_ids": []}
+        model_ids = []
+        for model_id in payload.get("model_ids", []):
+            try:
+                model_ids.append(int(model_id))
+            except (TypeError, ValueError):
+                continue
+
+        answer = _strip_id_mentions(str(payload.get("answer", "")))
+        return QAResult(
+            answer=answer,
             model_ids=model_ids,
             latency_ms=latency_ms,
             prompt_tokens=prompt_tokens,

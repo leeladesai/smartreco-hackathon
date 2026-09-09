@@ -175,6 +175,23 @@ against visitor identity once that lands.
 | DLV-5 (bonus) | Scheduled digest delivered via email/Telegram, per tenant | Real scheduler (APScheduler/Celery Beat), not a manual trigger |
 | DLV-6 | End visitor can view their own tracked activity and how it produced their current recommendation, where the tenant exposes this | Read-only view over already-persisted data (`events`, `trigger_reason` from `recommendations`) scoped to that tenant + visitor — no new backend logic |
 
+**Implementation status (chat-bot-widget phase, backend, 2026-09-09):** DLV-2, DLV-4, and DLV-6
+are implemented on the backend — `GET /api/widget/stream` (SSE, chosen over WebSocket per the
+LLD's own example), `POST /api/widget/ask`, and `GET /api/widget/activity`
+(`app/main.py`/`app/services/agent_graph.py::answer_visitor_question`). DLV-4's grounding reuses
+the same retrieval + lexical-rerank pipeline as the main recommendation flow, with its own
+QA-specific prompt (`app/services/prompts.py::QA_SYSTEM_PROMPT`) rather than reusing
+`NARRATIVE_SYSTEM_PROMPT` verbatim — a direct answer and a behavior narrative are different response
+shapes, even though both share the same "only cite supplied candidate facts" discipline (AGT-5/
+AGT-8). A question with no groundable retrieval match never reaches the LLM at all (decided by
+`WEAK_RETRIEVAL_DISTANCE`, not the model's discretion). DLV-1 and DLV-3 are also implemented —
+`app/static/js/widget.js` is the actual chat-bot-launcher UI, opening proactively (a badge, not an
+auto-expand — DLV-1 doesn't require forcing the panel open) when a real-time push lands, and
+re-rendering from the latest fetched payload rather than showing anything stale (DLV-3). DLV-5
+(digest) remains not built — see the M2 note under TEN above for why digest stays disabled. TEN-8's
+render-gate is enforced on every `/api/widget/*` route (`tenant.status != 'active'` → 403), not just
+the launcher's own visibility.
+
 ### OBS
 | ID | Requirement | Acceptance criteria |
 |---|---|---|

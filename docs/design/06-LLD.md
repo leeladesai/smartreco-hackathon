@@ -142,9 +142,11 @@ its actual implemented name and body shape — `{tenant_key, visitor_id, events}
 describes — no widget-session mechanism exists until the chat-bot-widget phase). As of the tenant
 onboarding phase (M2), `POST /api/tenants`, `POST /api/tenants/{id}/rotate-key`,
 `POST /api/tenants/{id}/revoke-key/{key_id}`, and `GET /api/admin/onboarding/status` are also live
-— see the M2 note below the table for the auth-role deviation this required. None of `/api/widget/*`
-or `/api/auth/*` (end-user self-registration) exist yet. See
-`docs/design/09-Platform-Pivot-Decision.md` and the session handoff notes for exactly what's built.
+— see the M2 note below the table for the auth-role deviation this required. `GET /api/widget/stream`,
+`POST /api/widget/ask`, and `GET /api/widget/activity` are also live (see the chat-bot-widget-phase
+note below the table) — the widget UI itself (`app/static/js/widget.js`) and `/api/auth/*` (end-user
+self-registration) do not exist yet. See `docs/design/09-Platform-Pivot-Decision.md` and the session
+handoff notes for exactly what's built.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
@@ -185,12 +187,35 @@ role is layered alongside it, unscoped (`tenant_id=None`), for `POST /api/tenant
 matching TEN-1's own "assisted onboarding for now" acceptance criteria. The `/admin/onboarding`
 admin-console page (§2a below) — tracker snippet with the key embedded, live readiness status, a
 go-live indicator — is not yet built; onboarding status is API-only for now.
+
+**Implementation status (chat-bot-widget phase, backend, 2026-09-09):** the widget rows above are
+implemented as the actual push/Q&A/activity backend, gated by TEN-8 (`tenant.status != 'active'` →
+403) rather than a widget-session mechanism — there is still no `widget_sessions`-row-backed auth
+the way this table's "visitor session (widget)" language implies; the tenant API key (query param
+for `stream`/`activity`, request body for `ask`) is the only credential, same posture as the
+tracker SDK. The real-time push routing itself is an in-process `dict[(tenant_id, visitor_id),
+list[asyncio.Queue]]` registry (`app/main.py`), not read from the `widget_sessions` table — that
+table is written (one row per open connection, `closed_at` set on disconnect) purely for audit, per
+its own docstring in `app/models.py`. A multi-worker deployment would need the push routing revisited (no cross-process fan-out exists).
+`app/static/js/widget.js` is now built — a launcher bubble + panel rendered inside a Shadow DOM
+root (so its styles can never collide with the host page's own CSS), sharing `tracker.js`'s
+`localStorage` visitor-id key so both scripts resolve to the same identity regardless of load
+order. On an `EventSource` `recommendation` event it re-fetches the fully-shaped payload from
+`GET /api/recommendations/latest` rather than rendering the push payload's bare ids/distances
+directly — the "latest" endpoint already has the title/price/why_this shaping, so the push is
+purely a "something changed, go refetch" signal. Verified live in a real cross-origin browser
+session (a separate-origin host page embedding both scripts against a running server): the launcher
+renders, a tracked session triggers a real pipeline run, the pushed recommendation renders as cards
+within seconds with no page reload, the ask box round-trips through `POST /api/widget/ask`
+(including AGT-8's fixed no-answer response when no Mesh key is configured), and "Why am I seeing
+this?" renders the activity list from `GET /api/widget/activity`.
 | GET | `/api/admin/users` | tenant admin | Read-only list of that tenant's registered accounts — admin-portal visibility into who has registered |
 | POST | `/api/events/batch` | tenant API key, cross-origin | TRK-4, body: `{visitor_id, events: [...]}`, triggers evaluator inline, scoped to `tenant_id` + `visitor_id` |
 | GET | `/api/recommendations/latest` | visitor session (widget) | Latest stored recommendation for this tenant+visitor — read fallback when no push connection is open |
-| GET | `/api/widget/stream` | visitor session (widget), tenant API key | DLV-2, opens the SSE/WebSocket connection the real-time push service delivers on; creates a `widget_sessions` row |
-| POST | `/api/widget/ask` | visitor session (widget) | DLV-4, follow-up Q&A — routes through the same catalog-grounded retrieval path as the initial recommendation (AGT-5/AGT-8), not a separate ungrounded completion |
-| GET | `/api/activity/me` | visitor session | DLV-6, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/widget/stream` | tenant API key | DLV-2, opens the SSE connection the real-time push service delivers on; creates a `widget_sessions` row; 403s unless `tenant.status == 'active'` (TEN-8) |
+| POST | `/api/widget/ask` | tenant API key | DLV-4, follow-up Q&A — routes through the same catalog-grounded retrieval path as the initial recommendation (AGT-5/AGT-8), not a separate ungrounded completion |
+| GET | `/api/widget/activity` | tenant API key | DLV-6, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/activity/me` | visitor session | DLV-6 target shape (end-user self-registered session) — superseded for the anonymous-tracker product by `GET /api/widget/activity` above, which needs no `users` row |
 | GET | `/api/admin/observability/runs` | tenant admin | OBS-2, recent `agent_pipeline` LangSmith runs for that tenant only (status/latency/error/trace link); returns `{"available": false, ...}` rather than an error when `LANGSMITH_API_KEY` is unset |
 | GET | `/api/admin/observability/grounding/{recommendation_id}` | tenant admin | OBS-3, the `grounding_facts` audit trail for a given delivered recommendation |
 | POST | `/api/admin/digest/run` | tenant admin | DLV-5 bonus: manually re-runs the scheduled digest pipeline for that tenant on demand |

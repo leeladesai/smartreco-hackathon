@@ -9,6 +9,7 @@ that decides whether to run the graph at all (AGT-1), so a per-event LLM call ne
 
 import logging
 import re
+from datetime import datetime, timezone
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -65,6 +66,12 @@ FEEDBACK_UP_BONUS = 0.4
 # genuinely searches for voice models. Deliberately low: this is a floor to catch
 # genuinely unrelated scenarios, not a strict topic match.
 FEEDBACK_CONTEXT_OVERLAP_THRESHOLD = 0.2
+
+# AGT-8, via answer_visitor_question: the fixed response for a widget follow-up
+# question with no groundable catalog match — deliberately never reaches the LLM
+# (see answer_visitor_question's docstring), so this exact string is also the
+# contract test coverage checks for, not just a UX default.
+NO_ANSWER_MESSAGE = "I don't have that information in this catalog."
 
 
 class AgentState(TypedDict, total=False):
@@ -507,7 +514,7 @@ def _generate_narrative(session: Session, mesh_generator):
     return node
 
 
-def _store_and_deliver(session: Session):
+def _store_and_deliver(session: Session, push_callback=None):
     @traceable(run_type="chain", name="store_and_deliver")
     def node(state: AgentState) -> AgentState:
         recommendation = Recommendation(
@@ -527,13 +534,42 @@ def _store_and_deliver(session: Session):
         session.add(recommendation)
         session.commit()
         session.refresh(recommendation)
+        # DLV-2: best-effort real-time push to any open widget connection for this
+        # tenant+visitor. `push_callback` is closed over rather than a graph-state
+        # value for the same reason `mesh_generator` is (see
+        # prepare_retrieval_recommendation's docstring) — it's a live callable, not
+        # traceable-serializable data, and has nothing to do with the pipeline's own
+        # inputs/outputs.
+        if push_callback is not None:
+            try:
+                delivered = push_callback(
+                    {
+                        "recommendation_id": recommendation.id,
+                        "narrative": recommendation.narrative,
+                        "model_ids": recommendation.model_ids,
+                        "retrieval_meta": recommendation.retrieval_meta,
+                    }
+                )
+            except Exception:
+                logger.exception(
+                    "Widget push callback failed for tenant_id=%s visitor_id=%s",
+                    state["tenant_id"],
+                    state["visitor_id"],
+                )
+            else:
+                if delivered:
+                    recommendation.pushed_at = datetime.now(timezone.utc)
+                    session.commit()
         return {**state, "recommendation": recommendation}
 
     return node
 
 
 def build_agent_graph(
-    session: Session, vector_store: ModelVectorStore, mesh_generator=None
+    session: Session,
+    vector_store: ModelVectorStore,
+    mesh_generator=None,
+    push_callback=None,
 ):
     graph = StateGraph(AgentState)
     graph.add_node("analyze", _analyze_activity(session))
@@ -541,7 +577,7 @@ def build_agent_graph(
     graph.add_node("rerank", _rerank_candidates(session))
     graph.add_node("grade_refine", _grade_refine)
     graph.add_node("generate", _generate_narrative(session, mesh_generator))
-    graph.add_node("store", _store_and_deliver(session))
+    graph.add_node("store", _store_and_deliver(session, push_callback))
 
     graph.set_entry_point("analyze")
     graph.add_conditional_edges(
@@ -572,17 +608,21 @@ def prepare_retrieval_recommendation(
     visitor_id: str,
     mesh_generator=None,
     trigger_reason: str = "event_threshold",
+    push_callback=None,
 ) -> Recommendation | None:
-    # `session`/`vector_store`/`mesh_generator` are deliberately NOT parameters of the
-    # @traceable-decorated function below — LangSmith's traceable wrapper serializes
-    # every one of a traced function's *own* bound arguments (via inspect.signature,
-    # never closure variables) as that run's "inputs". mesh_generator in particular
-    # carries a live MeshNarrativeGenerator with a real `api_key` attribute; passed
-    # directly, that key would land in plaintext in every agent_pipeline trace sent to
-    # LangSmith (confirmed live — caught via a real trace's raw "inputs" JSON showing
-    # the key). Closing over them here instead of passing them as traced params means
-    # they're used by the pipeline but never introspected/serialized into the trace.
-    # `visitor_id`/`trigger_reason` stay as real params — safe, and useful to see per run.
+    # `session`/`vector_store`/`mesh_generator`/`push_callback` are deliberately NOT
+    # parameters of the @traceable-decorated function below — LangSmith's traceable
+    # wrapper serializes every one of a traced function's *own* bound arguments (via
+    # inspect.signature, never closure variables) as that run's "inputs". mesh_generator
+    # in particular carries a live MeshNarrativeGenerator with a real `api_key`
+    # attribute; passed directly, that key would land in plaintext in every
+    # agent_pipeline trace sent to LangSmith (confirmed live — caught via a real
+    # trace's raw "inputs" JSON showing the key). `push_callback` is a live callable
+    # closing over the FastAPI app's event loop/connection registry — not
+    # trace-serializable data either. Closing over them here instead of passing them
+    # as traced params means they're used by the pipeline but never
+    # introspected/serialized into the trace. `visitor_id`/`trigger_reason` stay as
+    # real params — safe, and useful to see per run.
     @traceable(
         run_type="chain",
         name="agent_pipeline",
@@ -595,7 +635,7 @@ def prepare_retrieval_recommendation(
     def _run(
         tenant_id: int, visitor_id: str, trigger_reason: str
     ) -> Recommendation | None:
-        graph = build_agent_graph(session, vector_store, mesh_generator)
+        graph = build_agent_graph(session, vector_store, mesh_generator, push_callback)
         # LangGraph's internal step-counting consumes recursion budget faster than the
         # visible node count suggests (each named node compiles to several internal
         # supersteps) — the default limit of 25 was tight enough that adding the 6th
@@ -614,3 +654,73 @@ def prepare_retrieval_recommendation(
         return result.get("recommendation")
 
     return _run(tenant_id, visitor_id, trigger_reason)
+
+
+def answer_visitor_question(
+    session: Session,
+    vector_store: ModelVectorStore,
+    tenant_id: int,
+    visitor_id: str,
+    question: str,
+    mesh_generator=None,
+) -> dict:
+    """DLV-4: a stateless, catalog-grounded follow-up answer — not a new triggered
+    recommendation (no Recommendation row, no re-run of the behavior pipeline).
+    Reuses the same retrieval + lexical-rerank + grounding discipline as the main
+    pipeline (AGT-5/AGT-8): whether the question is even groundable is decided by
+    retrieval quality (the same WEAK_RETRIEVAL_DISTANCE threshold that gates a retry
+    in the main pipeline), not left to the LLM's discretion — a question with no
+    relevant catalog match never reaches the LLM at all.
+    """
+
+    @traceable(
+        run_type="chain",
+        name="widget_ask",
+        tags=[f"visitor:{visitor_id}", f"tenant:{tenant_id}"],
+    )
+    def _run(tenant_id: int, visitor_id: str, question: str) -> dict:
+        scored = vector_store.query_scored(question, tenant_id, limit=RETRIEVAL_TOP_K)
+        best_distance = min((distance for _, distance in scored), default=None)
+        if best_distance is None or best_distance > WEAK_RETRIEVAL_DISTANCE:
+            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+
+        model_ids = [model_id for model_id, _ in scored]
+        models = session.scalars(
+            select(Model).where(Model.id.in_(model_ids), Model.tenant_id == tenant_id)
+        ).all()
+        models_by_id = {model.id: model for model in models}
+        documents_by_id = {
+            model.id: ModelVectorStore.document(model) for model in models
+        }
+        reranked = rerank_by_lexical_overlap(scored, question, documents_by_id)
+        ordered_ids = [model_id for model_id, _ in reranked if model_id in models_by_id]
+
+        if mesh_generator is None or not mesh_generator.enabled or not ordered_ids:
+            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+
+        candidates = [
+            {
+                "id": models_by_id[model_id].id,
+                "title": models_by_id[model_id].title,
+                "provider": models_by_id[model_id].provider,
+                "modality": models_by_id[model_id].modality,
+                "price": models_by_id[model_id].price,
+                "latency_ms": models_by_id[model_id].latency_ms,
+                "context_window": models_by_id[model_id].context_window,
+                "use_case_tags": models_by_id[model_id].use_case_tags,
+                "description": models_by_id[model_id].description,
+                "story": models_by_id[model_id].story,
+            }
+            for model_id in ordered_ids
+        ]
+        try:
+            result = mesh_generator.answer_question(question, candidates)
+        except Exception:
+            logger.exception("Mesh Q&A generation failed for visitor_id=%s", visitor_id)
+            return {"answer": NO_ANSWER_MESSAGE, "model_ids": []}
+
+        candidate_id_set = set(ordered_ids)
+        filtered_ids = [mid for mid in result.model_ids if mid in candidate_id_set]
+        return {"answer": result.answer, "model_ids": filtered_ids}
+
+    return _run(tenant_id, visitor_id, question)

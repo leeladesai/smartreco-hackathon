@@ -154,4 +154,25 @@ class Recommendation(Base):
     mesh_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DLV-2: set when this recommendation was actually pushed to an open
+    # `/api/widget/stream` connection at generation time — null means either no
+    # connection was open (the visitor picks it up via GET /api/recommendations/latest
+    # on next poll/reconnect) or push was never attempted.
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WidgetSession(Base):
+    """DLV-2: one row per open `/api/widget/stream` SSE connection, for audit/
+    observability — the actual push routing is an in-process registry
+    (`app/main.py`'s `widget_connections`), rebuilt from scratch on every reconnect;
+    this table is not consulted to route a push, only to record that one was open."""
+
+    __tablename__ = "widget_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
+    connection_id: Mapped[str] = mapped_column(String(64))
+    opened_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

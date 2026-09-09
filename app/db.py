@@ -54,6 +54,7 @@ def _add_missing_columns(engine) -> None:
                 "mesh_cost_usd": "FLOAT",
                 "tenant_id": "INTEGER",
                 "visitor_id": "VARCHAR(64)",
+                "pushed_at": "TIMESTAMP",
             },
         )
 

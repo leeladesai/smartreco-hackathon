@@ -153,6 +153,21 @@ class TrackEventInput(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class WidgetAskRequest(BaseModel):
+    # Same key-in-body reasoning as TrackEventBatch below — the widget authenticates
+    # the same way the tracker does, over a plain POST, not a header.
+    tenant_key: str = Field(min_length=1)
+    visitor_id: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=500)
+
+
+class WidgetAskResponse(BaseModel):
+    answer: str
+    model_ids: list[int] = Field(default_factory=list)
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
 class TrackEventBatch(BaseModel):
     # The tenant key travels in the body, not a header — navigator.sendBeacon (used
     # for the on-unload flush, app/static/js/tracker.js) can't set custom headers, so
