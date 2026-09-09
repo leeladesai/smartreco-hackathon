@@ -75,6 +75,15 @@ cookie-session `user` role — AUTH-1/AUTH-2 below describe that *target* shape,
 | ING-5 | Feed/scrape adapter staleness is visible, and the catalog keeps serving through it | A tenant catalog row/adapter exposes a last-synced timestamp and a staleness flag when a sync fails, the source is unreachable, or extracted data fails validation (missing fields, item-count collapse), analogous to `vector_synced`; recommendations continue serving the last-known-good catalog rather than going empty or pausing (pivot record §5) |
 | ING-6 *(new)* | Scraped items require tenant confirmation before grounding bot answers | Rows from the DOM-scrape adapter are created with `review_status='pending_review'` and excluded from retrieval/vector indexing until a tenant admin previews and confirms them (`'approved'`) during onboarding or after a re-scrape; feed/manual rows default `'approved'` |
 
+**Implementation status (M4, 2026-09-09):** ING-1, ING-2, ING-5, and ING-6 are implemented — see
+`app/services/ingestion.py` and the endpoint table in `06-LLD.md` §2. ING-3 (manual-entry adapter)
+predates this phase (CAT-1..5). **ING-4 (mixing adapters with last-write-wins tracked per source) is
+not implemented** — `ingestion_adapter` records which adapter created a row, but there's no
+conflict-resolution rule for two adapters targeting the "same" item; a feed sync and a manual edit of
+a same-titled row just dedupe-skip each other (the existing by-title dedupe, unchanged from the
+manual bulk-upload path) rather than one deliberately overriding the other. Not blocking for this
+phase — no admin console UI to trigger that scenario exists yet either.
+
 ### CAT
 Now the manual-entry adapter's UI (ING-3) plus the reference AI-model-catalog tenant, rather than
 the platform's only catalog path.

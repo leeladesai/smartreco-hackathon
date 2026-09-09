@@ -39,6 +39,11 @@ class ModelCreate(BaseModel):
 class ModelResponse(ModelCreate):
     id: int
     vector_synced: bool
+    ingestion_adapter: str
+    review_status: str
+    last_synced_at: datetime | None = None
+    sync_stale: bool
+    ingestion_meta: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -57,6 +62,58 @@ class BulkImportResponse(BaseModel):
     skipped_duplicate: int
     invalid: int
     rows: list[BulkImportRowResult]
+
+
+class FeedConfigRequest(BaseModel):
+    feed_url: HttpUrl
+    auth_token: str | None = Field(default=None, max_length=500)
+
+
+class FeedSyncResponse(BaseModel):
+    inserted: int
+    skipped_duplicate: int
+    invalid: int
+    rows: list[BulkImportRowResult]
+
+
+class ScrapePreviewRequest(BaseModel):
+    url: HttpUrl
+    selectors: dict[str, str] = Field(default_factory=dict)
+
+
+class ScrapePreviewResponse(BaseModel):
+    markup_type: str
+    rows: list[dict]
+
+
+class ScrapeConfirmRequest(BaseModel):
+    url: HttpUrl
+    markup_type: str
+    rows: list[dict] = Field(min_length=1, max_length=100)
+
+
+class ScrapeConfirmRowResult(BaseModel):
+    row: int
+    title: str | None = None
+    status: str
+    errors: list[str] = Field(default_factory=list)
+    model_id: int | None = None
+
+
+class ScrapeConfirmResponse(BaseModel):
+    rows: list[ScrapeConfirmRowResult]
+
+
+class IngestionAdapterStatus(BaseModel):
+    count: int
+    last_synced_at: datetime | None = None
+    sync_stale: bool
+    pending_review: int
+
+
+class IngestionStatusResponse(BaseModel):
+    feed: IngestionAdapterStatus
+    scrape: IngestionAdapterStatus
 
 
 class TrackEventInput(BaseModel):

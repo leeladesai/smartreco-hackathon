@@ -37,6 +37,9 @@ python-multipart==0.0.6
 # Utilities
 python-dotenv==1.0.0
 httpx==0.25.2
+# DOM-scrape catalog ingestion adapter (ING-2) — stdlib html.parser backend, no lxml
+# needed.
+beautifulsoup4==4.12.3
 
 # Scheduling (bonus)
 APScheduler==3.10.4

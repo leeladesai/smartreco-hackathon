@@ -16,8 +16,12 @@ evaluator logic, node contracts) — the pivot generalizes it, it doesn't replac
 authenticated-engineer identity rather than also introducing anonymous visitors in the same change
 — see `docs/design/09-Platform-Pivot-Decision.md`. `catalog_items`/`category`/`subcategory`/
 `attributes` (the entity generalization beyond the AI-model domain) are similarly not yet
-implemented; the running code still uses `models`/`provider`/`modality`. Treat this section as the
-target schema, and `app/models.py` as the current one, until those phases land.
+implemented; the running code still uses `models`/`provider`/`modality`. M4 (2026-09-09) landed the
+`ingestion_adapter`/`review_status`/`last_synced_at`/`sync_stale` columns on the real `models` table
+as-is (see below), plus one addition not shown here: an `ingestion_meta JSON` column holding
+adapter-specific provenance (scrape source page/markup-type, since no `attributes`-style JSON bag
+exists yet to fold it into) and `tenants.feed_url`/`feed_auth_token` for ING-1's feed config. Treat
+this section as the target schema, and `app/models.py` as the current one, until those phases land.
 
 ```sql
 CREATE TABLE tenants (                                -- new
@@ -158,9 +162,19 @@ and the session handoff notes for exactly what's built.
 | PUT | `/api/admin/catalog/{id}` | tenant admin | CAT-2 + re-sync |
 | DELETE | `/api/admin/catalog/{id}` | tenant admin | CAT-3 + vector delete |
 | POST | `/api/admin/catalog/bulk-upload` | tenant admin | CSV/JSON catalog import, `multipart/form-data`, same dual-write path as manual create; per-row report, never aborts the batch on one bad row |
-| POST | `/api/admin/ingestion/feed` | tenant admin | ING-1, configure a feed/API-pull adapter (URL, credentials, sync schedule) |
-| POST | `/api/admin/ingestion/scrape` | tenant admin | ING-2, enable the DOM-scrape adapter (selectors/config the tracker snippet uses) |
-| GET | `/api/admin/ingestion/status` | tenant admin | ING-5, per-adapter last-synced timestamp + staleness flag |
+| POST | `/api/admin/ingestion/feed` | tenant admin | ING-1, configure a feed/API-pull adapter (URL, optional bearer token) |
+| POST | `/api/admin/ingestion/feed/sync` | tenant admin | ING-1, manual re-sync on top of the hourly scheduled sweep; failure marks existing feed rows `sync_stale` (ING-5) rather than raising past the caller |
+| POST | `/api/admin/ingestion/scrape/preview` | tenant admin | ING-2, fetches a page and extracts candidate rows (schema.org/JSON-LD first, tenant CSS selectors as fallback) without persisting anything |
+| POST | `/api/admin/ingestion/scrape/confirm` | tenant admin | ING-2/ING-6, persists a previewed set as `review_status='pending_review'` |
+| POST | `/api/admin/catalog/{id}/approve` | tenant admin | ING-6, flips a `pending_review` row to `approved`, making it eligible for retrieval/vector-indexing for the first time |
+| GET | `/api/admin/ingestion/status` | tenant admin | ING-5, per-adapter row count/last-synced timestamp/staleness flag/pending-review count |
+
+**Implementation status (M4, 2026-09-09):** the row above shows the endpoints actually
+built — a `preview`/`confirm` pair for scrape rather than the single `POST
+.../ingestion/scrape` this table originally sketched, since a tenant admin needs to see
+extracted rows before anything is written (ING-6). The `/admin/ingestion` admin-console
+page (§2a below) is not yet built — these endpoints are API-only for now, same posture
+Phase 1's tenant-key issuance had before its own HTTP surface landed.
 | GET | `/api/admin/users` | tenant admin | Read-only list of that tenant's registered accounts — admin-portal visibility into who has registered |
 | POST | `/api/events/batch` | tenant API key, cross-origin | TRK-4, body: `{visitor_id, events: [...]}`, triggers evaluator inline, scoped to `tenant_id` + `visitor_id` |
 | GET | `/api/recommendations/latest` | visitor session (widget) | Latest stored recommendation for this tenant+visitor — read fallback when no push connection is open |

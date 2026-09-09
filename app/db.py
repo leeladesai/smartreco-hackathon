@@ -28,7 +28,18 @@ def _add_missing_columns(engine) -> None:
 
     if "models" in table_names:
         _add_columns_if_missing(
-            engine, inspector, "models", {"story": "TEXT", "tenant_id": "INTEGER"}
+            engine,
+            inspector,
+            "models",
+            {
+                "story": "TEXT",
+                "tenant_id": "INTEGER",
+                "ingestion_adapter": "VARCHAR(20) DEFAULT 'manual'",
+                "review_status": "VARCHAR(20) DEFAULT 'approved'",
+                "last_synced_at": "TIMESTAMP",
+                "sync_stale": "BOOLEAN DEFAULT FALSE",
+                "ingestion_meta": "JSON DEFAULT '{}'",
+            },
         )
 
     if "recommendations" in table_names:
@@ -67,7 +78,14 @@ def _add_missing_columns(engine) -> None:
         # against Postgres too (see test_handshake.py, which hits the real
         # DATABASE_URL), and Postgres has no DATETIME type.
         _add_columns_if_missing(
-            engine, inspector, "tenants", {"first_event_at": "TIMESTAMP"}
+            engine,
+            inspector,
+            "tenants",
+            {
+                "first_event_at": "TIMESTAMP",
+                "feed_url": "VARCHAR(500)",
+                "feed_auth_token": "VARCHAR(500)",
+            },
         )
 
 

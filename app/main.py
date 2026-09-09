@@ -30,8 +30,15 @@ from app.models import Event, Model, Recommendation, Tenant, User
 from app.schemas import (
     AuthCredentials,
     BulkImportResponse,
+    FeedConfigRequest,
+    FeedSyncResponse,
+    IngestionStatusResponse,
     ModelCreate,
     ModelResponse,
+    ScrapeConfirmRequest,
+    ScrapeConfirmResponse,
+    ScrapePreviewRequest,
+    ScrapePreviewResponse,
     TrackEventBatch,
     UserResponse,
 )
@@ -47,6 +54,7 @@ from app.services.admin_overview import (
     usage_totals,
 )
 from app.services.catalog import (
+    approve_model as approve_model_service,
     create_model as create_model_service,
     delete_model as delete_model_service,
     update_model as update_model_service,
@@ -55,6 +63,15 @@ from app.services.catalog_import import (
     CatalogParseError,
     import_catalog_rows,
     parse_catalog_file,
+)
+from app.services.ingestion import (
+    FeedSyncError,
+    ScrapeError,
+    configure_feed,
+    ingestion_status,
+    scrape_confirm,
+    scrape_preview,
+    sync_feed,
 )
 from app.services.agent_graph import (
     STRONG_RETRIEVAL_DISTANCE,
@@ -146,8 +163,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # already in the DB. Logged so a broken seed doesn't go unnoticed.
             logging.exception("Background seed_demo_data failed")
 
+    def run_scheduled_feed_syncs() -> None:
+        """ING-1's sync cadence: sync-on-save (the manual endpoint below) plus this
+        hourly sweep of every tenant with a feed configured, so a feed that changes
+        upstream without an admin manually re-triggering still stays current."""
+        with session_factory() as session:
+            tenants = session.scalars(
+                select(Tenant).where(Tenant.feed_url.is_not(None))
+            ).all()
+            for tenant in tenants:
+                try:
+                    sync_feed(session, vector_store, tenant)
+                except FeedSyncError:
+                    logging.warning(
+                        "Scheduled feed sync failed for tenant_id=%s", tenant.id
+                    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        scheduler.add_job(run_scheduled_feed_syncs, "interval", hours=1, id="feed_sync")
         scheduler.start()
         # Fire-and-forget, not awaited: uvicorn should start accepting requests
         # (including /health) immediately rather than waiting on this — see
@@ -430,6 +464,81 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             invalid=sum(1 for row in rows if row["status"] == "invalid"),
             rows=rows,
         )
+
+    @app.post("/api/admin/catalog/{model_id}/approve", response_model=ModelResponse)
+    async def approve_model(
+        model_id: int, admin: User = Depends(current_admin)
+    ) -> ModelResponse:
+        with session_factory() as session:
+            model = session.get(Model, model_id)
+            if not model or model.tenant_id != admin.tenant_id:
+                raise HTTPException(status_code=404, detail="Model not found")
+            approve_model_service(session, vector_store, admin.tenant_id, model)
+            return model_response(model)
+
+    @app.post("/api/admin/ingestion/feed")
+    async def set_feed_config(
+        payload: FeedConfigRequest, admin: User = Depends(current_admin)
+    ) -> dict[str, str]:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            configure_feed(session, tenant, str(payload.feed_url), payload.auth_token)
+        return {"status": "configured"}
+
+    @app.post("/api/admin/ingestion/feed/sync", response_model=FeedSyncResponse)
+    async def trigger_feed_sync(
+        admin: User = Depends(current_admin),
+    ) -> FeedSyncResponse:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            try:
+                rows = sync_feed(session, vector_store, tenant)
+            except FeedSyncError as exc:
+                raise HTTPException(status_code=502, detail=str(exc))
+        return FeedSyncResponse(
+            inserted=sum(1 for row in rows if row["status"] == "inserted"),
+            skipped_duplicate=sum(
+                1 for row in rows if row["status"] == "skipped_duplicate"
+            ),
+            invalid=sum(1 for row in rows if row["status"] == "invalid"),
+            rows=rows,
+        )
+
+    @app.post(
+        "/api/admin/ingestion/scrape/preview", response_model=ScrapePreviewResponse
+    )
+    async def preview_scrape(
+        payload: ScrapePreviewRequest, admin: User = Depends(current_admin)
+    ) -> ScrapePreviewResponse:
+        try:
+            result = scrape_preview(str(payload.url), payload.selectors or None)
+        except ScrapeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return ScrapePreviewResponse(**result)
+
+    @app.post(
+        "/api/admin/ingestion/scrape/confirm", response_model=ScrapeConfirmResponse
+    )
+    async def confirm_scrape(
+        payload: ScrapeConfirmRequest, admin: User = Depends(current_admin)
+    ) -> ScrapeConfirmResponse:
+        with session_factory() as session:
+            rows = scrape_confirm(
+                session,
+                vector_store,
+                admin.tenant_id,
+                str(payload.url),
+                payload.markup_type,
+                payload.rows,
+            )
+        return ScrapeConfirmResponse(rows=rows)
+
+    @app.get("/api/admin/ingestion/status", response_model=IngestionStatusResponse)
+    async def get_ingestion_status(
+        admin: User = Depends(current_admin),
+    ) -> IngestionStatusResponse:
+        with session_factory() as session:
+            return IngestionStatusResponse(**ingestion_status(session, admin.tenant_id))
 
     @app.get("/api/admin/observability/runs")
     async def observability_runs(
