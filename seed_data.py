@@ -1434,6 +1434,10 @@ def seed_demo_data(session_factory, vector_store) -> None:
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
     engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@trailmind.dev").lower()
     engineer_password = os.getenv("SEED_ENGINEER_PASSWORD", "engineer@123")
+    platform_admin_email = os.getenv(
+        "SEED_PLATFORM_ADMIN_EMAIL", "platform@trailmind.dev"
+    ).lower()
+    platform_admin_password = os.getenv("SEED_PLATFORM_ADMIN_PASSWORD", "platform@123")
 
     with session_factory() as session:
         tenant = get_or_create_reference_tenant(session)
@@ -1468,6 +1472,26 @@ def seed_demo_data(session_factory, vector_store) -> None:
             engineer.role = "user"
             engineer.password_hash = hash_password(engineer_password)
 
+        # Unscoped (tenant_id=None) — the only role that can call POST /api/tenants
+        # (TEN-1). Nothing else seeds this role; it exists purely so there's a real
+        # login to create tenants with before any self-serve signup flow exists.
+        platform_admin = session.scalar(
+            select(User).where(User.email == platform_admin_email)
+        )
+        if not platform_admin:
+            session.add(
+                User(
+                    tenant_id=None,
+                    email=platform_admin_email,
+                    password_hash=hash_password(platform_admin_password),
+                    role="platform_admin",
+                )
+            )
+        else:
+            platform_admin.tenant_id = None
+            platform_admin.role = "platform_admin"
+            platform_admin.password_hash = hash_password(platform_admin_password)
+
         for values in SEED_MODELS:
             model = session.scalar(
                 select(Model).where(
@@ -1487,6 +1511,7 @@ def seed_demo_data(session_factory, vector_store) -> None:
 
     print(f"Seeded Curator account: {admin_email}")
     print(f"Seeded AI-engineer account: {engineer_email}")
+    print(f"Seeded platform admin account: {platform_admin_email}")
     print(f"Seeded {len(SEED_MODELS)} models into SQL and Chroma")
 
 

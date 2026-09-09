@@ -39,6 +39,16 @@ marked where it does.
 | TEN-6 *(new)* | A hard per-tenant ceiling bounds LLM-triggering agent runs, independent of the per-visitor AGT-1 cooldown | Because the tenant API key is a public, client-embedded credential (readable in page source), per-visitor cooldown alone doesn't stop an abuser fabricating unlimited `visitor_id`s to bypass it; a tenant-aggregate cap (`max_agent_runs_per_hour`) rejects/queues further runs once hit, protecting Mesh spend and other tenants on shared infra |
 | TEN-7 *(new)* | Tracker SDK defers to the tenant's own consent-management platform rather than shipping its own banner | SDK listens for the tenant's existing consent signal; anonymous, non-PII event tracking proceeds by default regardless of that signal (no PII is ever captured per TRK-7), with the signal reserved for gating any future identity-adjacent feature |
 
+**Implementation status (M2, 2026-09-09):** TEN-1, TEN-5, and TEN-8 are implemented over HTTP —
+`POST /api/tenants` (platform-admin-only, matching TEN-1's "assisted onboarding" acceptance
+criteria exactly — no self-serve signup), `POST /api/tenants/{id}/rotate-key` and
+`POST /api/tenants/{id}/revoke-key/{key_id}` (tenant-admin, own tenant only), and
+`GET /api/admin/onboarding/status` (computes TEN-8's readiness gate and flips
+`tenants.status` `'onboarding'` → `'active'`). TEN-2/3/4/6 predate this phase (multi-tenant
+foundation + tracker SDK). TEN-7 (consent-signal deference) is not implemented — no consent
+integration exists in `tracker.js` yet. See the AUTH section below for the role-naming deviation
+this required.
+
 ### AUTH
 AI engineer and admin auth are deliberately two separate modules — a separate route, a separate form,
 and (for admin) no self-registration — not one login screen with a role picker. This pattern now
@@ -53,8 +63,17 @@ activity UI it gated. `POST /api/auth/register`, `POST /api/auth/login`, `GET /a
 `PUT /api/auth/me/telegram-chat-id` no longer exist. The reference tenant's own end-user surface
 returns later in that same phase, built on anonymous tracker-SDK visitor identity rather than this
 cookie-session `user` role — AUTH-1/AUTH-2 below describe that *target* shape, not current code.
-`AUTH-3` through `AUTH-6` (admin auth) are current and unaffected; the running `User.role` is
-`'admin'` only for now (no `tenant_admin`/`platform_admin` split until tenant onboarding, TEN-1).
+`AUTH-3` through `AUTH-6` (admin auth) are current and unaffected.
+
+**Implementation status (M2, 2026-09-09):** the role split landed as `'admin'` (tenant-scoped,
+`tenant_id` set) plus a new `'platform_admin'` (unscoped, `tenant_id=None`) — not the `'user'` /
+`'tenant_admin'` / `'platform_admin'` triple AUTH-3 describes. The existing tenant-scoped admin role
+keeps its pre-onboarding name `'admin'` rather than being renamed to `'tenant_admin'`: nothing
+distinguishes it behaviorally from a hypothetical `tenant_admin`, so renaming it would have meant a
+mechanical sweep of every existing route, dependency, and test for no functional gain. `'user'`
+stays retired (AUTH-1/AUTH-2 above). `POST /api/admin/login` (AUTH-6) now accepts either admin role.
+A platform admin is seeded via `SEED_PLATFORM_ADMIN_EMAIL`/`SEED_PLATFORM_ADMIN_PASSWORD`
+(`seed_data.py`) — no endpoint grants the role at runtime, matching AUTH-3's intent.
 
 | ID | Requirement | Acceptance criteria |
 |---|---|---|
@@ -74,6 +93,15 @@ cookie-session `user` role — AUTH-1/AUTH-2 below describe that *target* shape,
 | ING-4 | A tenant can mix adapters | E.g. feed for the bulk catalog, manual entry for overrides — later writes for the same item id win, tracked per adapter source |
 | ING-5 | Feed/scrape adapter staleness is visible, and the catalog keeps serving through it | A tenant catalog row/adapter exposes a last-synced timestamp and a staleness flag when a sync fails, the source is unreachable, or extracted data fails validation (missing fields, item-count collapse), analogous to `vector_synced`; recommendations continue serving the last-known-good catalog rather than going empty or pausing (pivot record §5) |
 | ING-6 *(new)* | Scraped items require tenant confirmation before grounding bot answers | Rows from the DOM-scrape adapter are created with `review_status='pending_review'` and excluded from retrieval/vector indexing until a tenant admin previews and confirms them (`'approved'`) during onboarding or after a re-scrape; feed/manual rows default `'approved'` |
+
+**Implementation status (M4, 2026-09-09):** ING-1, ING-2, ING-5, and ING-6 are implemented — see
+`app/services/ingestion.py` and the endpoint table in `06-LLD.md` §2. ING-3 (manual-entry adapter)
+predates this phase (CAT-1..5). **ING-4 (mixing adapters with last-write-wins tracked per source) is
+not implemented** — `ingestion_adapter` records which adapter created a row, but there's no
+conflict-resolution rule for two adapters targeting the "same" item; a feed sync and a manual edit of
+a same-titled row just dedupe-skip each other (the existing by-title dedupe, unchanged from the
+manual bulk-upload path) rather than one deliberately overriding the other. Not blocking for this
+phase — no admin console UI to trigger that scenario exists yet either.
 
 ### CAT
 Now the manual-entry adapter's UI (ING-3) plus the reference AI-model-catalog tenant, rather than
@@ -146,6 +174,23 @@ against visitor identity once that lands.
 | DLV-4 *(new)* | Visitor can ask the bot follow-up questions after a recommendation is shown | Follow-up answers are generated through the same catalog-grounded path as AGT-5/AGT-8, not a separate ungrounded chat completion |
 | DLV-5 (bonus) | Scheduled digest delivered via email/Telegram, per tenant | Real scheduler (APScheduler/Celery Beat), not a manual trigger |
 | DLV-6 | End visitor can view their own tracked activity and how it produced their current recommendation, where the tenant exposes this | Read-only view over already-persisted data (`events`, `trigger_reason` from `recommendations`) scoped to that tenant + visitor — no new backend logic |
+
+**Implementation status (chat-bot-widget phase, backend, 2026-09-09):** DLV-2, DLV-4, and DLV-6
+are implemented on the backend — `GET /api/widget/stream` (SSE, chosen over WebSocket per the
+LLD's own example), `POST /api/widget/ask`, and `GET /api/widget/activity`
+(`app/main.py`/`app/services/agent_graph.py::answer_visitor_question`). DLV-4's grounding reuses
+the same retrieval + lexical-rerank pipeline as the main recommendation flow, with its own
+QA-specific prompt (`app/services/prompts.py::QA_SYSTEM_PROMPT`) rather than reusing
+`NARRATIVE_SYSTEM_PROMPT` verbatim — a direct answer and a behavior narrative are different response
+shapes, even though both share the same "only cite supplied candidate facts" discipline (AGT-5/
+AGT-8). A question with no groundable retrieval match never reaches the LLM at all (decided by
+`WEAK_RETRIEVAL_DISTANCE`, not the model's discretion). DLV-1 and DLV-3 are also implemented —
+`app/static/js/widget.js` is the actual chat-bot-launcher UI, opening proactively (a badge, not an
+auto-expand — DLV-1 doesn't require forcing the panel open) when a real-time push lands, and
+re-rendering from the latest fetched payload rather than showing anything stale (DLV-3). DLV-5
+(digest) remains not built — see the M2 note under TEN above for why digest stays disabled. TEN-8's
+render-gate is enforced on every `/api/widget/*` route (`tenant.status != 'active'` → 403), not just
+the launcher's own visibility.
 
 ### OBS
 | ID | Requirement | Acceptance criteria |

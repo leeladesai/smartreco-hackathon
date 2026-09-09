@@ -1,12 +1,7 @@
-"""Tenant resolution and API-key issuance/verification.
-
-The admin/tenant-onboarding console (TEN-1: `POST /api/tenants`, key rotation UI) is a
-separate, not-yet-built phase — but the tracker SDK (TRK-*) needs a real way to turn a
-raw key a `<script data-tenant-key="...">` tag carries into a `Tenant`, so that half of
-TEN-4/TEN-5 (key hashing, resolution, grace-period rotation) lives here now, ahead of
-the HTTP endpoints that will issue keys through the product itself. Until onboarding
-exists, `issue_api_key`/`create_tenant` are called from a script or the Python shell,
-not a route.
+"""Tenant resolution, API-key issuance/verification, and onboarding-readiness (TEN-1,
+TEN-4, TEN-5, TEN-8). The HTTP layer (`POST /api/tenants`, key rotation/revoke,
+`GET /api/admin/onboarding/status`) lives in app/main.py and calls straight through to
+the functions here.
 
 Every request that needs a tenant but predates real tenant resolution (the admin
 console's own login, which still has no tenant-selection step) resolves to a single
@@ -18,10 +13,10 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Tenant, TenantApiKey
+from app.models import Model, Tenant, TenantApiKey
 
 REFERENCE_TENANT_NAME = "TrailMind Reference"
 
@@ -109,6 +104,38 @@ def revoke_api_key(session: Session, key_id: int) -> None:
         key.status = "revoked"
         key.expires_at = datetime.utcnow()
         session.commit()
+
+
+def onboarding_status(session: Session, tenant: Tenant) -> dict:
+    """TEN-8's widget readiness gate: "tracker verified" (a real event has reached
+    `POST /api/track/events`) AND "catalog ready" (at least one approved, vector-synced
+    catalog item exists to recommend). Flips `tenant.status` from `onboarding` to
+    `active` the first time both are true — a future chat-bot widget phase will read
+    `status` to decide whether to render at all."""
+    tracker_verified = tenant.first_event_at is not None
+    catalog_ready = (
+        session.scalar(
+            select(func.count())
+            .select_from(Model)
+            .where(
+                Model.tenant_id == tenant.id,
+                Model.review_status == "approved",
+                Model.vector_synced.is_(True),
+            )
+        )
+        > 0
+    )
+    ready = tracker_verified and catalog_ready
+    if ready and tenant.status == "onboarding":
+        tenant.status = "active"
+        session.commit()
+    return {
+        "tenant_id": tenant.id,
+        "status": tenant.status,
+        "tracker_verified": tracker_verified,
+        "catalog_ready": catalog_ready,
+        "ready": ready,
+    }
 
 
 def resolve_tenant_by_api_key(session: Session, raw_key: str) -> Tenant | None:

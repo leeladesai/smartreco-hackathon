@@ -16,8 +16,12 @@ evaluator logic, node contracts) — the pivot generalizes it, it doesn't replac
 authenticated-engineer identity rather than also introducing anonymous visitors in the same change
 — see `docs/design/09-Platform-Pivot-Decision.md`. `catalog_items`/`category`/`subcategory`/
 `attributes` (the entity generalization beyond the AI-model domain) are similarly not yet
-implemented; the running code still uses `models`/`provider`/`modality`. Treat this section as the
-target schema, and `app/models.py` as the current one, until those phases land.
+implemented; the running code still uses `models`/`provider`/`modality`. M4 (2026-09-09) landed the
+`ingestion_adapter`/`review_status`/`last_synced_at`/`sync_stale` columns on the real `models` table
+as-is (see below), plus one addition not shown here: an `ingestion_meta JSON` column holding
+adapter-specific provenance (scrape source page/markup-type, since no `attributes`-style JSON bag
+exists yet to fold it into) and `tenants.feed_url`/`feed_auth_token` for ING-1's feed config. Treat
+this section as the target schema, and `app/models.py` as the current one, until those phases land.
 
 ```sql
 CREATE TABLE tenants (                                -- new
@@ -135,19 +139,21 @@ visitor-tracking path: `POST /api/track/events` (this table's target `POST /api/
 its actual implemented name and body shape — `{tenant_key, visitor_id, events}`, key in the body so
 `navigator.sendBeacon` can carry it) and `GET /api/recommendations/latest` (implemented as
 `tenant_key`+`visitor_id` query params, not yet the "visitor session (widget)" auth this table
-describes — no widget-session mechanism exists until the chat-bot-widget phase). Tenant API-key
-issuance/rotation/resolution (`create_tenant`/`issue_api_key`/`rotate_api_key`/`revoke_api_key`/
-`resolve_tenant_by_api_key`, `app/services/tenants.py`) and the TEN-6 rate cap
-(`tenant_rate_limited`) are implemented as service functions, called from a script/shell — the
-`/api/tenants*` HTTP endpoints and admin console UI this table shows are not yet built. None of
-`/api/widget/*` or `/api/admin/ingestion/*` exist yet. See `docs/design/09-Platform-Pivot-Decision.md`
-and the session handoff notes for exactly what's built.
+describes — no widget-session mechanism exists until the chat-bot-widget phase). As of the tenant
+onboarding phase (M2), `POST /api/tenants`, `POST /api/tenants/{id}/rotate-key`,
+`POST /api/tenants/{id}/revoke-key/{key_id}`, and `GET /api/admin/onboarding/status` are also live
+— see the M2 note below the table for the auth-role deviation this required. `GET /api/widget/stream`,
+`POST /api/widget/ask`, and `GET /api/widget/activity` are also live (see the chat-bot-widget-phase
+note below the table) — the widget UI itself (`app/static/js/widget.js`) and `/api/auth/*` (end-user
+self-registration) do not exist yet. See `docs/design/09-Platform-Pivot-Decision.md` and the session
+handoff notes for exactly what's built.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | `/api/tenants` | platform admin | TEN-1, onboard a tenant, issue API key (shown once) |
 | POST | `/api/tenants/{id}/rotate-key` | tenant admin | TEN-5, issues a new `active` key, flips the previous one to `grace` with `expires_at = now + 24h` |
 | POST | `/api/tenants/{id}/revoke-key/{key_id}` | tenant admin | TEN-5, immediate revoke (suspected leak) — bypasses the grace period, flips straight to `revoked` |
+| GET | `/api/admin/onboarding/status` | tenant admin | TEN-8, computes tracker-verified + catalog-ready readiness; flips `tenants.status` `onboarding`→`active` the first time both are true |
 | POST | `/api/auth/register` | tenant API key | AUTH-1, end-user self-registration for that tenant — always creates role `user` |
 | POST | `/api/auth/login` | tenant API key | AUTH-2, end-user login, returns session/JWT carrying `tenant_id` |
 | POST | `/api/admin/login` | none | AUTH-5 + AUTH-6, tenant-admin login, returns session/JWT with an admin role; no `/api/admin/register` exists |
@@ -158,15 +164,58 @@ and the session handoff notes for exactly what's built.
 | PUT | `/api/admin/catalog/{id}` | tenant admin | CAT-2 + re-sync |
 | DELETE | `/api/admin/catalog/{id}` | tenant admin | CAT-3 + vector delete |
 | POST | `/api/admin/catalog/bulk-upload` | tenant admin | CSV/JSON catalog import, `multipart/form-data`, same dual-write path as manual create; per-row report, never aborts the batch on one bad row |
-| POST | `/api/admin/ingestion/feed` | tenant admin | ING-1, configure a feed/API-pull adapter (URL, credentials, sync schedule) |
-| POST | `/api/admin/ingestion/scrape` | tenant admin | ING-2, enable the DOM-scrape adapter (selectors/config the tracker snippet uses) |
-| GET | `/api/admin/ingestion/status` | tenant admin | ING-5, per-adapter last-synced timestamp + staleness flag |
+| POST | `/api/admin/ingestion/feed` | tenant admin | ING-1, configure a feed/API-pull adapter (URL, optional bearer token) |
+| POST | `/api/admin/ingestion/feed/sync` | tenant admin | ING-1, manual re-sync on top of the hourly scheduled sweep; failure marks existing feed rows `sync_stale` (ING-5) rather than raising past the caller |
+| POST | `/api/admin/ingestion/scrape/preview` | tenant admin | ING-2, fetches a page and extracts candidate rows (schema.org/JSON-LD first, tenant CSS selectors as fallback) without persisting anything |
+| POST | `/api/admin/ingestion/scrape/confirm` | tenant admin | ING-2/ING-6, persists a previewed set as `review_status='pending_review'` |
+| POST | `/api/admin/catalog/{id}/approve` | tenant admin | ING-6, flips a `pending_review` row to `approved`, making it eligible for retrieval/vector-indexing for the first time |
+| GET | `/api/admin/ingestion/status` | tenant admin | ING-5, per-adapter row count/last-synced timestamp/staleness flag/pending-review count |
+
+**Implementation status (M4, 2026-09-09):** the row above shows the endpoints actually
+built — a `preview`/`confirm` pair for scrape rather than the single `POST
+.../ingestion/scrape` this table originally sketched, since a tenant admin needs to see
+extracted rows before anything is written (ING-6). The `/admin/ingestion` admin-console
+page (§2a below) is not yet built — these endpoints are API-only for now, same posture
+Phase 1's tenant-key issuance had before its own HTTP surface landed.
+
+**Implementation status (M2, 2026-09-09):** the tenant/onboarding rows above are implemented as
+described, with one auth-role deviation from `02-FRD.md`'s AUTH-3: the tenant-scoped admin role is
+`'admin'` (unchanged from before onboarding existed), not `'tenant_admin'` — a `'platform_admin'`
+role is layered alongside it, unscoped (`tenant_id=None`), for `POST /api/tenants` only. No
+`/api/tenants` self-serve signup exists — a platform admin (seeded via
+`SEED_PLATFORM_ADMIN_EMAIL`/`SEED_PLATFORM_ADMIN_PASSWORD` in `seed_data.py`) creates every tenant,
+matching TEN-1's own "assisted onboarding for now" acceptance criteria. The `/admin/onboarding`
+admin-console page (§2a below) — tracker snippet with the key embedded, live readiness status, a
+go-live indicator — is not yet built; onboarding status is API-only for now.
+
+**Implementation status (chat-bot-widget phase, backend, 2026-09-09):** the widget rows above are
+implemented as the actual push/Q&A/activity backend, gated by TEN-8 (`tenant.status != 'active'` →
+403) rather than a widget-session mechanism — there is still no `widget_sessions`-row-backed auth
+the way this table's "visitor session (widget)" language implies; the tenant API key (query param
+for `stream`/`activity`, request body for `ask`) is the only credential, same posture as the
+tracker SDK. The real-time push routing itself is an in-process `dict[(tenant_id, visitor_id),
+list[asyncio.Queue]]` registry (`app/main.py`), not read from the `widget_sessions` table — that
+table is written (one row per open connection, `closed_at` set on disconnect) purely for audit, per
+its own docstring in `app/models.py`. A multi-worker deployment would need the push routing revisited (no cross-process fan-out exists).
+`app/static/js/widget.js` is now built — a launcher bubble + panel rendered inside a Shadow DOM
+root (so its styles can never collide with the host page's own CSS), sharing `tracker.js`'s
+`localStorage` visitor-id key so both scripts resolve to the same identity regardless of load
+order. On an `EventSource` `recommendation` event it re-fetches the fully-shaped payload from
+`GET /api/recommendations/latest` rather than rendering the push payload's bare ids/distances
+directly — the "latest" endpoint already has the title/price/why_this shaping, so the push is
+purely a "something changed, go refetch" signal. Verified live in a real cross-origin browser
+session (a separate-origin host page embedding both scripts against a running server): the launcher
+renders, a tracked session triggers a real pipeline run, the pushed recommendation renders as cards
+within seconds with no page reload, the ask box round-trips through `POST /api/widget/ask`
+(including AGT-8's fixed no-answer response when no Mesh key is configured), and "Why am I seeing
+this?" renders the activity list from `GET /api/widget/activity`.
 | GET | `/api/admin/users` | tenant admin | Read-only list of that tenant's registered accounts — admin-portal visibility into who has registered |
 | POST | `/api/events/batch` | tenant API key, cross-origin | TRK-4, body: `{visitor_id, events: [...]}`, triggers evaluator inline, scoped to `tenant_id` + `visitor_id` |
 | GET | `/api/recommendations/latest` | visitor session (widget) | Latest stored recommendation for this tenant+visitor — read fallback when no push connection is open |
-| GET | `/api/widget/stream` | visitor session (widget), tenant API key | DLV-2, opens the SSE/WebSocket connection the real-time push service delivers on; creates a `widget_sessions` row |
-| POST | `/api/widget/ask` | visitor session (widget) | DLV-4, follow-up Q&A — routes through the same catalog-grounded retrieval path as the initial recommendation (AGT-5/AGT-8), not a separate ungrounded completion |
-| GET | `/api/activity/me` | visitor session | DLV-6, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/widget/stream` | tenant API key | DLV-2, opens the SSE connection the real-time push service delivers on; creates a `widget_sessions` row; 403s unless `tenant.status == 'active'` (TEN-8) |
+| POST | `/api/widget/ask` | tenant API key | DLV-4, follow-up Q&A — routes through the same catalog-grounded retrieval path as the initial recommendation (AGT-5/AGT-8), not a separate ungrounded completion |
+| GET | `/api/widget/activity` | tenant API key | DLV-6, recent raw events + the `behavior_summary`/`activity_hash`/`trigger_reason` chain behind the latest recommendation — read-only, no new write path |
+| GET | `/api/activity/me` | visitor session | DLV-6 target shape (end-user self-registered session) — superseded for the anonymous-tracker product by `GET /api/widget/activity` above, which needs no `users` row |
 | GET | `/api/admin/observability/runs` | tenant admin | OBS-2, recent `agent_pipeline` LangSmith runs for that tenant only (status/latency/error/trace link); returns `{"available": false, ...}` rather than an error when `LANGSMITH_API_KEY` is unset |
 | GET | `/api/admin/observability/grounding/{recommendation_id}` | tenant admin | OBS-3, the `grounding_facts` audit trail for a given delivered recommendation |
 | POST | `/api/admin/digest/run` | tenant admin | DLV-5 bonus: manually re-runs the scheduled digest pipeline for that tenant on demand |

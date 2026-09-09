@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+from datetime import datetime
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -121,6 +122,9 @@ def import_catalog_rows(
     vector_store: ModelVectorStore,
     tenant_id: int,
     raw_rows: list[dict],
+    *,
+    ingestion_adapter: str = "manual",
+    last_synced_at: datetime | None = None,
 ) -> list[dict]:
     """Validates and inserts each row independently — reuses catalog.create_model so a
     bulk import writes through the exact same DB+vector-store path (and the same
@@ -129,6 +133,11 @@ def import_catalog_rows(
     scripts/expand_catalog_via_mesh.py's per-row validate/dedupe/insert pattern. Each
     result dict is `{row, title, status, errors}` with status one of "inserted",
     "skipped_duplicate", "invalid".
+
+    `ingestion_adapter`/`last_synced_at` are passed straight through to
+    `create_model` for every inserted row — the manual admin bulk-upload endpoint
+    leaves them at their defaults, while the feed adapter (app/services/ingestion.py)
+    tags its rows `ingestion_adapter="feed"` and stamps the sync time.
     """
     results = []
     for index, raw in enumerate(raw_rows, start=1):
@@ -179,7 +188,14 @@ def import_catalog_rows(
             continue
 
         try:
-            create_model(session, vector_store, tenant_id, payload)
+            create_model(
+                session,
+                vector_store,
+                tenant_id,
+                payload,
+                ingestion_adapter=ingestion_adapter,
+                last_synced_at=last_synced_at,
+            )
         except (
             Exception
         ) as exc:  # noqa: BLE001 — one row's failure must not abort the batch

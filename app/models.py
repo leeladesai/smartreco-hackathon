@@ -35,6 +35,11 @@ class Tenant(Base):
     # POST /api/track/events) — the "tracker verified" half of the TEN-8 widget
     # readiness gate. Null until then.
     first_event_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Feed/API catalog ingestion (ING-1) config. `feed_auth_token` is a bearer token
+    # for *their* feed endpoint, not a TrailMind credential, so it's stored as-is
+    # rather than hashed like a TenantApiKey.
+    feed_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    feed_auth_token: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -89,6 +94,21 @@ class Model(Base):
     use_case_tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     vector_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Catalog ingestion adapters (M4, docs/design plan): who/what produced this row.
+    # "manual" (CAT-1..5, default — unaffected by this phase) never needs review; a
+    # "feed"-sourced row is auto-approved like manual entries, while a "scrape"-sourced
+    # row starts "pending_review" and is excluded from retrieval/vector-indexing until
+    # an admin approves it (see app/services/catalog.py::approve_model). `sync_stale`
+    # marks a feed-sourced row as no-longer-confirmed-fresh after a failed re-sync
+    # (ING-5: serve last-known-good rather than delete or block on a feed outage).
+    ingestion_adapter: Mapped[str] = mapped_column(String(20), default="manual")
+    review_status: Mapped[str] = mapped_column(String(20), default="approved")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sync_stale: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Adapter-specific provenance (ING-6 traceability) that doesn't warrant its own
+    # column: the scraped page URL/markup type/CSS selector for a "scrape" row, or the
+    # feed URL a "feed" row came from. Empty dict for "manual" rows.
+    ingestion_meta: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -134,4 +154,25 @@ class Recommendation(Base):
     mesh_prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mesh_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DLV-2: set when this recommendation was actually pushed to an open
+    # `/api/widget/stream` connection at generation time — null means either no
+    # connection was open (the visitor picks it up via GET /api/recommendations/latest
+    # on next poll/reconnect) or push was never attempted.
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WidgetSession(Base):
+    """DLV-2: one row per open `/api/widget/stream` SSE connection, for audit/
+    observability — the actual push routing is an in-process registry
+    (`app/main.py`'s `widget_connections`), rebuilt from scratch on every reconnect;
+    this table is not consulted to route a push, only to record that one was open."""
+
+    __tablename__ = "widget_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
+    connection_id: Mapped[str] = mapped_column(String(64))
+    opened_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

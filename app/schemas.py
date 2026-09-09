@@ -39,6 +39,11 @@ class ModelCreate(BaseModel):
 class ModelResponse(ModelCreate):
     id: int
     vector_synced: bool
+    ingestion_adapter: str
+    review_status: str
+    last_synced_at: datetime | None = None
+    sync_stale: bool
+    ingestion_meta: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -59,6 +64,84 @@ class BulkImportResponse(BaseModel):
     rows: list[BulkImportRowResult]
 
 
+class FeedConfigRequest(BaseModel):
+    feed_url: HttpUrl
+    auth_token: str | None = Field(default=None, max_length=500)
+
+
+class FeedSyncResponse(BaseModel):
+    inserted: int
+    skipped_duplicate: int
+    invalid: int
+    rows: list[BulkImportRowResult]
+
+
+class ScrapePreviewRequest(BaseModel):
+    url: HttpUrl
+    selectors: dict[str, str] = Field(default_factory=dict)
+
+
+class ScrapePreviewResponse(BaseModel):
+    markup_type: str
+    rows: list[dict]
+
+
+class ScrapeConfirmRequest(BaseModel):
+    url: HttpUrl
+    markup_type: str
+    rows: list[dict] = Field(min_length=1, max_length=100)
+
+
+class ScrapeConfirmRowResult(BaseModel):
+    row: int
+    title: str | None = None
+    status: str
+    errors: list[str] = Field(default_factory=list)
+    model_id: int | None = None
+
+
+class ScrapeConfirmResponse(BaseModel):
+    rows: list[ScrapeConfirmRowResult]
+
+
+class IngestionAdapterStatus(BaseModel):
+    count: int
+    last_synced_at: datetime | None = None
+    sync_stale: bool
+    pending_review: int
+
+
+class IngestionStatusResponse(BaseModel):
+    feed: IngestionAdapterStatus
+    scrape: IngestionAdapterStatus
+
+
+class TenantCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
+class TenantCreateResponse(BaseModel):
+    id: int
+    name: str
+    status: str
+    api_key: str = Field(
+        description="Raw tracker API key — shown once, never retrievable again."
+    )
+
+
+class ApiKeyResponse(BaseModel):
+    api_key: str = Field(description="Raw tracker API key — shown once.")
+
+
+class OnboardingStatusResponse(BaseModel):
+    tenant_id: int
+    status: str
+    tracker_verified: bool
+    catalog_ready: bool
+    ready: bool
+
+
 class TrackEventInput(BaseModel):
     event_type: str = Field(
         pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
@@ -66,6 +149,21 @@ class TrackEventInput(BaseModel):
     )
     model_id: int | None = None
     metadata: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class WidgetAskRequest(BaseModel):
+    # Same key-in-body reasoning as TrackEventBatch below — the widget authenticates
+    # the same way the tracker does, over a plain POST, not a header.
+    tenant_key: str = Field(min_length=1)
+    visitor_id: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=1, max_length=500)
+
+
+class WidgetAskResponse(BaseModel):
+    answer: str
+    model_ids: list[int] = Field(default_factory=list)
 
     model_config = ConfigDict(protected_namespaces=())
 

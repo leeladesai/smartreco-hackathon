@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from app.models import Model
@@ -18,12 +20,43 @@ def create_model(
     vector_store: ModelVectorStore,
     tenant_id: int,
     payload: ModelCreate,
+    *,
+    ingestion_adapter: str = "manual",
+    review_status: str = "approved",
+    last_synced_at: datetime | None = None,
+    ingestion_meta: dict | None = None,
 ) -> Model:
-    model = Model(tenant_id=tenant_id, vector_synced=False)
+    """`ingestion_adapter`/`review_status`/`last_synced_at`/`ingestion_meta` are set by
+    the ingestion adapters (app/services/ingestion.py) — manual admin creation (the only
+    caller before M4) leaves them at their defaults. A row is only pushed into the
+    vector store (and therefore eligible for retrieval) once `review_status ==
+    "approved"` — a "pending_review" scrape row stays out of Chroma until
+    `approve_model` runs.
+    """
+    model = Model(
+        tenant_id=tenant_id,
+        vector_synced=False,
+        ingestion_adapter=ingestion_adapter,
+        review_status=review_status,
+        last_synced_at=last_synced_at,
+        ingestion_meta=ingestion_meta or {},
+    )
     _apply_payload(model, payload)
     session.add(model)
     session.commit()
     session.refresh(model)
+    if review_status == "approved":
+        _sync_model(session, vector_store, tenant_id, model)
+    return model
+
+
+def approve_model(
+    session: Session, vector_store: ModelVectorStore, tenant_id: int, model: Model
+) -> Model:
+    """ING-6: flips a "pending_review" scrape row to "approved", making it eligible
+    for retrieval/vector-indexing for the first time."""
+    model.review_status = "approved"
+    session.commit()
     _sync_model(session, vector_store, tenant_id, model)
     return model
 

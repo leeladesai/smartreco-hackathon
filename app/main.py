@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +20,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
@@ -26,14 +28,35 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant, User
+from app.models import (
+    Event,
+    Model,
+    Recommendation,
+    Tenant,
+    TenantApiKey,
+    User,
+    WidgetSession,
+)
 from app.schemas import (
+    ApiKeyResponse,
     AuthCredentials,
     BulkImportResponse,
+    FeedConfigRequest,
+    FeedSyncResponse,
+    IngestionStatusResponse,
     ModelCreate,
     ModelResponse,
+    OnboardingStatusResponse,
+    ScrapeConfirmRequest,
+    ScrapeConfirmResponse,
+    ScrapePreviewRequest,
+    ScrapePreviewResponse,
+    TenantCreateRequest,
+    TenantCreateResponse,
     TrackEventBatch,
     UserResponse,
+    WidgetAskRequest,
+    WidgetAskResponse,
 )
 from app.security import (
     create_session_token,
@@ -47,6 +70,7 @@ from app.services.admin_overview import (
     usage_totals,
 )
 from app.services.catalog import (
+    approve_model as approve_model_service,
     create_model as create_model_service,
     delete_model as delete_model_service,
     update_model as update_model_service,
@@ -56,9 +80,19 @@ from app.services.catalog_import import (
     import_catalog_rows,
     parse_catalog_file,
 )
+from app.services.ingestion import (
+    FeedSyncError,
+    ScrapeError,
+    configure_feed,
+    ingestion_status,
+    scrape_confirm,
+    scrape_preview,
+    sync_feed,
+)
 from app.services.agent_graph import (
     STRONG_RETRIEVAL_DISTANCE,
     WEAK_RETRIEVAL_DISTANCE,
+    answer_visitor_question,
     contextual_reason,
     prepare_retrieval_recommendation,
 )
@@ -77,7 +111,13 @@ from app.services.observability import (
     fetch_recent_runs,
     fetch_run_detail,
 )
-from app.services.tenants import resolve_tenant_by_api_key
+from app.services.tenants import (
+    create_tenant,
+    onboarding_status,
+    resolve_tenant_by_api_key,
+    revoke_api_key,
+    rotate_api_key,
+)
 from app.services.tracing import configure_langsmith
 from app.vector import ModelVectorStore, build_embedding_function
 from seed_data import seed_demo_data
@@ -124,10 +164,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # embeddable-widget product (docs/design/09-Platform-Pivot-Decision.md) — the
     # reference tenant's own end-user surface returns with the tracker SDK phase,
     # built on anonymous visitor identity rather than this cookie-session `user` role.
-    # `admin` is (for now) the only role; tenant-admin/platform-admin generalization
-    # lands with tenant onboarding (TEN-1..8).
+    # TEN-1..8: `admin` (tenant-scoped, `tenant_id` set) and `platform_admin`
+    # (unscoped, `tenant_id` is None, can create tenants) are the two roles. `admin`
+    # keeps its pre-onboarding name rather than becoming `tenant_admin` — no other
+    # behavior distinguishes it from a hypothetical `tenant_admin`, so renaming it
+    # would just be churn across every existing route/test.
     current_admin = make_role_dependency(
         session_factory, app_settings, required_role="admin"
+    )
+    current_platform_admin = make_role_dependency(
+        session_factory, app_settings, required_role="platform_admin"
     )
 
     # DLV-3 (bonus scheduled digest) is disabled, not redesigned, now that the
@@ -146,8 +192,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # already in the DB. Logged so a broken seed doesn't go unnoticed.
             logging.exception("Background seed_demo_data failed")
 
+    def run_scheduled_feed_syncs() -> None:
+        """ING-1's sync cadence: sync-on-save (the manual endpoint below) plus this
+        hourly sweep of every tenant with a feed configured, so a feed that changes
+        upstream without an admin manually re-triggering still stays current."""
+        with session_factory() as session:
+            tenants = session.scalars(
+                select(Tenant).where(Tenant.feed_url.is_not(None))
+            ).all()
+            for tenant in tenants:
+                try:
+                    sync_feed(session, vector_store, tenant)
+                except FeedSyncError:
+                    logging.warning(
+                        "Scheduled feed sync failed for tenant_id=%s", tenant.id
+                    )
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        scheduler.add_job(run_scheduled_feed_syncs, "interval", hours=1, id="feed_sync")
         scheduler.start()
         # Fire-and-forget, not awaited: uvicorn should start accepting requests
         # (including /health) immediately rather than waiting on this — see
@@ -172,16 +235,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.scheduler = scheduler
     app.state.pipeline_locks = {}
     app.state.pipeline_locks_guard = asyncio.Lock()
-    # Permissive at the CORSMiddleware layer on purpose — the tracker SDK runs on
-    # arbitrary tenant domains we can't enumerate in advance, and per-tenant origin
-    # scoping (`Tenant.allowed_origins`) is checked inside the handler instead (see
-    # POST /api/track/events below). CORS itself is a browser-only, spoofable
-    # convenience; the tenant API key is the real boundary
-    # (docs/design/09-Platform-Pivot-Decision.md §5).
+    # DLV-2: (tenant_id, visitor_id) -> list of open SSE connections' asyncio.Queue.
+    # In-process only (no Redis/pub-sub) — consistent with this repo's other
+    # single-process-deployment choices (pipeline_locks above, the TEN-6 rate cap);
+    # a multi-worker deploy would need this revisited.
+    app.state.widget_connections = {}
+    app.state.widget_connections_guard = asyncio.Lock()
+    # Permissive at the CORSMiddleware layer on purpose — the tracker SDK and widget
+    # both run on arbitrary tenant domains we can't enumerate in advance, and
+    # per-tenant origin scoping (`Tenant.allowed_origins`) is checked inside the
+    # handler instead (see POST /api/track/events and _resolve_widget_tenant below).
+    # CORS itself is a browser-only, spoofable convenience; the tenant API key is the
+    # real boundary (docs/design/09-Platform-Pivot-Decision.md §5). GET is needed for
+    # the widget's SSE stream/activity endpoints, not just the tracker's POSTs.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_methods=["POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
     app.mount(
@@ -255,7 +325,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 select(User).where(User.email == credentials.email.lower())
             )
             valid = user and verify_password(credentials.password, user.password_hash)
-            if not valid or user.role != "admin":
+            if not valid or user.role not in ("admin", "platform_admin"):
                 raise HTTPException(status_code=401, detail="Invalid email or password")
             token = create_session_token(user, app_settings)
             response.set_cookie(
@@ -430,6 +500,128 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             invalid=sum(1 for row in rows if row["status"] == "invalid"),
             rows=rows,
         )
+
+    @app.post("/api/admin/catalog/{model_id}/approve", response_model=ModelResponse)
+    async def approve_model(
+        model_id: int, admin: User = Depends(current_admin)
+    ) -> ModelResponse:
+        with session_factory() as session:
+            model = session.get(Model, model_id)
+            if not model or model.tenant_id != admin.tenant_id:
+                raise HTTPException(status_code=404, detail="Model not found")
+            approve_model_service(session, vector_store, admin.tenant_id, model)
+            return model_response(model)
+
+    @app.post("/api/admin/ingestion/feed")
+    async def set_feed_config(
+        payload: FeedConfigRequest, admin: User = Depends(current_admin)
+    ) -> dict[str, str]:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            configure_feed(session, tenant, str(payload.feed_url), payload.auth_token)
+        return {"status": "configured"}
+
+    @app.post("/api/admin/ingestion/feed/sync", response_model=FeedSyncResponse)
+    async def trigger_feed_sync(
+        admin: User = Depends(current_admin),
+    ) -> FeedSyncResponse:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            try:
+                rows = sync_feed(session, vector_store, tenant)
+            except FeedSyncError as exc:
+                raise HTTPException(status_code=502, detail=str(exc))
+        return FeedSyncResponse(
+            inserted=sum(1 for row in rows if row["status"] == "inserted"),
+            skipped_duplicate=sum(
+                1 for row in rows if row["status"] == "skipped_duplicate"
+            ),
+            invalid=sum(1 for row in rows if row["status"] == "invalid"),
+            rows=rows,
+        )
+
+    @app.post(
+        "/api/admin/ingestion/scrape/preview", response_model=ScrapePreviewResponse
+    )
+    async def preview_scrape(
+        payload: ScrapePreviewRequest, admin: User = Depends(current_admin)
+    ) -> ScrapePreviewResponse:
+        try:
+            result = scrape_preview(str(payload.url), payload.selectors or None)
+        except ScrapeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        return ScrapePreviewResponse(**result)
+
+    @app.post(
+        "/api/admin/ingestion/scrape/confirm", response_model=ScrapeConfirmResponse
+    )
+    async def confirm_scrape(
+        payload: ScrapeConfirmRequest, admin: User = Depends(current_admin)
+    ) -> ScrapeConfirmResponse:
+        with session_factory() as session:
+            rows = scrape_confirm(
+                session,
+                vector_store,
+                admin.tenant_id,
+                str(payload.url),
+                payload.markup_type,
+                payload.rows,
+            )
+        return ScrapeConfirmResponse(rows=rows)
+
+    @app.get("/api/admin/ingestion/status", response_model=IngestionStatusResponse)
+    async def get_ingestion_status(
+        admin: User = Depends(current_admin),
+    ) -> IngestionStatusResponse:
+        with session_factory() as session:
+            return IngestionStatusResponse(**ingestion_status(session, admin.tenant_id))
+
+    @app.post("/api/tenants", response_model=TenantCreateResponse)
+    async def create_tenant_endpoint(
+        payload: TenantCreateRequest,
+        platform_admin: User = Depends(current_platform_admin),
+    ) -> TenantCreateResponse:
+        with session_factory() as session:
+            tenant, raw_key = create_tenant(
+                session, payload.name, payload.allowed_origins
+            )
+            return TenantCreateResponse(
+                id=tenant.id, name=tenant.name, status=tenant.status, api_key=raw_key
+            )
+
+    @app.post("/api/tenants/{tenant_id}/rotate-key", response_model=ApiKeyResponse)
+    async def rotate_tenant_key(
+        tenant_id: int, admin: User = Depends(current_admin)
+    ) -> ApiKeyResponse:
+        if tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        with session_factory() as session:
+            tenant = session.get(Tenant, tenant_id)
+            raw_key = rotate_api_key(session, tenant)
+            return ApiKeyResponse(api_key=raw_key)
+
+    @app.post(
+        "/api/tenants/{tenant_id}/revoke-key/{key_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def revoke_tenant_key(
+        tenant_id: int, key_id: int, admin: User = Depends(current_admin)
+    ) -> None:
+        if tenant_id != admin.tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        with session_factory() as session:
+            key = session.get(TenantApiKey, key_id)
+            if not key or key.tenant_id != tenant_id:
+                raise HTTPException(status_code=404, detail="Key not found")
+            revoke_api_key(session, key_id)
+
+    @app.get("/api/admin/onboarding/status", response_model=OnboardingStatusResponse)
+    async def get_onboarding_status(
+        admin: User = Depends(current_admin),
+    ) -> OnboardingStatusResponse:
+        with session_factory() as session:
+            tenant = session.get(Tenant, admin.tenant_id)
+            return OnboardingStatusResponse(**onboarding_status(session, tenant))
 
     @app.get("/api/admin/observability/runs")
     async def observability_runs(
@@ -657,6 +849,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 app.state.pipeline_locks[key] = lock
             return lock
 
+    async def _register_widget_connection(
+        tenant_id: int, visitor_id: str
+    ) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue()
+        async with app.state.widget_connections_guard:
+            app.state.widget_connections.setdefault((tenant_id, visitor_id), []).append(
+                queue
+            )
+        return queue
+
+    async def _unregister_widget_connection(
+        tenant_id: int, visitor_id: str, queue: asyncio.Queue
+    ) -> None:
+        async with app.state.widget_connections_guard:
+            queues = app.state.widget_connections.get((tenant_id, visitor_id))
+            if queues and queue in queues:
+                queues.remove(queue)
+                if not queues:
+                    del app.state.widget_connections[(tenant_id, visitor_id)]
+
+    def _broadcast_widget_update(
+        tenant_id: int, visitor_id: str, payload: dict
+    ) -> None:
+        # Runs on the event loop thread (scheduled via loop.call_soon_threadsafe from
+        # the background-thread pipeline run below) — safe to touch asyncio.Queue
+        # objects and app.state directly here, unlike from the worker thread itself.
+        for queue in app.state.widget_connections.get((tenant_id, visitor_id), []):
+            queue.put_nowait(payload)
+
     async def run_tracker_pipeline_in_background(
         tenant_id: int, visitor_id: str
     ) -> None:
@@ -665,6 +886,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request path; per-(tenant, visitor) asyncio.Lock to prevent a duplicate
         Recommendation row from two near-simultaneous qualifying batches)."""
         lock = await _get_visitor_lock(tenant_id, visitor_id)
+        loop = asyncio.get_running_loop()
+
+        def push_callback(payload: dict) -> bool:
+            # prepare_retrieval_recommendation runs this from a worker thread
+            # (asyncio.to_thread below) — asyncio.Queue isn't thread-safe, so the
+            # actual put has to happen back on the loop thread.
+            has_connection = bool(
+                app.state.widget_connections.get((tenant_id, visitor_id))
+            )
+            if has_connection:
+                loop.call_soon_threadsafe(
+                    _broadcast_widget_update, tenant_id, visitor_id, payload
+                )
+            return has_connection
+
         async with lock:
             with session_factory() as session:
                 await asyncio.to_thread(
@@ -674,6 +910,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     tenant_id,
                     visitor_id,
                     app.state.mesh_generator,
+                    "event_threshold",
+                    push_callback,
                 )
 
     # No explicit OPTIONS handler needed: CORSMiddleware intercepts and answers every
@@ -856,6 +1094,133 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "models": candidates,
                 "trigger_reason": "activity_retrieval",
                 "evidence": evidence_payload,
+            }
+
+    def _resolve_widget_tenant(tenant_key: str, request: Request) -> Tenant:
+        """Shared auth for every /api/widget/* route: resolves the tenant key, checks
+        the soft origin allowlist, and enforces TEN-8's render-gate — a widget must
+        stay dark on the host page until the tenant is verified + catalog-ready, not
+        just have a valid key."""
+        with session_factory() as session:
+            tenant = resolve_tenant_by_api_key(session, tenant_key)
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="Invalid tenant key")
+            if not _origin_allowed(tenant, request):
+                raise HTTPException(status_code=403, detail="Origin not allowed")
+            if tenant.status != "active":
+                raise HTTPException(status_code=403, detail="Tenant not active")
+            session.expunge(tenant)
+            return tenant
+
+    @app.get("/api/widget/stream")
+    async def widget_stream(
+        request: Request,
+        tenant_key: str = Query(...),
+        visitor_id: str = Query(...),
+    ) -> StreamingResponse:
+        """DLV-2: server-sent-events push. A visitor's open widget gets a
+        `recommendation` event the moment `_store_and_deliver` finishes generating one
+        for them (app/services/agent_graph.py); GET /api/recommendations/latest stays
+        the polling fallback for a visitor with no live connection open."""
+        tenant = _resolve_widget_tenant(tenant_key, request)
+        connection_id = secrets.token_hex(16)
+        with session_factory() as session:
+            widget_session = WidgetSession(
+                tenant_id=tenant.id,
+                visitor_id=visitor_id,
+                connection_id=connection_id,
+            )
+            session.add(widget_session)
+            session.commit()
+            session.refresh(widget_session)
+            widget_session_id = widget_session.id
+
+        queue = await _register_widget_connection(tenant.id, visitor_id)
+
+        async def event_generator():
+            try:
+                yield "event: open\ndata: {}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        # SSE keep-alive comment — some proxies (and the browser
+                        # itself) close an idle connection well before a real
+                        # recommendation might fire.
+                        yield ": keep-alive\n\n"
+                    else:
+                        yield f"event: recommendation\ndata: {json.dumps(payload)}\n\n"
+            finally:
+                await _unregister_widget_connection(tenant.id, visitor_id, queue)
+                with session_factory() as session:
+                    row = session.get(WidgetSession, widget_session_id)
+                    if row is not None:
+                        row.closed_at = datetime.now(timezone.utc)
+                        session.commit()
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/widget/ask", response_model=WidgetAskResponse)
+    async def widget_ask(
+        payload: WidgetAskRequest, request: Request
+    ) -> WidgetAskResponse:
+        tenant = _resolve_widget_tenant(payload.tenant_key, request)
+        with session_factory() as session:
+            result = answer_visitor_question(
+                session,
+                vector_store,
+                tenant.id,
+                payload.visitor_id,
+                payload.question,
+                app.state.mesh_generator,
+            )
+        return WidgetAskResponse(**result)
+
+    @app.get("/api/widget/activity")
+    async def widget_activity(
+        request: Request,
+        tenant_key: str = Query(...),
+        visitor_id: str = Query(...),
+    ) -> dict[str, object]:
+        """DLV-6: read-only view over already-persisted events/recommendations, no new
+        backend logic — the same shape /api/recommendations/latest already assembles
+        inline, exposed as its own endpoint for the widget's "why am I seeing this"
+        panel."""
+        tenant = _resolve_widget_tenant(tenant_key, request)
+        with session_factory() as session:
+            events = recent_events(session, tenant.id, visitor_id)
+            latest = session.scalar(
+                select(Recommendation)
+                .where(
+                    Recommendation.tenant_id == tenant.id,
+                    Recommendation.visitor_id == visitor_id,
+                )
+                .order_by(Recommendation.created_at.desc())
+            )
+            return {
+                "events": [
+                    {
+                        "type": event.event_type,
+                        "model_id": event.model_id,
+                        "metadata": event.metadata_json,
+                        "created_at": as_utc(event.created_at),
+                    }
+                    for event in events
+                ],
+                "pipeline": {
+                    "trigger_reason": latest.trigger_reason,
+                    "behavior_summary": latest.behavior_summary,
+                    "activity_hash": latest.activity_hash,
+                    "delivered_at": as_utc(latest.created_at),
+                }
+                if latest
+                else None,
             }
 
     return app
