@@ -3,13 +3,13 @@
  *
  * Embed on a tenant's own page, alongside (or instead of) tracker.js — reads the same
  * tenant key/visitor id:
- *   <script src="https://<this-host>/static/js/widget.js" data-tenant-key="tk_live_..."></script>
+ *   <script src="https://<this-host>/static/js/widget.js" data-widget-key="wk_live_..."></script>
  *
  * Shape: a launcher bubble that opens proactively (DLV-1) when a real-time push
  * arrives over GET /api/widget/stream (DLV-2, SSE) — the push itself only carries
  * ids/distances, so on receipt this re-fetches the fully-shaped payload from
- * GET /api/recommendations/latest (title/price/why_this per model, already built for
- * that endpoint) rather than duplicating that shaping here. A visitor can then ask a
+ * GET /api/recommendations/latest (title/price/why_this per catalog item, already
+ * built for that endpoint) rather than duplicating that shaping here. A visitor can then ask a
  * follow-up question (DLV-4, POST /api/widget/ask) or expand "why am I seeing this"
  * (DLV-6, GET /api/widget/activity). Rendered inside a Shadow DOM root so the widget's
  * own styles can never leak into, or be broken by, the host page's CSS.
@@ -22,9 +22,9 @@
   'use strict';
 
   var CURRENT_SCRIPT = document.currentScript;
-  var TENANT_KEY = CURRENT_SCRIPT ? CURRENT_SCRIPT.getAttribute('data-tenant-key') : null;
-  if (!TENANT_KEY) {
-    console.error('[TrailMind] widget.js loaded without a data-tenant-key attribute — not rendering.');
+  var WIDGET_KEY = CURRENT_SCRIPT ? CURRENT_SCRIPT.getAttribute('data-widget-key') : null;
+  if (!WIDGET_KEY) {
+    console.error('[TrailMind] widget.js loaded without a data-widget-key attribute — not rendering.');
     return;
   }
 
@@ -141,7 +141,7 @@
   var askButton = panel.querySelector('.tm-ask button');
   var closeButton = panel.querySelector('.tm-close');
 
-  var latestModelsById = {};
+  var latestCatalogItemsById = {};
   var opened = false;
 
   function openPanel() {
@@ -171,12 +171,12 @@
   }
 
   function renderRecommendation(data) {
-    latestModelsById = {};
-    (data.models || []).forEach(function (model) {
-      latestModelsById[model.id] = model;
+    latestCatalogItemsById = {};
+    (data.catalog_items || []).forEach(function (item) {
+      latestCatalogItemsById[item.id] = item;
     });
 
-    if (!data.narrative && (!data.models || !data.models.length)) {
+    if (!data.narrative && (!data.catalog_items || !data.catalog_items.length)) {
       bodyEl.innerHTML =
         '<div class="tm-empty">Nothing yet — browse around and we’ll have a suggestion for you.</div>';
       return;
@@ -202,11 +202,11 @@
         return '<li>' + escapeHtml(point) + '</li>';
       }).join('') + '</ul>';
     }
-    (data.models || []).forEach(function (model) {
-      html += '<div class="tm-card"><div class="tm-card-title">' + escapeHtml(model.title) + '</div>' +
-        '<div class="tm-card-meta">' + escapeHtml(model.provider) + ' · ' + escapeHtml(model.price) + '</div>';
-      if (model.why_this) {
-        html += '<div class="tm-card-meta">' + escapeHtml(model.why_this) + '</div>';
+    (data.catalog_items || []).forEach(function (item) {
+      html += '<div class="tm-card"><div class="tm-card-title">' + escapeHtml(item.title) + '</div>' +
+        '<div class="tm-card-meta">' + escapeHtml(item.provider) + ' · ' + escapeHtml(item.price) + '</div>';
+      if (item.why_this) {
+        html += '<div class="tm-card-meta">' + escapeHtml(item.why_this) + '</div>';
       }
       html += '</div>';
     });
@@ -219,7 +219,7 @@
 
   function fetchLatest() {
     return fetch(
-      API_BASE + '/api/recommendations/latest?' + qs({ tenant_key: TENANT_KEY, visitor_id: visitorId })
+      API_BASE + '/api/recommendations/latest?' + qs({ widget_key: WIDGET_KEY, visitor_id: visitorId })
     )
       .then(function (response) {
         return response.ok ? response.json() : null;
@@ -230,7 +230,7 @@
   }
 
   function showActivity() {
-    fetch(API_BASE + '/api/widget/activity?' + qs({ tenant_key: TENANT_KEY, visitor_id: visitorId }))
+    fetch(API_BASE + '/api/widget/activity?' + qs({ widget_key: WIDGET_KEY, visitor_id: visitorId }))
       .then(function (response) {
         return response.ok ? response.json() : null;
       })
@@ -268,7 +268,7 @@
     fetch(API_BASE + '/api/widget/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_key: TENANT_KEY, visitor_id: visitorId, question: question })
+      body: JSON.stringify({ widget_key: WIDGET_KEY, visitor_id: visitorId, question: question })
     })
       .then(function (response) {
         return response.ok ? response.json() : { answer: 'Something went wrong — please try again.' };
@@ -294,7 +294,7 @@
 
   function connectStream() {
     if (typeof window.EventSource !== 'function') return;
-    var url = API_BASE + '/api/widget/stream?' + qs({ tenant_key: TENANT_KEY, visitor_id: visitorId });
+    var url = API_BASE + '/api/widget/stream?' + qs({ widget_key: WIDGET_KEY, visitor_id: visitorId });
     var source = new EventSource(url);
     source.addEventListener('recommendation', function () {
       fetchLatest().then(function (data) {
@@ -314,7 +314,7 @@
   function init() {
     document.body.appendChild(host);
     fetchLatest().then(function (data) {
-      if (data && (data.narrative || (data.models && data.models.length))) {
+      if (data && (data.narrative || (data.catalog_items && data.catalog_items.length))) {
         renderRecommendation(data);
       }
     });

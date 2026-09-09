@@ -7,8 +7,9 @@ endpoint then, scoped to tenant+visitor ingestion instead of a logged-in user.
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Tenant
+from app.models import CatalogItem, Event, Tenant
 from app.services.agent_graph import prepare_retrieval_recommendation
+from app.services.widgets import create_widget
 
 
 def _make_session_factory(tmp_path):
@@ -35,21 +36,24 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget, _raw_key = create_widget(session, tenant, "Test Widget")
         visitor_id = "v-nfr2"
-        model = Model(
+        item = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Eventually Found",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        session.add(model)
+        session.add(item)
         session.commit()
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": "test"},
@@ -64,7 +68,7 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
             def query_scored(
                 self,
                 text: str,
-                tenant_id: int,
+                widget_id: int,
                 limit: int = 5,
                 where: dict | None = None,
             ):
@@ -72,7 +76,7 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
                 # Weak until the 3rd attempt (initial + 2 retries == MAX_RETRIES), so
                 # grade_refine is forced through its full retry budget before proceeding.
                 distance = 1.9 if self.calls < 3 else 0.2
-                return [(model.id, distance)]
+                return [(item.id, distance)]
 
         class CountingMeshGenerator:
             enabled = True
@@ -82,12 +86,12 @@ def test_agent_pipeline_calls_generation_at_most_once_per_trigger(tmp_path) -> N
 
             def generate(self, behavior_summary, candidates):
                 self.calls += 1
-                return {"narrative": "ok", "model_ids": [model.id]}
+                return {"narrative": "ok", "catalog_item_ids": [item.id]}
 
         store = RetryForcingStore()
         mesh = CountingMeshGenerator()
         recommendation = prepare_retrieval_recommendation(
-            session, store, tenant.id, visitor_id, mesh
+            session, store, widget.id, tenant.id, visitor_id, mesh
         )
 
         assert store.calls == 3, "expected the initial attempt plus 2 bounded retries"

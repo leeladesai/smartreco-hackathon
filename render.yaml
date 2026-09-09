@@ -9,9 +9,17 @@
 # points at Neon Postgres specifically so the data that actually matters (user
 # accounts, catalog, events, recommendations) survives that — see the DATABASE_URL
 # entry for how to set it. chroma_data/ (the vector store) is left on local ephemeral
-# disk on purpose: it's just a semantic-search index derived from the catalog, cheap
-# to rebuild, and startCommand's seed_data.py already reseeds it (and the demo
-# catalog/accounts) on every boot regardless.
+# disk on purpose: it's just a semantic-search index derived from the catalog.
+#
+# KNOWN GAP: app/main.py's boot-time seed only re-upserts the demo accounts now (the
+# hackathon-era mock catalog is no longer auto-seeded — see seed_data.py's
+# seed_demo_accounts/seed_demo_catalog split). Nothing currently re-populates Chroma
+# from Postgres's already-approved Model rows on boot, so a redeploy that wipes
+# chroma_data/ will leave real tenants' approved catalogs `vector_synced=True` in SQL
+# but actually missing from retrieval until each model is re-approved (or a real
+# resync-from-SQL step is added). Not a new problem introduced by removing the mock
+# seed — it already existed for any non-reference tenant's catalog — just newly
+# visible without the mock reseed masking it for the reference tenant.
 #
 # Free plan also note: the service spins down after ~15 min of no traffic and takes
 # ~30-60s to wake on the next request — the first hit after idle will be slow. It also

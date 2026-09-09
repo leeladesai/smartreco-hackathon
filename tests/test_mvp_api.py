@@ -26,7 +26,10 @@ def _make_user(client: TestClient, email: str, role: str = "user") -> User:
     return user
 
 
-def test_admin_can_create_model_and_dual_write(client: TestClient) -> None:
+def test_admin_can_create_item_and_dual_write(
+    client: TestClient, reference_widget
+) -> None:
+    widget_id = reference_widget[0].id
     login = client.post(
         "/api/admin/login",
         json={"email": "curator@test.dev", "password": "password123"},
@@ -34,23 +37,31 @@ def test_admin_can_create_model_and_dual_write(client: TestClient) -> None:
     assert login.status_code == 200
 
     create = client.post(
-        "/api/admin/models",
+        f"/api/admin/widgets/{widget_id}/catalog-items",
         json={
             "title": "Test Voice",
             "description": "A low latency voice model for agents.",
             "provider": "Test Labs",
-            "modality": "Voice",
+            "category": "Voice",
             "price": "$0.001/char",
-            "latency_ms": 120,
+            "specs": {"Latency": "~120ms"},
             "use_case_tags": ["real-time voice"],
         },
     )
     assert create.status_code == 201
     assert create.json()["vector_synced"] is True
-    assert client.get("/api/models?modality=Voice").json()[0]["title"] == "Test Voice"
+    assert (
+        client.get(
+            f"/api/admin/widgets/{widget_id}/catalog-items?category=Voice"
+        ).json()[0]["title"]
+        == "Test Voice"
+    )
 
 
-def test_admin_can_bulk_upload_csv_catalog(client: TestClient) -> None:
+def test_admin_can_bulk_upload_csv_catalog(
+    client: TestClient, reference_widget
+) -> None:
+    widget_id = reference_widget[0].id
     login = client.post(
         "/api/admin/login",
         json={"email": "curator@test.dev", "password": "password123"},
@@ -58,13 +69,13 @@ def test_admin_can_bulk_upload_csv_catalog(client: TestClient) -> None:
     assert login.status_code == 200
 
     csv_content = (
-        "title,provider,modality,price,description,use_case_tags\n"
+        "title,provider,category,price,description,use_case_tags\n"
         "Bulk Voice,Test Labs,Voice,$0.001/char,A voice model.,real-time;support\n"
         "Bulk Voice,Test Labs,Voice,$0.001/char,Duplicate of the row above.,\n"
         ",Test Labs,LLM,$1,Missing a title so this row is invalid.,\n"
     )
     response = client.post(
-        "/api/admin/models/bulk-upload",
+        f"/api/admin/widgets/{widget_id}/catalog-items/bulk-upload",
         files={"file": ("catalog.csv", csv_content, "text/csv")},
     )
     assert response.status_code == 200
@@ -72,25 +83,36 @@ def test_admin_can_bulk_upload_csv_catalog(client: TestClient) -> None:
     assert body["inserted"] == 1
     assert body["skipped_duplicate"] == 1
     assert body["invalid"] == 1
-    assert client.get("/api/models?q=Bulk Voice").json()[0]["title"] == "Bulk Voice"
+    assert (
+        client.get(f"/api/admin/widgets/{widget_id}/catalog-items?q=Bulk Voice").json()[
+            0
+        ]["title"]
+        == "Bulk Voice"
+    )
 
 
-def test_bulk_upload_rejects_malformed_file(client: TestClient) -> None:
+def test_bulk_upload_rejects_malformed_file(
+    client: TestClient, reference_widget
+) -> None:
+    widget_id = reference_widget[0].id
     client.post(
         "/api/admin/login",
         json={"email": "curator@test.dev", "password": "password123"},
     )
     response = client.post(
-        "/api/admin/models/bulk-upload",
+        f"/api/admin/widgets/{widget_id}/catalog-items/bulk-upload",
         files={"file": ("catalog.json", "{not json", "application/json")},
     )
     assert response.status_code == 400
 
 
-def test_non_admin_cannot_bulk_upload_catalog(client: TestClient) -> None:
+def test_non_admin_cannot_bulk_upload_catalog(
+    client: TestClient, reference_widget
+) -> None:
+    widget_id = reference_widget[0].id
     _make_user(client, "bulk-user@test.dev")
     response = client.post(
-        "/api/admin/models/bulk-upload",
+        f"/api/admin/widgets/{widget_id}/catalog-items/bulk-upload",
         files={"file": ("catalog.csv", "title\n", "text/csv")},
     )
     assert response.status_code == 403
@@ -243,16 +265,19 @@ def test_non_admin_cannot_delete_users(client: TestClient) -> None:
     assert response.status_code == 403
 
 
-def test_non_admin_cannot_manage_models(client: TestClient) -> None:
+def test_non_admin_cannot_manage_catalog_items(
+    client: TestClient, reference_widget
+) -> None:
+    widget_id = reference_widget[0].id
     _make_user(client, "plain-user@test.dev")
 
     response = client.post(
-        "/api/admin/models",
+        f"/api/admin/widgets/{widget_id}/catalog-items",
         json={
             "title": "Blocked",
             "description": "Should not be created.",
             "provider": "Test Labs",
-            "modality": "LLM",
+            "category": "LLM",
             "price": "$1",
         },
     )

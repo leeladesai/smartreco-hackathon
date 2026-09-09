@@ -1,70 +1,70 @@
 import os
+import sys
 
 from sqlalchemy import select
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Model, User
+from app.models import CatalogItem, User
 from app.security import hash_password
 from app.services.tenants import get_or_create_reference_tenant
-from app.vector import ModelVectorStore, build_embedding_function
+from app.services.widgets import get_or_create_default_widget
+from app.vector import CatalogItemVectorStore, build_embedding_function
 
 
-SEED_MODELS = [
+SEED_CATALOG_ITEMS = [
     {
         "title": "GPT-4o mini",
         "description": (
-            "A fast, cost-aware general model for classification, extraction, "
-            "and everyday product features."
+            "A fast, cost-aware general model for classification, extraction, and "
+            "everyday product features."
         ),
         "provider": "OpenAI",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.15 / 1M input tokens",
-        "latency_ms": 820,
-        "context_window": "128K",
+        "specs": {"Latency": "~820ms", "Context": "128K"},
         "use_case_tags": ["structured output", "classification", "cost sensitive"],
         "source_url": "https://platform.openai.com/docs/models",
         "story": (
-            "Reach for this when the task is well-defined and volume is high — it wins on "
-            "cost-per-call, not raw reasoning depth. Trades some nuance for speed and price "
-            "versus a flagship model."
+            "Reach for this when the task is well-defined and volume is high — it "
+            "wins on cost-per-call, not raw reasoning depth. Trades some nuance for "
+            "speed and price versus a flagship model."
         ),
     },
     {
         "title": "Claude 3.5 Sonnet",
         "description": (
-            "Anthropic's balanced flagship — strong reasoning and long-document "
-            "work at a lower cost than top-tier frontier models."
+            "Anthropic's balanced flagship — strong reasoning and long-document work "
+            "at a lower cost than top-tier frontier models."
         ),
         "provider": "Anthropic",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$3.00 / 1M input tokens",
-        "latency_ms": 640,
-        "context_window": "200K",
+        "specs": {"Latency": "~640ms", "Context": "200K"},
         "use_case_tags": ["long context", "reasoning", "document analysis"],
         "source_url": "https://www.anthropic.com/pricing",
         "story": (
-            "Pick this over a cheaper model once the task needs multi-step reasoning or the "
-            "input document won't fit a smaller context window — the cost premium buys "
-            "fewer follow-up corrections."
+            "Pick this over a cheaper model once the task needs multi-step reasoning "
+            "or the input document won't fit a smaller context window — the cost "
+            "premium buys fewer follow-up corrections."
         ),
     },
     {
         "title": "ElevenLabs Turbo v2.5",
         "description": (
-            "Low-latency text-to-speech for conversational agents that need "
-            "streaming audio quickly."
+            "Low-latency text-to-speech for conversational agents that need streaming "
+            "audio quickly."
         ),
         "provider": "ElevenLabs",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.0002 / character",
-        "latency_ms": 275,
-        "context_window": "5,000 characters",
+        "specs": {"Latency": "~275ms", "Context": "5,000 characters"},
         "use_case_tags": ["real-time voice", "customer support", "streaming"],
         "source_url": "https://elevenlabs.io/docs",
         "story": (
-            "Good default for customer-facing voice agents where voice quality matters as "
-            "much as speed — beats Cartesia Sonic on naturalness, loses to it on raw latency."
+            "Good default for customer-facing voice agents where voice quality "
+            "matters as much as speed — beats Cartesia Sonic on naturalness, loses to "
+            "it on raw latency."
         ),
     },
     {
@@ -74,63 +74,63 @@ SEED_MODELS = [
             "where every millisecond of round trip matters."
         ),
         "provider": "Cartesia",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.00015 / character",
-        "latency_ms": 135,
-        "context_window": "N/A",
+        "specs": {"Latency": "~135ms", "Context": "N/A"},
         "use_case_tags": ["real-time voice", "low latency", "voice agents"],
         "source_url": "https://cartesia.ai",
         "story": (
-            "Choose this when latency is the deciding constraint — e.g. live phone-call "
-            "agents where any pause reads as a dropped connection. Trades some voice "
-            "naturalness for the fastest round trip in this catalog."
+            "Choose this when latency is the deciding constraint — e.g. live phone- "
+            "call agents where any pause reads as a dropped connection. Trades some "
+            "voice naturalness for the fastest round trip in this catalog."
         ),
     },
     {
         "title": "Flux.1 Pro",
         "description": (
-            "High-fidelity image generation for product concepts, marketing "
-            "assets, and visual exploration."
+            "High-fidelity image generation for product concepts, marketing assets, "
+            "and visual exploration."
         ),
         "provider": "Black Forest Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.05 / image",
-        "context_window": "2,048px",
+        "specs": {"Context": "2,048px"},
         "use_case_tags": ["image generation", "concept art", "marketing"],
         "source_url": "https://bfl.ai/models",
         "story": (
             "The pick when output quality is customer-facing — marketing assets, hero "
-            "images — and the per-image cost is a rounding error next to the design time "
-            "it saves."
+            "images — and the per-image cost is a rounding error next to the design "
+            "time it saves."
         ),
     },
     {
         "title": "Stable Diffusion 3.5",
         "description": (
-            "Open-weight image generation with strong prompt adherence at a "
-            "fraction of the cost of closed-source alternatives."
+            "Open-weight image generation with strong prompt adherence at a fraction "
+            "of the cost of closed-source alternatives."
         ),
         "provider": "Stability AI",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.035 / image",
-        "context_window": "1,536px",
+        "specs": {"Context": "1,536px"},
         "use_case_tags": ["image generation", "open weights", "cost sensitive"],
         "source_url": "https://stability.ai/news/stable-diffusion-3-5",
         "story": (
-            "Reach for this over Flux.1 Pro when volume is high or self-hosting matters — "
-            "open weights mean no per-call lock-in, at a modest quality step down."
+            "Reach for this over Flux.1 Pro when volume is high or self-hosting "
+            "matters — open weights mean no per-call lock-in, at a modest quality "
+            "step down."
         ),
     },
     {
         "title": "Runway Gen-3",
         "description": (
-            "Text-to-video generation for short-form clips, concept previews, "
-            "and storyboard exploration."
+            "Text-to-video generation for short-form clips, concept previews, and "
+            "storyboard exploration."
         ),
         "provider": "Runway",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.10 / second",
-        "context_window": "10s max",
+        "specs": {"Context": "10s max"},
         "use_case_tags": ["video generation", "storyboarding", "concept preview"],
         "source_url": "https://runwayml.com/research/introducing-gen-3-alpha",
         "story": (
@@ -141,18 +141,19 @@ SEED_MODELS = [
     {
         "title": "Voyage-3",
         "description": (
-            "Embedding model for semantic retrieval across technical documents "
-            "and product catalogs."
+            "Embedding model for semantic retrieval across technical documents and "
+            "product catalogs."
         ),
         "provider": "Voyage AI",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.02 / 1M tokens",
-        "context_window": "32K",
+        "specs": {"Context": "32K"},
         "use_case_tags": ["semantic search", "retrieval", "reranking"],
         "source_url": "https://docs.voyageai.com/docs/embeddings",
         "story": (
-            "Default choice for a new RAG pipeline over technical/product docs — tuned "
-            "specifically for that domain rather than being a general-purpose embedding."
+            "Default choice for a new RAG pipeline over technical/product docs — "
+            "tuned specifically for that domain rather than being a general-purpose "
+            "embedding."
         ),
     },
     {
@@ -162,41 +163,45 @@ SEED_MODELS = [
             "and search re-ranking."
         ),
         "provider": "Cohere",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.10 / 1M tokens",
-        "context_window": "512",
+        "specs": {"Context": "512"},
         "use_case_tags": ["semantic search", "multilingual", "reranking"],
         "source_url": "https://cohere.com/pricing",
         "story": (
-            "Switch to this over Voyage-3 once the corpus is multilingual — that's the one "
-            "axis it's purpose-built for; single-language English retrieval doesn't need it."
+            "Switch to this over Voyage-3 once the corpus is multilingual — that's "
+            "the one axis it's purpose-built for; single-language English retrieval "
+            "doesn't need it."
         ),
     },
     {
         "title": "NebulaSynth LLM X1",
         "description": (
-            "A large language model optimized for complex reasoning and "
-            "creative writing tasks."
+            "A large language model optimized for complex reasoning and creative "
+            "writing tasks."
         ),
         "provider": "StellarMind Tech",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.12 / 1M tokens",
-        "latency_ms": 250,
-        "context_window": "50,000 tokens",
+        "specs": {"Latency": "~250ms", "Context": "50,000 tokens"},
         "use_case_tags": ["creative writing", "reasoning", "content generation"],
         "source_url": "https://docs.stellarmindtech.com/nebulasynth-x1",
     },
     {
         "title": "VocalAura Voicewave 3000",
         "description": (
-            "An advanced speech synthesis engine perfect for immersive "
-            "narration and voice assistants."
+            "An advanced speech synthesis engine perfect for immersive narration and "
+            "voice assistants."
         ),
         "provider": "EchoForge Systems",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.08 / second",
-        "latency_ms": 100,
-        "use_case_tags": ["speech synthesis", "virtual assistants", "audio narration"],
+        "specs": {"Latency": "~100ms"},
+        "use_case_tags": [
+            "speech synthesis",
+            "virtual assistants",
+            "audio narration",
+        ],
         "source_url": "https://docs.echoforgesys.com/voicewave3000",
     },
     {
@@ -206,23 +211,22 @@ SEED_MODELS = [
             "commercial visual content."
         ),
         "provider": "Imagino Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.05 / image",
-        "latency_ms": 320,
+        "specs": {"Latency": "~320ms"},
         "use_case_tags": ["art creation", "advertisement", "concept design"],
         "source_url": "https://docs.imagino.ai/pixoravision-x",
     },
     {
         "title": "TuneMeld VideoPro",
         "description": (
-            "Next-gen AI for rapid video synthesis and editing, ideal for "
-            "marketing and entertainment."
+            "Next-gen AI for rapid video synthesis and editing, ideal for marketing "
+            "and entertainment."
         ),
         "provider": "Cineform Dynamics",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.20 / minute",
-        "latency_ms": 500,
-        "context_window": "10 seconds max",
+        "specs": {"Latency": "~500ms", "Context": "10 seconds max"},
         "use_case_tags": ["video editing", "ad creation", "visual effects"],
         "source_url": "https://docs.cineformdynamics.com/tunemeld-videopro",
     },
@@ -233,76 +237,74 @@ SEED_MODELS = [
             "recommendation systems."
         ),
         "provider": "NeuroNest AI",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / 1K embeddings",
+        "specs": {},
         "use_case_tags": ["semantic search", "recommendation", "clustering"],
         "source_url": "https://docs.neuronest.ai/cerebraembed-v4",
     },
     {
         "title": "HoloBlend Multimodal 2.3",
         "description": (
-            "A versatile model capable of integrating text, image, and "
-            "audio for comprehensive multimedia tasks."
+            "A versatile model capable of integrating text, image, and audio for "
+            "comprehensive multimedia tasks."
         ),
         "provider": "PolyData Labs",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.25 / 1K multimodal units",
-        "latency_ms": 400,
-        "context_window": "64K",
+        "specs": {"Latency": "~400ms", "Context": "64K"},
         "use_case_tags": ["multimedia synthesis", "context understanding"],
         "source_url": "https://docs.polydatalabs.com/holoblend-2.3",
     },
     {
         "title": "NebulaSynth LLM Z9",
         "description": (
-            "A smaller, efficient language model tailored for embedded "
-            "applications and edge devices."
+            "A smaller, efficient language model tailored for embedded applications "
+            "and edge devices."
         ),
         "provider": "StellarMind Tech",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.07 / 1M tokens",
-        "latency_ms": 180,
-        "context_window": "8,000 tokens",
+        "specs": {"Latency": "~180ms", "Context": "8,000 tokens"},
         "use_case_tags": ["edge AI", "embedded systems", "lightweight reasoning"],
         "source_url": "https://docs.stellarmindtech.com/nebulasynth-z9",
     },
     {
         "title": "SonoraVoice FX",
         "description": (
-            "Realistic voice conversion and modulation tools for "
-            "entertainment and accessibility."
+            "Realistic voice conversion and modulation tools for entertainment and "
+            "accessibility."
         ),
         "provider": "VocalVortex Inc.",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.06 / second",
-        "latency_ms": 120,
+        "specs": {"Latency": "~120ms"},
         "use_case_tags": ["voice conversion", "accessibility", "sound design"],
         "source_url": "https://docs.vocalvortex.com/sonoravoice-fx",
     },
     {
         "title": "ClaraRender AI",
         "description": (
-            "Photorealistic image rendering model perfect for product "
-            "visualization and digital art."
+            "Photorealistic image rendering model perfect for product visualization "
+            "and digital art."
         ),
         "provider": "RenderTech AI",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.08 / image",
-        "latency_ms": 350,
+        "specs": {"Latency": "~350ms"},
         "use_case_tags": ["digital art", "product design", "visualization"],
         "source_url": "https://docs.rendertechai.com/clararender",
     },
     {
         "title": "VidoraStream 4K",
         "description": (
-            "High-quality AI-driven video generation for cinematic and "
-            "streaming applications."
+            "High-quality AI-driven video generation for cinematic and streaming "
+            "applications."
         ),
         "provider": "StreamForge Networks",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.25 / minute",
-        "latency_ms": 600,
-        "context_window": "15s max",
+        "specs": {"Latency": "~600ms", "Context": "15s max"},
         "use_case_tags": ["cinema", "streaming", "advertisement"],
         "source_url": "https://docs.streamforgenetworks.com/vidorastream-4k",
     },
@@ -313,156 +315,152 @@ SEED_MODELS = [
             "clustering routines."
         ),
         "provider": "NeuroNest AI",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / 1K embeddings",
+        "specs": {},
         "use_case_tags": ["search", "clustering", "recommendation"],
         "source_url": "https://docs.neuronest.ai/echoembed-v5",
     },
     {
         "title": "PolyMosaic Multimodal 1.8",
         "description": (
-            "A comprehensive model integrating text, images, and speech for "
-            "rich content creation."
+            "A comprehensive model integrating text, images, and speech for rich "
+            "content creation."
         ),
         "provider": "PolyData Labs",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.30 / 1K multimodal units",
-        "latency_ms": 420,
-        "context_window": "100K",
+        "specs": {"Latency": "~420ms", "Context": "100K"},
         "use_case_tags": ["multimedia creation", "context blending"],
         "source_url": "https://docs.polydatalabs.com/polymosaic-1.8",
     },
     {
         "title": "MindScribe LLM Compact",
         "description": (
-            "An efficient language model tailored for mobile and low-power "
-            "devices, ideal for note-taking and summarization."
+            "An efficient language model tailored for mobile and low-power devices, "
+            "ideal for note-taking and summarization."
         ),
         "provider": "LiteLogic AI",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.05 / 1M tokens",
-        "latency_ms": 200,
-        "context_window": "4,000 tokens",
+        "specs": {"Latency": "~200ms", "Context": "4,000 tokens"},
         "use_case_tags": ["note-taking", "summarization", "mobile AI"],
         "source_url": "https://docs.litelogic.ai/mindscrib-compact",
     },
     {
         "title": "VoxCraft AudioSynth",
         "description": (
-            "AI audio generation tailored for game sound design, podcasts, "
-            "and background scores."
+            "AI audio generation tailored for game sound design, podcasts, and "
+            "background scores."
         ),
         "provider": "AudioNexus Ltd.",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.09 / second",
-        "latency_ms": 110,
+        "specs": {"Latency": "~110ms"},
         "use_case_tags": ["game audio", "podcasts", "sound design"],
         "source_url": "https://docs.audionexus.com/voxcraft-aisynth",
     },
     {
         "title": "RenderSphere AI",
         "description": (
-            "Real-time 3D scene rendering with procedural generation "
-            "capabilities, suitable for virtual worlds."
+            "Real-time 3D scene rendering with procedural generation capabilities, "
+            "suitable for virtual worlds."
         ),
         "provider": "VirtualVista Inc.",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.10 / image",
-        "latency_ms": 400,
+        "specs": {"Latency": "~400ms"},
         "use_case_tags": ["virtual reality", "game development", "simulation"],
         "source_url": "https://docs.virtualvista.com/rendersphere-ai",
     },
     {
         "title": "CynthiaVision Pix",
         "description": (
-            "Stylized image generation with a focus on artistic effects for "
-            "creative projects."
+            "Stylized image generation with a focus on artistic effects for creative "
+            "projects."
         ),
         "provider": "Artify AI",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.07 / image",
-        "latency_ms": 330,
+        "specs": {"Latency": "~330ms"},
         "use_case_tags": ["artistic effects", "creative design"],
         "source_url": "https://docs.artifyai.com/cynthiavision-pix",
     },
     {
         "title": "ViTale VideoForge",
         "description": (
-            "An innovative model for automated video editing, including "
-            "scene detection and montage creation."
+            "An innovative model for automated video editing, including scene "
+            "detection and montage creation."
         ),
         "provider": "EditFlow Labs",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.30 / minute",
-        "latency_ms": 550,
-        "context_window": "20 seconds max",
+        "specs": {"Latency": "~550ms", "Context": "20 seconds max"},
         "use_case_tags": ["video editing", "automatic montage"],
         "source_url": "https://docs.editflowlabs.com/vitale-videoforge",
     },
     {
         "title": "AstraMind TextSynth",
         "description": (
-            "Optimized for high-quality natural language understanding and "
-            "generation tasks with extensive context support."
+            "Optimized for high-quality natural language understanding and generation "
+            "tasks with extensive context support."
         ),
         "provider": "NebulaCore AI",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.02 / 1M tokens",
-        "latency_ms": 150,
-        "context_window": "64K",
+        "specs": {"Latency": "~150ms", "Context": "64K"},
         "use_case_tags": ["chatbots", "content creation", "Q&A"],
         "source_url": "https://docs.nebulacore.ai/astramind-textsynth",
     },
     {
         "title": "OrionVox VoiceMaster",
         "description": (
-            "Provides realistic speech synthesis and voice conversion for "
-            "interactive applications."
+            "Provides realistic speech synthesis and voice conversion for interactive "
+            "applications."
         ),
         "provider": "Voxify Labs",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.05 / voice",
-        "latency_ms": 50,
+        "specs": {"Latency": "~50ms"},
         "use_case_tags": ["voice cloning", "interactive voice", "entertainment"],
         "source_url": "https://docs.voxifylabs.com/orionvox",
     },
     {
         "title": "Luminara ImageCraft",
         "description": (
-            "Generates high-resolution images from textual prompts, "
-            "suitable for creative design workflows."
+            "Generates high-resolution images from textual prompts, suitable for "
+            "creative design workflows."
         ),
         "provider": "Pixora Technologies",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.10 / image",
-        "latency_ms": 200,
+        "specs": {"Latency": "~200ms"},
         "use_case_tags": ["art generation", "advertising", "concept design"],
         "source_url": "https://docs.pixoratech.com/luminaracraft",
     },
     {
         "title": "SpectraFlow VideoGen",
         "description": (
-            "Transforms textual descriptions into short video clips with "
-            "synchronized visuals and audio."
+            "Transforms textual descriptions into short video clips with synchronized "
+            "visuals and audio."
         ),
         "provider": "FlickerSoft",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.20 / second",
-        "latency_ms": 1000,
-        "context_window": "10s max",
+        "specs": {"Latency": "~1000ms", "Context": "10s max"},
         "use_case_tags": ["video creation", "storytelling", "ads"],
         "source_url": "https://docs.flickersoft.com/spectraflow",
     },
     {
         "title": "EmbedPulse SemanticEmbed",
         "description": (
-            "Provides vector embeddings for semantic search and clustering "
-            "tasks across large datasets."
+            "Provides vector embeddings for semantic search and clustering tasks "
+            "across large datasets."
         ),
         "provider": "CortexWave",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / character",
-        "latency_ms": 30,
+        "specs": {"Latency": "~30ms"},
         "use_case_tags": ["search", "recommendation", "clustering"],
         "source_url": "https://docs.cortexwave.com/embeddulse",
     },
@@ -473,10 +471,9 @@ SEED_MODELS = [
             "understanding for complex workflows."
         ),
         "provider": "Synthoria AI",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.15 / 1M tokens",
-        "latency_ms": 250,
-        "context_window": "128K",
+        "specs": {"Latency": "~250ms", "Context": "128K"},
         "use_case_tags": [
             "multimodal analysis",
             "multimedia moderation",
@@ -487,133 +484,130 @@ SEED_MODELS = [
     {
         "title": "VireoVision Insight",
         "description": (
-            "Specialized in analyzing video data for object detection, "
-            "scene understanding, and event recognition."
+            "Specialized in analyzing video data for object detection, scene "
+            "understanding, and event recognition."
         ),
         "provider": "VisioLogic",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.15 / second",
-        "latency_ms": 120,
-        "context_window": "5,000 frames",
+        "specs": {"Latency": "~120ms", "Context": "5,000 frames"},
         "use_case_tags": ["video analytics", "security", "autonomous systems"],
         "source_url": "https://docs.visiologic.com/vireovision",
     },
     {
         "title": "EchoTone AudioForge",
         "description": (
-            "High-fidelity speech synthesis and audio editing capabilities "
-            "for media production."
+            "High-fidelity speech synthesis and audio editing capabilities for media "
+            "production."
         ),
         "provider": "SonarSoft",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.06 / minute",
-        "latency_ms": 40,
+        "specs": {"Latency": "~40ms"},
         "use_case_tags": ["audio generation", "voiceover", "podcasting"],
         "source_url": "https://docs.sonarsoft.com/echotone",
     },
     {
         "title": "PixelWave RenderX",
         "description": (
-            "Advanced image rendering from sketches and prompts, ideal for "
-            "digital artists and designers."
+            "Advanced image rendering from sketches and prompts, ideal for digital "
+            "artists and designers."
         ),
         "provider": "Artify Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.12 / image",
-        "latency_ms": 220,
+        "specs": {"Latency": "~220ms"},
         "use_case_tags": ["illustration", "concept art", "visual development"],
         "source_url": "https://docs.artifylabs.com/pixelwave",
     },
     {
         "title": "FlowPix VideoSynth",
         "description": (
-            "Enables rapid video prototyping from textual and visual inputs "
-            "for creatives."
+            "Enables rapid video prototyping from textual and visual inputs for "
+            "creatives."
         ),
         "provider": "DreamMotion",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.25 / second",
-        "latency_ms": 950,
-        "context_window": "8s max",
+        "specs": {"Latency": "~950ms", "Context": "8s max"},
         "use_case_tags": ["video prototyping", "animation", "storyboarding"],
         "source_url": "https://docs.dreammotion.com/flowpix",
     },
     {
         "title": "NeuroSense Embeddify",
         "description": (
-            "Highly optimized embedding model for real-time semantic "
-            "similarity and clustering."
+            "Highly optimized embedding model for real-time semantic similarity and "
+            "clustering."
         ),
         "provider": "DeepSynapse",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / character",
-        "latency_ms": 25,
+        "specs": {"Latency": "~25ms"},
         "use_case_tags": ["search indexing", "recommendation", "clustering"],
         "source_url": "https://docs.deepsynapse.com/neurosense",
     },
     {
         "title": "HoloVision Augment",
         "description": (
-            "Multimodal AR enhancement system to overlay generated visuals "
-            "and audio into real-world environments."
+            "Multimodal AR enhancement system to overlay generated visuals and audio "
+            "into real-world environments."
         ),
         "provider": "Augmentis Inc.",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.20 / 1M tokens",
-        "context_window": "256K",
+        "specs": {"Context": "256K"},
         "use_case_tags": ["AR", "interactive media", "entertainment"],
         "source_url": "https://docs.augmentis.com/holovision",
     },
     {
         "title": "VocalMirage AudioSpline",
         "description": (
-            "Sophisticated voice synthesis with emotional tone modulation "
-            "for characters and narrators."
+            "Sophisticated voice synthesis with emotional tone modulation for "
+            "characters and narrators."
         ),
         "provider": "SonicWave",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.07 / minute",
-        "latency_ms": 35,
+        "specs": {"Latency": "~35ms"},
         "use_case_tags": ["entertainment", "narration", "voice acting"],
         "source_url": "https://docs.sonicwave.com/vocalmirage",
     },
     {
         "title": "ChromaFrame ImageFlow",
         "description": (
-            "Dynamic AI-driven image editing with style transfer and "
-            "enhancement options."
+            "Dynamic AI-driven image editing with style transfer and enhancement "
+            "options."
         ),
         "provider": "ColorCraft AI",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.11 / image",
-        "latency_ms": 180,
+        "specs": {"Latency": "~180ms"},
         "use_case_tags": ["photo editing", "digital art", "visual effects"],
         "source_url": "https://docs.colorcraftai.com/chromaframe",
     },
     {
         "title": "Streamline VideoCaster",
         "description": (
-            "Real-time video editing and stylization for live streaming and "
-            "content creation."
+            "Real-time video editing and stylization for live streaming and content "
+            "creation."
         ),
         "provider": "LiveEdit Labs",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.22 / second",
-        "latency_ms": 850,
-        "context_window": "12s max",
+        "specs": {"Latency": "~850ms", "Context": "12s max"},
         "use_case_tags": ["live streaming", "video remixing", "content moderation"],
         "source_url": "https://docs.liveeditlabs.com/streamline",
     },
     {
         "title": "PolySpectra MultimodalFusion",
         "description": (
-            "Integrates multiple data modalities to understand complex "
-            "multimedia inputs comprehensively."
+            "Integrates multiple data modalities to understand complex multimedia "
+            "inputs comprehensively."
         ),
         "provider": "FusionCore",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.18 / 1M tokens",
-        "context_window": "256K",
+        "specs": {"Context": "256K"},
         "use_case_tags": [
             "multimedia analysis",
             "automated tagging",
@@ -624,216 +618,208 @@ SEED_MODELS = [
     {
         "title": "AudioGlow VoiceScape",
         "description": (
-            "Generates immersive background sounds and audio effects for "
-            "multimedia projects."
+            "Generates immersive background sounds and audio effects for multimedia "
+            "projects."
         ),
         "provider": "EchoWave",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.04 / second",
-        "latency_ms": 45,
+        "specs": {"Latency": "~45ms"},
         "use_case_tags": ["sound design", "game development", "film production"],
         "source_url": "https://docs.echowave.com/audioglow",
     },
     {
         "title": "VisionEvolve PixInsight",
         "description": (
-            "AI-powered image analysis and enhancement to support "
-            "scientific and medical imaging tasks."
+            "AI-powered image analysis and enhancement to support scientific and "
+            "medical imaging tasks."
         ),
         "provider": "Medisynth",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.13 / image",
-        "latency_ms": 210,
+        "specs": {"Latency": "~210ms"},
         "use_case_tags": ["medical imaging", "scientific research", "diagnostics"],
         "source_url": "https://docs.medisynth.com/visionevolve",
     },
     {
         "title": "VeriQuantum SpeechCore",
         "description": (
-            "Specialized for real-time speech recognition and dialogue "
-            "systems, providing high accuracy and low latency responses."
+            "Specialized for real-time speech recognition and dialogue systems, "
+            "providing high accuracy and low latency responses."
         ),
         "provider": "NeuroVibe Labs",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.04 / second",
-        "latency_ms": 150,
-        "context_window": "10s max",
+        "specs": {"Latency": "~150ms", "Context": "10s max"},
         "use_case_tags": ["speech recognition", "dialogue"],
         "source_url": "https://docs.neurovibelabs.com/veriquantum-speechcore",
     },
     {
         "title": "AstraSynth VisionX",
         "description": (
-            "Optimized for high-quality image synthesis and artistic "
-            "rendering tasks with crisp detail fidelity."
+            "Optimized for high-quality image synthesis and artistic rendering tasks "
+            "with crisp detail fidelity."
         ),
         "provider": "PhotonForge Inc.",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.20 / image",
-        "latency_ms": 250,
+        "specs": {"Latency": "~250ms"},
         "use_case_tags": ["artistic rendering", "creativity"],
         "source_url": "https://docs.photonforge.com/astrasynth-visionx",
     },
     {
         "title": "SkyPulse VideoFlow",
         "description": (
-            "Designed for real-time video generation and editing, "
-            "supporting dynamic scene creation."
+            "Designed for real-time video generation and editing, supporting dynamic "
+            "scene creation."
         ),
         "provider": "Streamline Media",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.05 / second",
-        "latency_ms": 300,
-        "context_window": "10s max",
+        "specs": {"Latency": "~300ms", "Context": "10s max"},
         "use_case_tags": ["video editing", "live streaming"],
         "source_url": "https://docs.streamlinemedia.com/skypulse-videoflow",
     },
     {
         "title": "LumaEmbed VisionNest",
         "description": (
-            "Ideal for embedding extraction from images to facilitate "
-            "search, classification, and similarity tasks."
+            "Ideal for embedding extraction from images to facilitate search, "
+            "classification, and similarity tasks."
         ),
         "provider": "OptiCore Labs",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / character",
-        "context_window": "5,000 characters",
+        "specs": {"Context": "5,000 characters"},
         "use_case_tags": ["search", "classification"],
         "source_url": "https://docs.opticorelabs.com/lumabase-visionnest",
     },
     {
         "title": "QuantumLink MultimodalX",
         "description": (
-            "A versatile model supporting simultaneous processing of text, "
-            "images, and audio for complex context understanding."
+            "A versatile model supporting simultaneous processing of text, images, "
+            "and audio for complex context understanding."
         ),
         "provider": "SynthWave Technologies",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.02 / 1M tokens",
-        "latency_ms": 400,
-        "context_window": "128K",
+        "specs": {"Latency": "~400ms", "Context": "128K"},
         "use_case_tags": ["multimodal understanding", "context integration"],
         "source_url": "https://docs.synthwavetec.com/quantumlink-multimodalex",
     },
     {
         "title": "PyraVoice Express",
         "description": (
-            "A fast voice synthesis model optimized for conversational AI "
-            "with realistic tone and pitch options."
+            "A fast voice synthesis model optimized for conversational AI with "
+            "realistic tone and pitch options."
         ),
         "provider": "VocalForge Solutions",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.03 / second",
-        "latency_ms": 100,
-        "context_window": "15s max",
+        "specs": {"Latency": "~100ms", "Context": "15s max"},
         "use_case_tags": ["voice synthesis", "virtual assistants"],
         "source_url": "https://docs.vocalforgesolutions.com/pyravoice-express",
     },
     {
         "title": "ArtemisPix VisualForge",
         "description": (
-            "Designed for high-resolution image generation with detailed "
-            "textures and complex scenes."
+            "Designed for high-resolution image generation with detailed textures and "
+            "complex scenes."
         ),
         "provider": "Imaginuity Creations",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.25 / image",
-        "latency_ms": 350,
+        "specs": {"Latency": "~350ms"},
         "use_case_tags": ["concept art", "design"],
         "source_url": "https://docs.imaginuitycreations.com/artemis-pix",
     },
     {
         "title": "VividStream VideoSynth",
         "description": (
-            "Enables high-fidelity video synthesis for cinematic and "
-            "entertainment applications with real-time capabilities."
+            "Enables high-fidelity video synthesis for cinematic and entertainment "
+            "applications with real-time capabilities."
         ),
         "provider": "CineVerse Labs",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.06 / second",
-        "latency_ms": 400,
-        "context_window": "10s max",
+        "specs": {"Latency": "~400ms", "Context": "10s max"},
         "use_case_tags": ["film production", "animation"],
         "source_url": "https://docs.cineverse.com/vividstream-videosynth",
     },
     {
         "title": "PhotonEmbed Embeddify",
         "description": (
-            "Offers fast embedding extraction from text and images for use "
-            "in search and recommendation systems."
+            "Offers fast embedding extraction from text and images for use in search "
+            "and recommendation systems."
         ),
         "provider": "SyncMind Studios",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0003 / character",
-        "context_window": "4,000 characters",
+        "specs": {"Context": "4,000 characters"},
         "use_case_tags": ["search", "recommendation"],
         "source_url": "https://docs.syncmindstudios.com/photonembed-embeddify",
     },
     {
         "title": "HexaMulti ModalSense",
         "description": (
-            "Supports multi-sensory data processing from text, images, and "
-            "audio to facilitate advanced AI understanding."
+            "Supports multi-sensory data processing from text, images, and audio to "
+            "facilitate advanced AI understanding."
         ),
         "provider": "FusionCore Innovations",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.03 / 1M tokens",
-        "latency_ms": 420,
-        "context_window": "100K",
+        "specs": {"Latency": "~420ms", "Context": "100K"},
         "use_case_tags": ["multi-sensory integration", "scene understanding"],
         "source_url": "https://docs.fusioncoreinnovations.com/hexamultimodal-sense",
     },
     {
         "title": "EchoChamber AudioMorph",
         "description": (
-            "Specialized for emotional and musical audio synthesis, "
-            "supporting rich tonal variations."
+            "Specialized for emotional and musical audio synthesis, supporting rich "
+            "tonal variations."
         ),
         "provider": "Resonate Labs",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.08 / minute",
-        "latency_ms": 200,
+        "specs": {"Latency": "~200ms"},
         "use_case_tags": ["music synthesis", "emotional AI"],
         "source_url": "https://docs.resonatelabs.com/echochamber-audiomorph",
     },
     {
         "title": "SpectraFlow VisionWave",
         "description": (
-            "A real-time video processing model for surveillance and "
-            "analytics with high frame-rate support."
+            "A real-time video processing model for surveillance and analytics with "
+            "high frame-rate support."
         ),
         "provider": "OmniVision Inc.",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.07 / second",
-        "latency_ms": 320,
-        "context_window": "10s max",
+        "specs": {"Latency": "~320ms", "Context": "10s max"},
         "use_case_tags": ["surveillance", "analytics"],
         "source_url": "https://docs.omnivision.com/spectrafLow-visionwave",
     },
     {
         "title": "NebulaEmbed SynthiCore",
         "description": (
-            "Facilitates embedding generation from large text datasets to "
-            "support clustering and semantic search."
+            "Facilitates embedding generation from large text datasets to support "
+            "clustering and semantic search."
         ),
         "provider": "Celestial Dataworks",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.00015 / character",
-        "context_window": "6,000 characters",
+        "specs": {"Context": "6,000 characters"},
         "use_case_tags": ["semantic search", "clustering"],
         "source_url": "https://docs.celestialdataworks.com/nebulaembed-synthicore",
     },
     {
         "title": "Vortex Multimodal Nexus",
         "description": (
-            "Enables seamless integration and processing of text, images, "
-            "and audio streams for complex tasks."
+            "Enables seamless integration and processing of text, images, and audio "
+            "streams for complex tasks."
         ),
         "provider": "HorizonFusion Labs",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.025 / 1M tokens",
-        "latency_ms": 410,
-        "context_window": "150K",
+        "specs": {"Latency": "~410ms", "Context": "150K"},
         "use_case_tags": ["cross-modal reasoning", "context fusion"],
         "source_url": "https://docs.horizonfusion.com/vortex-nexus",
     },
@@ -844,51 +830,48 @@ SEED_MODELS = [
             "experiences with low latency."
         ),
         "provider": "EchoSky Studios",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.03 / 1M tokens",
-        "latency_ms": 330,
-        "context_window": "120K",
+        "specs": {"Latency": "~330ms", "Context": "120K"},
         "use_case_tags": ["multimedia synchronization", "AR/VR"],
         "source_url": "https://docs.echoskystudios.com/novavibe",
     },
     {
         "title": "LuminaImage RenderX",
         "description": (
-            "High-speed rendering model for generating detailed "
-            "visualizations and prototypes from sketches."
+            "High-speed rendering model for generating detailed visualizations and "
+            "prototypes from sketches."
         ),
         "provider": "BrightFrame Inc.",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.22 / image",
-        "latency_ms": 370,
+        "specs": {"Latency": "~370ms"},
         "use_case_tags": ["design prototyping", "visualization"],
         "source_url": "https://docs.brightframeinc.com/luminaimage-renderx",
     },
     {
         "title": "StreamSync VideoMeld",
         "description": (
-            "Combines multiple video sources into synchronized, coherent "
-            "outputs suitable for live broadcasting."
+            "Combines multiple video sources into synchronized, coherent outputs "
+            "suitable for live broadcasting."
         ),
         "provider": "StreamSync Solutions",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.055 / second",
-        "latency_ms": 390,
-        "context_window": "10s max",
+        "specs": {"Latency": "~390ms", "Context": "10s max"},
         "use_case_tags": ["live streaming", "multiview editing"],
         "source_url": "https://docs.streamsyncsolutions.com/streamsynth-videomeld",
     },
     {
         "title": "NeuroVista HydroLite",
         "description": (
-            "Specialized for real-time vision processing in embedded "
-            "systems, ideal for robotics and autonomous vehicles."
+            "Specialized for real-time vision processing in embedded systems, ideal "
+            "for robotics and autonomous vehicles."
         ),
         "provider": "AstraCore Innovations",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.12 / image",
-        "latency_ms": 45,
-        "context_window": "4,096px",
+        "specs": {"Latency": "~45ms", "Context": "4,096px"},
         "use_case_tags": ["object detection", "image classification"],
         "source_url": "https://docs.astracore.com/neurovista-hydrolite",
     },
@@ -899,37 +882,35 @@ SEED_MODELS = [
             "applications with low latency."
         ),
         "provider": "OptiWave Labs",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.18 / second",
-        "latency_ms": 60,
-        "context_window": "10s max",
+        "specs": {"Latency": "~60ms", "Context": "10s max"},
         "use_case_tags": ["video generation", "special effects"],
         "source_url": "https://docs.optiwavelabs.com/vivid-synth-orbis",
     },
     {
         "title": "EchoMind Serenade",
         "description": (
-            "A powerful voice synthesis model suitable for creating natural "
-            "chatbot interactions and voice assistants."
+            "A powerful voice synthesis model suitable for creating natural chatbot "
+            "interactions and voice assistants."
         ),
         "provider": "VocalForge Inc.",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.07 / character",
-        "latency_ms": 80,
-        "context_window": "2,048 characters",
+        "specs": {"Latency": "~80ms", "Context": "2,048 characters"},
         "use_case_tags": ["voice synthesis", "dialog systems"],
         "source_url": "https://docs.vocalforge.com/echomind-serenade",
     },
     {
         "title": "PolySpectra Modular",
         "description": (
-            "A versatile multimodal model for combining text, images, and "
-            "audio in creative applications."
+            "A versatile multimodal model for combining text, images, and audio in "
+            "creative applications."
         ),
         "provider": "Fusionary AI",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.07 / 1M tokens",
-        "context_window": "128K",
+        "specs": {"Context": "128K"},
         "use_case_tags": ["content creation", "multimodal research"],
         "source_url": "https://docs.fusionaryai.com/polyspectra-modular",
     },
@@ -940,106 +921,100 @@ SEED_MODELS = [
             "summarization, and conversational agents."
         ),
         "provider": "LinguaVerse",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.025 / 1K tokens",
-        "latency_ms": 150,
-        "context_window": "8,192 tokens",
+        "specs": {"Latency": "~150ms", "Context": "8,192 tokens"},
         "use_case_tags": ["text generation", "chatbots"],
         "source_url": "https://docs.linguaverse.com/astsra",
     },
     {
         "title": "VortexVision Ignite",
         "description": (
-            "Focused on real-time image processing for security and "
-            "surveillance systems with low latency."
+            "Focused on real-time image processing for security and surveillance "
+            "systems with low latency."
         ),
         "provider": "Sentinel Systems",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.09 / image",
-        "latency_ms": 50,
-        "context_window": "5,000px",
+        "specs": {"Latency": "~50ms", "Context": "5,000px"},
         "use_case_tags": ["security", "image analysis"],
         "source_url": "https://docs.sentinelsystems.com/vortexvision-ignite",
     },
     {
         "title": "VivoWave AudioVision",
         "description": (
-            "Enables synchronized audio and visual outputs for immersive "
-            "multimedia experiences."
+            "Enables synchronized audio and visual outputs for immersive multimedia "
+            "experiences."
         ),
         "provider": "AudioFusion",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.15 / interaction",
-        "context_window": "Unlimited",
+        "specs": {"Context": "Unlimited"},
         "use_case_tags": ["multimedia", "interactive content"],
         "source_url": "https://docs.audiofusion.com/vivowave-audiovisual",
     },
     {
         "title": "SkySynth VisionPro",
         "description": (
-            "Designed for high-quality image analysis and generation tasks, "
-            "ideal for creative workflows and visual data insights."
+            "Designed for high-quality image analysis and generation tasks, ideal for "
+            "creative workflows and visual data insights."
         ),
         "provider": "CelestialLogic Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.03 / image",
-        "latency_ms": 200,
+        "specs": {"Latency": "~200ms"},
         "use_case_tags": ["image classification", "generation", "visual analysis"],
         "source_url": "https://docs.celestiallogic.com/skyshenith-visionpro",
     },
     {
         "title": "AstraFlow Multimodal-X",
         "description": (
-            "Excellent for integrating text, image, and video inputs to "
-            "support complex multi-modal applications."
+            "Excellent for integrating text, image, and video inputs to support "
+            "complex multi-modal applications."
         ),
         "provider": "NebulaX Technologies",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.06 / combined input",
-        "latency_ms": 250,
-        "context_window": "128K",
+        "specs": {"Latency": "~250ms", "Context": "128K"},
         "use_case_tags": ["multimodal understanding", "creative content", "research"],
         "source_url": "https://docs.nebulaxtech.com/astraflow-multimodalx",
     },
     {
         "title": "NeonMosaic Multimodal 2.8",
         "description": (
-            "Integrates text, images, and video seamlessly for "
-            "multi-layered storytelling and digital art projects."
+            "Integrates text, images, and video seamlessly for multi-layered "
+            "storytelling and digital art projects."
         ),
         "provider": "PixelShift Inc",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.09 / combined input",
-        "latency_ms": 320,
-        "context_window": "140K",
+        "specs": {"Latency": "~320ms", "Context": "140K"},
         "use_case_tags": ["digital art", "storytelling", "multimodal synthesis"],
         "source_url": "https://docs.pixelshiftinc.com/neonmosaic",
     },
     {
         "title": "NeuroScope VisionX",
         "description": (
-            "Specialized for high-fidelity image analysis and "
-            "classification tasks with quick turnaround."
+            "Specialized for high-fidelity image analysis and classification tasks "
+            "with quick turnaround."
         ),
         "provider": "AetherTech Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.10 / image",
-        "latency_ms": 150,
-        "context_window": "2,048px",
+        "specs": {"Latency": "~150ms", "Context": "2,048px"},
         "use_case_tags": ["image recognition", "classification", "object detection"],
         "source_url": "https://docs.aethertechlabs.com/neuroscope-visionx",
     },
     {
         "title": "VortexMultimodal Nexus",
         "description": (
-            "A versatile multimodal model optimized for seamless "
-            "integration of text, images, and audio inputs."
+            "A versatile multimodal model optimized for seamless integration of text, "
+            "images, and audio inputs."
         ),
         "provider": "Lumina Dynamics",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.02 / 1M tokens",
-        "latency_ms": 200,
-        "context_window": "128K",
+        "specs": {"Latency": "~200ms", "Context": "128K"},
         "use_case_tags": [
             "multimodal reasoning",
             "content summarization",
@@ -1050,14 +1025,13 @@ SEED_MODELS = [
     {
         "title": "QuantumVisio VideoSynth",
         "description": (
-            "Ideal for fast, high-resolution video content creation and "
-            "editing with real-time processing."
+            "Ideal for fast, high-resolution video content creation and editing with "
+            "real-time processing."
         ),
         "provider": "CineCore AI",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.15 / second",
-        "latency_ms": 250,
-        "context_window": "10s max",
+        "specs": {"Latency": "~250ms", "Context": "10s max"},
         "use_case_tags": ["video synthesis", "content creation", "visual effects"],
         "source_url": "https://docs.cinecoreai.com/quantumvisio-videosynth",
     },
@@ -1068,64 +1042,61 @@ SEED_MODELS = [
             "understanding in complex datasets."
         ),
         "provider": "Cognify Labs",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.18 / 1M tokens",
-        "latency_ms": 150,
-        "context_window": "40K",
+        "specs": {"Latency": "~150ms", "Context": "40K"},
         "use_case_tags": ["context comprehension", "storytelling", "summarization"],
         "source_url": "https://docs.cognifylabs.com/neurovista/cortexflow",
     },
     {
         "title": "AstraFlow Spectrum",
         "description": (
-            "Designed for seamless multimodal integration across text, "
-            "images, and video for enhanced content analysis."
+            "Designed for seamless multimodal integration across text, images, and "
+            "video for enhanced content analysis."
         ),
         "provider": "NovaSynth Inc.",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.25 / 1M tokens",
-        "latency_ms": 200,
-        "context_window": "50K",
+        "specs": {"Latency": "~200ms", "Context": "50K"},
         "use_case_tags": ["multimodal inference", "content fusion", "media tagging"],
         "source_url": "https://docs.novasynth.com/astraflow/spectrum",
     },
     {
         "title": "QuantumVisio PixelStream",
         "description": (
-            "Specialized in high-resolution image and video processing for "
-            "real-time surveillance and inspection tasks."
+            "Specialized in high-resolution image and video processing for real-time "
+            "surveillance and inspection tasks."
         ),
         "provider": "Opticore Solutions",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.05 / second",
-        "latency_ms": 50,
+        "specs": {"Latency": "~50ms"},
         "use_case_tags": ["video analysis", "object detection", "security"],
         "source_url": "https://docs.opticoresolutions.com/quantumvisio/pixelstream",
     },
     {
         "title": "VivaWave AudioScope",
         "description": (
-            "Perfect for live audio transcription, sentiment analysis, and "
-            "emotion detection in speech streams."
+            "Perfect for live audio transcription, sentiment analysis, and emotion "
+            "detection in speech streams."
         ),
         "provider": "Sonora Labs",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.10 / second",
-        "latency_ms": 100,
+        "specs": {"Latency": "~100ms"},
         "use_case_tags": ["speech recognition", "sentiment", "emotion"],
         "source_url": "https://docs.sonoralabs.com/vivawave/audioscope",
     },
     {
         "title": "VividStream VisionSynth",
         "description": (
-            "Enables dynamic video content generation and editing for "
-            "creative media applications."
+            "Enables dynamic video content generation and editing for creative media "
+            "applications."
         ),
         "provider": "Pixsy Studios",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.07 / second",
-        "latency_ms": 80,
-        "context_window": "10s max",
+        "specs": {"Latency": "~80ms", "Context": "10s max"},
         "use_case_tags": ["video editing", "content creation", "animation"],
         "source_url": "https://docs.pixsystudios.com/vividstream/visionsynth",
     },
@@ -1136,36 +1107,35 @@ SEED_MODELS = [
             "enhancement for media production."
         ),
         "provider": "Skyline AI",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.03 / image",
-        "latency_ms": 30,
+        "specs": {"Latency": "~30ms"},
         "use_case_tags": ["image synthesis", "photo enhancement", "media creation"],
         "source_url": "https://docs.skylineai.com/sky.pulse/imageflow",
     },
     {
         "title": "NeuroVision Spectrum",
         "description": (
-            "Specialized for high-fidelity image generation and enhancement "
-            "tasks, ideal for creative design and media production."
+            "Specialized for high-fidelity image generation and enhancement tasks, "
+            "ideal for creative design and media production."
         ),
         "provider": "Plexora AI Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.12 / image",
-        "latency_ms": 250,
+        "specs": {"Latency": "~250ms"},
         "use_case_tags": ["creative", "design", "image enhancement"],
         "source_url": "https://docs.plexoraaibots.com/neurovision-spectrum",
     },
     {
         "title": "SynergyFlow Multimodal-X",
         "description": (
-            "Designed for seamless integration of text, image, and audio "
-            "inputs, perfect for complex multimedia projects."
+            "Designed for seamless integration of text, image, and audio inputs, "
+            "perfect for complex multimedia projects."
         ),
         "provider": "VortexQ Solutions",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.25 / 1M tokens",
-        "latency_ms": 400,
-        "context_window": "80K",
+        "specs": {"Latency": "~400ms", "Context": "80K"},
         "use_case_tags": [
             "multimedia integration",
             "context understanding",
@@ -1176,68 +1146,65 @@ SEED_MODELS = [
     {
         "title": "AstraMind Quantum",
         "description": (
-            "A high-speed language model optimized for advanced reasoning "
-            "and complex problem-solving tasks."
+            "A high-speed language model optimized for advanced reasoning and complex "
+            "problem-solving tasks."
         ),
         "provider": "Celestial Computing",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.02 / 1K tokens",
-        "latency_ms": 45,
-        "context_window": "32K",
+        "specs": {"Latency": "~45ms", "Context": "32K"},
         "use_case_tags": ["reasoning", "analytics", "AI assistants"],
         "source_url": "https://docs.celestialcomputing.com/astramind-quantum",
     },
     {
         "title": "AuroraVibe VideoSynth",
         "description": (
-            "Creates dynamic video content and animations from text "
-            "prompts, suitable for media production."
+            "Creates dynamic video content and animations from text prompts, suitable "
+            "for media production."
         ),
         "provider": "NebulaMedia",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.20 / second",
-        "latency_ms": 500,
-        "context_window": "10s max",
+        "specs": {"Latency": "~500ms", "Context": "10s max"},
         "use_case_tags": ["video generation", "media", "animation"],
         "source_url": "https://docs.nebulamedia.com/auroravibe-videosynth",
     },
     {
         "title": "VoltStream ChatGPT-X",
         "description": (
-            "Advanced conversational AI tailored for customer support and "
-            "interactive dialogue systems."
+            "Advanced conversational AI tailored for customer support and interactive "
+            "dialogue systems."
         ),
         "provider": "QuantumCloud",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.015 / 1K tokens",
-        "latency_ms": 30,
-        "context_window": "16K",
+        "specs": {"Latency": "~30ms", "Context": "16K"},
         "use_case_tags": ["chatbots", "customer support", "dialogue"],
         "source_url": "https://docs.quantumcloud.com/voltstream-chatgpt-x",
     },
     {
         "title": "PhotonEmbed EmbeddingX",
         "description": (
-            "Provides dense vector representations for text and images to "
-            "improve search and recommendation systems."
+            "Provides dense vector representations for text and images to improve "
+            "search and recommendation systems."
         ),
         "provider": "FlickerTech",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.005 / 1K embeddings",
+        "specs": {},
         "use_case_tags": ["recommendation", "search", "semantic matching"],
         "source_url": "https://docs.flickertech.com/photonembed-embeddingx",
     },
     {
         "title": "NeuraVerse CortiFlow",
         "description": (
-            "A multimodal platform enabling comprehensive contextual "
-            "understanding for complex data analysis."
+            "A multimodal platform enabling comprehensive contextual understanding "
+            "for complex data analysis."
         ),
         "provider": "DataOrbit",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.28 / 1M tokens",
-        "latency_ms": 420,
-        "context_window": "90K",
+        "specs": {"Latency": "~420ms", "Context": "90K"},
         "use_case_tags": [
             "data analysis",
             "context recognition",
@@ -1248,121 +1215,125 @@ SEED_MODELS = [
     {
         "title": "VentoVoice FX",
         "description": (
-            "Enables expressive voice conversion and enhancement for "
-            "entertainment and media production."
+            "Enables expressive voice conversion and enhancement for entertainment "
+            "and media production."
         ),
         "provider": "SonicWave Dynamics",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.09 / second",
-        "latency_ms": 160,
+        "specs": {"Latency": "~160ms"},
         "use_case_tags": ["voice conversion", "speech editing", "audio effects"],
         "source_url": "https://docs.sonicwavedynamics.com/ventovox-fx",
     },
     {
         "title": "CrystaFrame Imagecraft",
         "description": (
-            "High-resolution image rendering for detailed and "
-            "photorealistic visual content creation."
+            "High-resolution image rendering for detailed and photorealistic visual "
+            "content creation."
         ),
         "provider": "OptiPix Studios",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.11 / image",
-        "latency_ms": 330,
+        "specs": {"Latency": "~330ms"},
         "use_case_tags": ["photorealism", "visual content", "rendering"],
         "source_url": "https://docs.optipixstudios.com/crystaframe-imagecraft",
     },
     {
         "title": "MetaNarrate TextStream",
         "description": (
-            "Excellent for generating long-form narrative content, "
-            "including stories and articles."
+            "Excellent for generating long-form narrative content, including stories "
+            "and articles."
         ),
         "provider": "Luminant AI",
-        "modality": "LLM",
+        "category": "LLM",
         "price": "$0.018 / 1K tokens",
-        "latency_ms": 35,
-        "context_window": "24K",
+        "specs": {"Latency": "~35ms", "Context": "24K"},
         "use_case_tags": ["content creation", "storytelling", "writing assistance"],
         "source_url": "https://docs.luminantai.com/metanarrate-textstream",
     },
     {
         "title": "CelestiView Multimodal-A2",
         "description": (
-            "Designed for comprehensive data analysis combining text, "
-            "images, and video streams in real-time."
+            "Designed for comprehensive data analysis combining text, images, and "
+            "video streams in real-time."
         ),
         "provider": "Skyline Dynamics",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.07 / input combo",
-        "latency_ms": 200,
-        "context_window": "16K",
-        "use_case_tags": ["data fusion", "multimedia analysis", "real-time processing"],
+        "specs": {"Latency": "~200ms", "Context": "16K"},
+        "use_case_tags": [
+            "data fusion",
+            "multimedia analysis",
+            "real-time processing",
+        ],
         "source_url": "https://docs.skyline-dynamics.com/celestiview-a2",
     },
     {
         "title": "ArkadiaVision ImagePlus",
         "description": (
-            "Optimized for high-resolution image recognition and detailed "
-            "visual analysis tasks."
+            "Optimized for high-resolution image recognition and detailed visual "
+            "analysis tasks."
         ),
         "provider": "Arkadia Tech",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.03 / image",
-        "latency_ms": 80,
-        "use_case_tags": ["visual recognition", "medical imaging", "Object detection"],
+        "specs": {"Latency": "~80ms"},
+        "use_case_tags": [
+            "visual recognition",
+            "medical imaging",
+            "Object detection",
+        ],
         "source_url": "https://docs.arkadia-tech.com/imageplus",
     },
     {
         "title": "SpectraFlow VideoSynth",
         "description": (
-            "Great for generating and editing high-quality synthetic videos "
-            "with contextual awareness."
+            "Great for generating and editing high-quality synthetic videos with "
+            "contextual awareness."
         ),
         "provider": "NovaSynth Labs",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.12 / second",
-        "latency_ms": 250,
-        "context_window": "10s max",
+        "specs": {"Latency": "~250ms", "Context": "10s max"},
         "use_case_tags": ["video generation", "special effects", "content creation"],
         "source_url": "https://docs.novasynthlabs.com/spectraflow",
     },
     {
         "title": "HydraVision Augment",
         "description": (
-            "Supports advanced visual augmentation for AR/VR applications "
-            "with high fidelity."
+            "Supports advanced visual augmentation for AR/VR applications with high "
+            "fidelity."
         ),
         "provider": "Augmenta Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.05 / image",
-        "latency_ms": 100,
+        "specs": {"Latency": "~100ms"},
         "use_case_tags": ["AR/VR", "visual augmentation", "immersive tech"],
         "source_url": "https://docs.augmenta.com/hydravision",
     },
     {
         "title": "VeraSight VisualSynth",
         "description": (
-            "Specialized for high-fidelity image generation and editing "
-            "tasks in creative workflows."
+            "Specialized for high-fidelity image generation and editing tasks in "
+            "creative workflows."
         ),
         "provider": "Lunaris Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.05 / image",
-        "latency_ms": 300,
+        "specs": {"Latency": "~300ms"},
         "use_case_tags": ["art creation", "photo editing", "visual design"],
         "source_url": "https://docs.lunarislabs.com/verasight",
     },
     {
         "title": "OptiFlow Multimodal-X",
         "description": (
-            "Integrates text, image, and video understanding for "
-            "comprehensive multimedia analysis."
+            "Integrates text, image, and video understanding for comprehensive "
+            "multimedia analysis."
         ),
         "provider": "NovaTech AI",
-        "modality": "Multimodal",
+        "category": "Multimodal",
         "price": "$0.08 / 1M tokens",
-        "latency_ms": 450,
-        "context_window": "128K",
+        "specs": {"Latency": "~450ms", "Context": "128K"},
         "use_case_tags": [
             "multimedia analysis",
             "content moderation",
@@ -1377,59 +1348,61 @@ SEED_MODELS = [
             "applications."
         ),
         "provider": "AudioCore Dynamics",
-        "modality": "Voice",
+        "category": "Voice",
         "price": "$0.10 / second",
-        "latency_ms": 50,
+        "specs": {"Latency": "~50ms"},
         "use_case_tags": ["text-to-speech", "voice cloning", "interactive voice"],
         "source_url": "https://docs.audiocoredynamics.com/biowave",
     },
     {
         "title": "DeepRender VideoPro",
         "description": (
-            "Optimized for high-quality video generation with fast " "rendering times."
+            "Optimized for high-quality video generation with fast rendering times."
         ),
         "provider": "VisioSpark AI",
-        "modality": "Video",
+        "category": "Video",
         "price": "$0.02 / second",
-        "latency_ms": 200,
-        "context_window": "10s max",
+        "specs": {"Latency": "~200ms", "Context": "10s max"},
         "use_case_tags": ["video creation", "animation", "visual storytelling"],
         "source_url": "https://docs.visiosparkai.com/deeprender",
     },
     {
         "title": "NexaEmbed Embeddify",
         "description": (
-            "Provides compact, semantic embeddings suitable for search and "
-            "retrieval tasks."
+            "Provides compact, semantic embeddings suitable for search and retrieval "
+            "tasks."
         ),
         "provider": "CortexFoundry",
-        "modality": "Embedding",
+        "category": "Embedding",
         "price": "$0.0002 / character",
-        "latency_ms": 5,
+        "specs": {"Latency": "~5ms"},
         "use_case_tags": ["search", "recommendation", "semantic understanding"],
         "source_url": "https://docs.cortexfoundry.com/nexaembed",
     },
     {
         "title": "LumaImage RenderX",
         "description": (
-            "Designed for rapid, high-resolution image rendering and "
-            "enhancement in digital art projects."
+            "Designed for rapid, high-resolution image rendering and enhancement in "
+            "digital art projects."
         ),
         "provider": "PixelForge Labs",
-        "modality": "Image",
+        "category": "Image",
         "price": "$0.07 / image",
-        "latency_ms": 250,
+        "specs": {"Latency": "~250ms"},
         "use_case_tags": ["digital art", "image enhancement", "rendering"],
         "source_url": "https://docs.pixelforgelabs.com/lumaimagere",
     },
 ]
 
 
-def seed_demo_data(session_factory, vector_store) -> None:
-    """Upserts the demo admin/engineer accounts and the seed catalog. Split out from
-    `main()` so app/main.py's lifespan can run this against the app's own already-built
-    session_factory/vector_store as a background task on boot, instead of this script
-    gating uvicorn's startup as a separate blocking process step."""
+def seed_demo_accounts(session_factory) -> None:
+    """Upserts the demo curator/engineer/platform-admin accounts (but not the mock
+    catalog — see `seed_demo_catalog`). This is the part app/main.py's lifespan runs
+    automatically on every boot: without a real login there's no way to use the admin
+    console at all, so these accounts existing is load-bearing, not just demo
+    convenience. Split out from `main()` so app/main.py can run it against the app's
+    own already-built session_factory as a background task on boot, instead of this
+    script gating uvicorn's startup as a separate blocking process step."""
     admin_email = os.getenv("SEED_ADMIN_EMAIL", "curator@trailmind.dev").lower()
     admin_password = os.getenv("SEED_ADMIN_PASSWORD", "admin@123")
     engineer_email = os.getenv("SEED_ENGINEER_EMAIL", "engineer@trailmind.dev").lower()
@@ -1492,38 +1465,59 @@ def seed_demo_data(session_factory, vector_store) -> None:
             platform_admin.role = "platform_admin"
             platform_admin.password_hash = hash_password(platform_admin_password)
 
-        for values in SEED_MODELS:
-            model = session.scalar(
-                select(Model).where(
-                    Model.title == values["title"], Model.tenant_id == tenant.id
-                )
-            )
-            if not model:
-                model = Model(**values, tenant_id=tenant.id, vector_synced=False)
-                session.add(model)
-                session.flush()
-            else:
-                for key, value in values.items():
-                    setattr(model, key, value)
-            vector_store.upsert(model, tenant.id)
-            model.vector_synced = True
         session.commit()
 
     print(f"Seeded Curator account: {admin_email}")
     print(f"Seeded AI-engineer account: {engineer_email}")
     print(f"Seeded platform admin account: {platform_admin_email}")
-    print(f"Seeded {len(SEED_MODELS)} models into SQL and Chroma")
+
+
+def seed_demo_catalog(session_factory, vector_store) -> None:
+    """Upserts the ~100-row mock catalog (hackathon-era demo data) into the reference
+    tenant. NOT run automatically on boot — a real multi-tenant deployment has no use
+    for pre-populated fake catalog items, so this only runs when explicitly invoked
+    (`python seed_data.py --with-catalog`), e.g. to stand up a local demo
+    environment."""
+    with session_factory() as session:
+        tenant = get_or_create_reference_tenant(session)
+        widget = get_or_create_default_widget(session, tenant)
+        for values in SEED_CATALOG_ITEMS:
+            item = session.scalar(
+                select(CatalogItem).where(
+                    CatalogItem.title == values["title"],
+                    CatalogItem.widget_id == widget.id,
+                )
+            )
+            if not item:
+                item = CatalogItem(
+                    **values,
+                    tenant_id=tenant.id,
+                    widget_id=widget.id,
+                    vector_synced=False,
+                )
+                session.add(item)
+                session.flush()
+            else:
+                for key, value in values.items():
+                    setattr(item, key, value)
+            vector_store.upsert(item, widget.id)
+            item.vector_synced = True
+        session.commit()
+
+    print(f"Seeded {len(SEED_CATALOG_ITEMS)} catalog items into SQL and Chroma")
 
 
 def main() -> None:
     settings = Settings()
     session_factory = build_session_factory(settings)
-    vector_store = ModelVectorStore(
-        settings.chroma_db_path,
-        collection_name=settings.chroma_collection_name,
-        embedding_function=build_embedding_function(settings),
-    )
-    seed_demo_data(session_factory, vector_store)
+    seed_demo_accounts(session_factory)
+    if "--with-catalog" in sys.argv:
+        vector_store = CatalogItemVectorStore(
+            settings.chroma_db_path,
+            collection_name=settings.chroma_collection_name,
+            embedding_function=build_embedding_function(settings),
+        )
+        seed_demo_catalog(session_factory, vector_store)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from typing import NamedTuple
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Event, Model, Recommendation, Tenant
+from app.models import CatalogItem, Event, Recommendation, Tenant
 
 
 class FeedbackRecord(NamedTuple):
@@ -25,7 +25,7 @@ LOOKBACK_DAYS = timedelta(days=3)
 SESSION_DECAY = 0.5
 SESSION_TRIGGER_COUNT = 2
 SESSION_COOLDOWN = timedelta(minutes=3)
-MODALITY_FILTER_RATIO = 1.5
+CATEGORY_FILTER_RATIO = 1.5
 
 # Explicit feedback loop: a thumbs up/down on a past recommendation card should keep
 # influencing ranking longer than ordinary browsing activity (LOOKBACK_DAYS, 3 days) —
@@ -34,7 +34,7 @@ MODALITY_FILTER_RATIO = 1.5
 FEEDBACK_LOOKBACK_DAYS = timedelta(days=14)
 
 # Still used by activity_summary's "browsing multiple X" clause within a session bucket.
-MODALITY_CLUSTER_WINDOW = timedelta(minutes=15)
+CATEGORY_CLUSTER_WINDOW = timedelta(minutes=15)
 
 
 def session_bucket_events(events: list[Event]) -> list[list[Event]]:
@@ -58,33 +58,39 @@ def session_weight(session_index: int) -> float:
     return SESSION_DECAY**session_index
 
 
-def _summarize_bucket(session: Session, tenant_id: int, events: list[Event]) -> str:
+def _summarize_bucket(session: Session, widget_id: int, events: list[Event]) -> str:
     """Aggregate a single session bucket of events into a natural-language behavior
     summary.
 
     Never a raw dump of event data into the prompt: `model_view` events for 2+ distinct
-    models of the same modality within a short window are folded in as a soft "browsing
-    this modality" signal, kept distinct from an explicit `model_compare` (AGT-2).
+    catalog items of the same category within a short window are folded in as a soft
+    "browsing this category" signal, kept distinct from an explicit `model_compare`
+    (AGT-2).
 
-    Model lookups are scoped to `tenant_id`, not just by id: an `Event.model_id` is
-    client-submitted at ingestion (see `POST /api/track/events`), so without this
-    filter a visitor could reference another tenant's catalog item id and have its
-    title/modality leak into their own behavior summary (TEN-3/NFR-8).
+    Catalog item lookups are scoped to `widget_id`, not just by id: an
+    `Event.catalog_item_id` is client-submitted at ingestion (see
+    `POST /api/track/events`), so without this filter a visitor could reference
+    another widget's catalog item id and have its title/category leak into their own
+    behavior summary (TEN-3/NFR-8) — a "Personal Loans" widget must never leak a
+    "Credit Cards" item's title into its own narrative either, not just cross-tenant.
     """
     if not events:
         return ""
 
-    model_ids = {event.model_id for event in events if event.model_id}
-    models_by_id = (
+    catalog_item_ids = {
+        event.catalog_item_id for event in events if event.catalog_item_id
+    }
+    catalog_items_by_id = (
         {
-            model.id: model
-            for model in session.scalars(
-                select(Model).where(
-                    Model.id.in_(model_ids), Model.tenant_id == tenant_id
+            item.id: item
+            for item in session.scalars(
+                select(CatalogItem).where(
+                    CatalogItem.id.in_(catalog_item_ids),
+                    CatalogItem.widget_id == widget_id,
                 )
             ).all()
         }
-        if model_ids
+        if catalog_item_ids
         else {}
     )
 
@@ -101,51 +107,61 @@ def _summarize_bucket(session: Session, tenant_id: int, events: list[Event]) -> 
     view_events = [
         event
         for event in events
-        if event.event_type == "model_view" and event.model_id in models_by_id
+        if event.event_type == "model_view"
+        and event.catalog_item_id in catalog_items_by_id
     ]
     if view_events:
-        viewed_titles = [models_by_id[event.model_id].title for event in view_events]
+        viewed_titles = [
+            catalog_items_by_id[event.catalog_item_id].title for event in view_events
+        ]
         parts.append(f"Viewed: {', '.join(dict.fromkeys(viewed_titles))}.")
 
     # A watchlist add is a stronger, more deliberate interest signal than a passive view
-    # (AGT-2-style) — surfaced as its own clause and folded into the same modality-clustering
-    # pass below so "starred 2 Image models" counts toward dominant_modality like viewing does.
+    # (AGT-2-style) — surfaced as its own clause and folded into the same
+    # category-clustering pass below so "starred 2 Image items" counts toward
+    # dominant_category like viewing does.
     watchlist_events = [
         event
         for event in events
         if event.event_type == "model_watchlist"
         and (event.metadata_json or {}).get("action") == "add"
-        and event.model_id in models_by_id
+        and event.catalog_item_id in catalog_items_by_id
     ]
     if watchlist_events:
         watchlisted_titles = [
-            models_by_id[event.model_id].title for event in watchlist_events
+            catalog_items_by_id[event.catalog_item_id].title
+            for event in watchlist_events
         ]
         parts.append(f"Watchlisted: {', '.join(dict.fromkeys(watchlisted_titles))}.")
 
     interest_events = view_events + watchlist_events
     if interest_events:
-        by_modality: dict[str, list[Event]] = defaultdict(list)
+        by_category: dict[str, list[Event]] = defaultdict(list)
         for event in interest_events:
-            by_modality[models_by_id[event.model_id].modality].append(event)
-        for modality, modality_events in by_modality.items():
-            distinct_ids = {event.model_id for event in modality_events}
+            by_category[catalog_items_by_id[event.catalog_item_id].category].append(
+                event
+            )
+        for category, category_events in by_category.items():
+            distinct_ids = {event.catalog_item_id for event in category_events}
             if len(distinct_ids) < 2:
                 continue
-            ordered = sorted(modality_events, key=lambda event: event.created_at)
+            ordered = sorted(category_events, key=lambda event: event.created_at)
             span = ordered[-1].created_at - ordered[0].created_at
-            if span <= MODALITY_CLUSTER_WINDOW:
+            if span <= CATEGORY_CLUSTER_WINDOW:
                 parts.append(
-                    f"Browsing multiple {modality} models — evaluating options."
+                    f"Browsing multiple {category} items — evaluating options."
                 )
 
     compare_events = [
         event
         for event in events
-        if event.event_type == "model_compare" and event.model_id in models_by_id
+        if event.event_type == "model_compare"
+        and event.catalog_item_id in catalog_items_by_id
     ]
     compared_titles = list(
-        dict.fromkeys(models_by_id[event.model_id].title for event in compare_events)
+        dict.fromkeys(
+            catalog_items_by_id[event.catalog_item_id].title for event in compare_events
+        )
     )
     if len(compared_titles) >= 2:
         parts.append(f"Compared {' vs '.join(compared_titles)}.")
@@ -155,7 +171,7 @@ def _summarize_bucket(session: Session, tenant_id: int, events: list[Event]) -> 
     return " ".join(parts)
 
 
-def activity_summary(session: Session, tenant_id: int, events: list[Event]) -> str:
+def activity_summary(session: Session, widget_id: int, events: list[Event]) -> str:
     """Session-aware behavior summary: current-session activity is called out first,
     older sessions (beyond the SESSION_GAP inactivity boundary) are folded in as
     secondary "Earlier: ..." context rather than blended in unweighted.
@@ -163,9 +179,9 @@ def activity_summary(session: Session, tenant_id: int, events: list[Event]) -> s
     buckets = session_bucket_events(events)
     if not buckets:
         return ""
-    current = _summarize_bucket(session, tenant_id, buckets[0])
+    current = _summarize_bucket(session, widget_id, buckets[0])
     older = _summarize_bucket(
-        session, tenant_id, [event for bucket in buckets[1:] for event in bucket]
+        session, widget_id, [event for bucket in buckets[1:] for event in bucket]
     )
     parts: list[str] = []
     if current:
@@ -175,33 +191,38 @@ def activity_summary(session: Session, tenant_id: int, events: list[Event]) -> s
     return " ".join(parts)
 
 
-def dominant_modality(
-    session: Session, tenant_id: int, events: list[Event]
+def dominant_category(
+    session: Session, widget_id: int, events: list[Event]
 ) -> str | None:
-    """Retrieval polish (Iteration 3): session-weighted modality scoring, replacing the
-    old all-or-nothing rule (which required *exactly one* modality to have 2+ distinct
-    models, else gave up entirely — a 3-way tie across session boundaries disabled
-    filtering completely). Each session bucket's distinct-model-per-modality counts are
+    """Retrieval polish (Iteration 3): session-weighted category scoring, replacing the
+    old all-or-nothing rule (which required *exactly one* category to have 2+ distinct
+    items, else gave up entirely — a 3-way tie across session boundaries disabled
+    filtering completely). Each session bucket's distinct-item-per-category counts are
     weighted by session_weight(bucket_index) (current session counts full, each older
     session counts half as much as the one before it) and summed across buckets. The
     winner is used as a Chroma metadata `where` filter only if it has a real signal
-    (score >= 2, i.e. at least 2 distinct models' worth of weighted signal) and clearly
-    beats the runner-up by MODALITY_FILTER_RATIO — otherwise returns None (no filter),
+    (score >= 2, i.e. at least 2 distinct items' worth of weighted signal) and clearly
+    beats the runner-up by CATEGORY_FILTER_RATIO — otherwise returns None (no filter),
     same fallback behavior as before.
     """
     buckets = session_bucket_events(events)
     if not buckets:
         return None
 
-    model_ids = {
-        event.model_id for events_ in buckets for event in events_ if event.model_id
+    catalog_item_ids = {
+        event.catalog_item_id
+        for events_ in buckets
+        for event in events_
+        if event.catalog_item_id
     }
-    if not model_ids:
+    if not catalog_item_ids:
         return None
-    models_by_id = {
-        model.id: model
-        for model in session.scalars(
-            select(Model).where(Model.id.in_(model_ids), Model.tenant_id == tenant_id)
+    catalog_items_by_id = {
+        item.id: item
+        for item in session.scalars(
+            select(CatalogItem).where(
+                CatalogItem.id.in_(catalog_item_ids), CatalogItem.widget_id == widget_id
+            )
         ).all()
     }
 
@@ -218,52 +239,58 @@ def dominant_modality(
                     and (event.metadata_json or {}).get("action") == "add"
                 )
             )
-            and event.model_id in models_by_id
+            and event.catalog_item_id in catalog_items_by_id
         ]
-        by_modality: dict[str, set[int]] = defaultdict(set)
+        by_category: dict[str, set[int]] = defaultdict(set)
         for event in signal_events:
-            by_modality[models_by_id[event.model_id].modality].add(event.model_id)
-        for modality, ids in by_modality.items():
-            scores[modality] += weight * len(ids)
+            by_category[catalog_items_by_id[event.catalog_item_id].category].add(
+                event.catalog_item_id
+            )
+        for category, ids in by_category.items():
+            scores[category] += weight * len(ids)
 
     if not scores:
         return None
 
     ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
-    leader_modality, leader_score = ranked[0]
+    leader_category, leader_score = ranked[0]
     runner_up_score = ranked[1][1] if len(ranked) > 1 else 0.0
 
     if leader_score < 2:
         return None
-    if runner_up_score > 0 and leader_score < runner_up_score * MODALITY_FILTER_RATIO:
+    if runner_up_score > 0 and leader_score < runner_up_score * CATEGORY_FILTER_RATIO:
         return None
-    return leader_modality
+    return leader_category
 
 
 def session_evidence(
-    session: Session, tenant_id: int, events: list[Event], limit: int = 5
+    session: Session, widget_id: int, events: list[Event], limit: int = 5
 ) -> list[dict]:
     """Current session only (buckets[0]), newest-first — the raw, itemized "what actually
     happened" list backing the Dashboard's evidence row, as opposed to `activity_summary`'s
-    prose blob. Deduped by (action, key) so re-viewing the same model twice in a row only
-    shows once. Each item: {"action", "label", "model": Model | None, "created_at"}.
+    prose blob. Deduped by (action, key) so re-viewing the same item twice in a row only
+    shows once. Each item: {"action", "label", "catalog_item": CatalogItem | None,
+    "created_at"}.
     """
     buckets = session_bucket_events(events)
     if not buckets:
         return []
     current = buckets[0]
 
-    model_ids = {event.model_id for event in current if event.model_id}
-    models_by_id = (
+    catalog_item_ids = {
+        event.catalog_item_id for event in current if event.catalog_item_id
+    }
+    catalog_items_by_id = (
         {
-            model.id: model
-            for model in session.scalars(
-                select(Model).where(
-                    Model.id.in_(model_ids), Model.tenant_id == tenant_id
+            item.id: item
+            for item in session.scalars(
+                select(CatalogItem).where(
+                    CatalogItem.id.in_(catalog_item_ids),
+                    CatalogItem.widget_id == widget_id,
                 )
             ).all()
         }
-        if model_ids
+        if catalog_item_ids
         else {}
     )
 
@@ -292,11 +319,11 @@ def session_evidence(
             label = f'"{query}"'
             key = (action, query)
         else:
-            model = models_by_id.get(event.model_id)
-            if not model:
+            catalog_item = catalog_items_by_id.get(event.catalog_item_id)
+            if not catalog_item:
                 continue
-            label = model.title
-            key = (action, model.title)
+            label = catalog_item.title
+            key = (action, catalog_item.title)
         if key in seen:
             continue
         seen.add(key)
@@ -304,7 +331,7 @@ def session_evidence(
             {
                 "action": action,
                 "label": label,
-                "model": models_by_id.get(event.model_id)
+                "catalog_item": catalog_items_by_id.get(event.catalog_item_id)
                 if event.event_type != "search"
                 else None,
                 "created_at": event.created_at,
@@ -319,7 +346,7 @@ def activity_hash(events: list[Event]) -> str:
     payload = [
         {
             "type": event.event_type,
-            "model_id": event.model_id,
+            "catalog_item_id": event.catalog_item_id,
             "metadata": event.metadata_json or {},
         }
         for event in events
@@ -328,12 +355,12 @@ def activity_hash(events: list[Event]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def recent_events(session: Session, tenant_id: int, visitor_id: str) -> list[Event]:
+def recent_events(session: Session, widget_id: int, visitor_id: str) -> list[Event]:
     cutoff = datetime.utcnow() - LOOKBACK_DAYS
     return session.scalars(
         select(Event)
         .where(
-            Event.tenant_id == tenant_id,
+            Event.widget_id == widget_id,
             Event.visitor_id == visitor_id,
             Event.created_at >= cutoff,
         )
@@ -342,28 +369,28 @@ def recent_events(session: Session, tenant_id: int, visitor_id: str) -> list[Eve
     ).all()
 
 
-def recent_feedback_by_model(
-    session: Session, tenant_id: int, visitor_id: str
+def recent_feedback_by_catalog_item(
+    session: Session, widget_id: int, visitor_id: str
 ) -> dict[int, FeedbackRecord]:
-    """Most recent explicit up/down feedback per model within FEEDBACK_LOOKBACK_DAYS —
-    newest rating wins if the visitor changed their mind. No new table: feedback is
-    just another `Event` (event_type="recommendation_feedback", metadata={"rating":
-    ..., "recommendation_id": ...}), tracked through the same batched tracker-SDK
-    ingestion path as every other behavioral signal. Feeds the rerank_candidates node
-    (app/services/agent_graph.py) so a downvote actually suppresses that model from
-    reappearing, not just logs a rating.
+    """Most recent explicit up/down feedback per catalog item within
+    FEEDBACK_LOOKBACK_DAYS — newest rating wins if the visitor changed their mind. No
+    new table: feedback is just another `Event` (event_type="recommendation_feedback",
+    metadata={"rating": ..., "recommendation_id": ...}), tracked through the same
+    batched tracker-SDK ingestion path as every other behavioral signal. Feeds the
+    rerank_candidates node (app/services/agent_graph.py) so a downvote actually
+    suppresses that item from reappearing, not just logs a rating.
 
     Each record carries the behavior_summary of the recommendation it was given on
     (via the linked Recommendation row) so the caller can scope the adjustment to a
     similar query rather than applying it globally — a downvote on a voice model shown
-    for a "rack-based" search shouldn't also suppress that same model the next time the
+    for a "rack-based" search shouldn't also suppress that same item the next time the
     visitor is genuinely looking for voice models.
     """
     cutoff = datetime.utcnow() - FEEDBACK_LOOKBACK_DAYS
     events = session.scalars(
         select(Event)
         .where(
-            Event.tenant_id == tenant_id,
+            Event.widget_id == widget_id,
             Event.visitor_id == visitor_id,
             Event.event_type == "recommendation_feedback",
             Event.created_at >= cutoff,
@@ -382,7 +409,7 @@ def recent_feedback_by_model(
             for rec in session.scalars(
                 select(Recommendation).where(
                     Recommendation.id.in_(recommendation_ids),
-                    Recommendation.tenant_id == tenant_id,
+                    Recommendation.widget_id == widget_id,
                 )
             ).all()
         }
@@ -391,7 +418,7 @@ def recent_feedback_by_model(
     )
     feedback: dict[int, FeedbackRecord] = {}
     for event in events:
-        if event.model_id is None:
+        if event.catalog_item_id is None:
             continue
         metadata = event.metadata_json or {}
         rating = metadata.get("rating")
@@ -401,7 +428,8 @@ def recent_feedback_by_model(
             metadata.get("recommendation_id"), ""
         )
         feedback.setdefault(
-            event.model_id, FeedbackRecord(rating=rating, context_query=context_query)
+            event.catalog_item_id,
+            FeedbackRecord(rating=rating, context_query=context_query),
         )
     return feedback
 
@@ -432,7 +460,7 @@ def is_recommendation_stale(events: list[Event], latest: Recommendation | None) 
     return True
 
 
-def should_trigger(session: Session, tenant_id: int, visitor_id: str) -> bool:
+def should_trigger(session: Session, widget_id: int, visitor_id: str) -> bool:
     """Cheap, pure-SQL gate run synchronously at the end of the tracker-SDK ingestion
     endpoint (AGT-1).
 
@@ -447,14 +475,14 @@ def should_trigger(session: Session, tenant_id: int, visitor_id: str) -> bool:
     background pipeline run (and LangSmith trace) on every single batch flush once the
     threshold has been crossed once.
     """
-    events = recent_events(session, tenant_id, visitor_id)
+    events = recent_events(session, widget_id, visitor_id)
     buckets = session_bucket_events(events)
     if not buckets or len(buckets[0]) < SESSION_TRIGGER_COUNT:
         return False
     latest = session.scalar(
         select(Recommendation)
         .where(
-            Recommendation.tenant_id == tenant_id,
+            Recommendation.widget_id == widget_id,
             Recommendation.visitor_id == visitor_id,
         )
         .order_by(Recommendation.created_at.desc())

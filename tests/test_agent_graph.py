@@ -3,7 +3,7 @@ from datetime import datetime
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Tenant
+from app.models import CatalogItem, Event, Tenant, Widget
 from app.services.agent_graph import (
     _story_snippet,
     apply_feedback_adjustment,
@@ -12,6 +12,7 @@ from app.services.agent_graph import (
     rerank_by_lexical_overlap,
 )
 from app.services.recommendation import FeedbackRecord
+from app.services.widgets import create_widget
 
 
 class FakeVectorStore:
@@ -25,7 +26,7 @@ class FakeVectorStore:
         self.calls: list[str] = []
 
     def query_scored(
-        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+        self, text: str, widget_id: int, limit: int = 5, where: dict | None = None
     ):
         self.calls.append(text)
         if len(self.calls) == 1:
@@ -49,74 +50,85 @@ def _make_tenant(session) -> Tenant:
     return tenant
 
 
+def _make_widget(session, tenant: Tenant) -> Widget:
+    widget, _raw_key = create_widget(session, tenant, "Test Widget")
+    return widget
+
+
 def test_grade_refine_retries_on_weak_retrieval(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-grade"
-        weak_model = Model(
+        weak_item = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Weak Match",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        strong_model = Model(
+        strong_item = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Strong Match",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        session.add_all([weak_model, strong_model])
+        session.add_all([weak_item, strong_item])
         session.commit()
 
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "test"},
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=weak_model.id,
+                    catalog_item_id=weak_item.id,
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_compare",
-                    model_id=weak_model.id,
+                    catalog_item_id=weak_item.id,
                     metadata_json={"explicit": True},
                 ),
             ]
         )
         session.commit()
 
-        fake_store = FakeVectorStore(weak_model.id, strong_model.id)
+        fake_store = FakeVectorStore(weak_item.id, strong_item.id)
         recommendation = prepare_retrieval_recommendation(
-            session, fake_store, tenant.id, visitor_id, mesh_generator=None
+            session, fake_store, widget.id, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert (
             len(fake_store.calls) == 2
         ), "grade_refine should retry once on a weak match"
         assert recommendation is not None
-        assert recommendation.model_ids == [strong_model.id]
+        assert recommendation.catalog_item_ids == [strong_item.id]
         # 0.3 raw, minus the rerank_candidates lexical-overlap bonus against this
-        # model's own document text (title/provider/modality/description/tags) —
+        # item's own document text (title/provider/category/description/tags) —
         # retrieval_meta stores the final, re-ranked distance, not the raw one.
         assert recommendation.retrieval_meta == [
             {
-                "model_id": strong_model.id,
+                "catalog_item_id": strong_item.id,
                 "distance": 0.23333333333333334,
                 "reason": "Matched after broadening your activity signal",
             }
@@ -129,22 +141,25 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-strong"
-        model = Model(
+        item = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Immediate Match",
             provider="Test",
-            modality="LLM",
+            category="LLM",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        session.add(model)
+        session.add(item)
         session.commit()
 
         session.add(
             Event(
                 tenant_id=tenant.id,
+                widget_id=widget.id,
                 visitor_id=visitor_id,
                 event_type="search",
                 metadata_json={"query": "test"},
@@ -160,47 +175,55 @@ def test_retrieval_meta_reason_reflects_distance_without_retry(tmp_path) -> None
                 limit: int = 5,
                 where: dict | None = None,
             ):
-                return [(model.id, 0.4)]
+                return [(item.id, 0.4)]
 
         recommendation = prepare_retrieval_recommendation(
-            session, StrongFirstTryStore(), tenant.id, visitor_id, mesh_generator=None
+            session,
+            StrongFirstTryStore(),
+            widget.id,
+            tenant.id,
+            visitor_id,
+            mesh_generator=None,
         )
 
         assert recommendation is not None
         # 0.4 raw, minus the rerank_candidates lexical-overlap bonus (the search query
-        # "test" matches this model's provider "Test" in its document text).
+        # "test" matches this item's provider "Test" in its document text).
         assert recommendation.retrieval_meta == [
             {
-                "model_id": model.id,
+                "catalog_item_id": item.id,
                 "distance": 0.30000000000000004,
                 "reason": "Strong match to your recent activity",
             }
         ]
 
 
-def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
-    """Retrieval polish (Iteration 3): browsing 2+ Voice models in one session should
-    pre-filter the first retrieval call to `modality=Voice`, but a retry (triggered here by
+def test_retrieval_applies_category_filter_on_first_pass_only(tmp_path) -> None:
+    """Retrieval polish (Iteration 3): browsing 2+ Voice items in one session should
+    pre-filter the first retrieval call to `category=Voice`, but a retry (triggered here by
     a weak first-pass match) drops the filter again since the query text is already being
     broadened."""
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-filter"
-        voice_a = Model(
+        voice_a = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Voice A",
             provider="Test",
-            modality="Voice",
+            category="Voice",
             price="$0",
             description="d",
             use_case_tags=[],
         )
-        voice_b = Model(
+        voice_b = CatalogItem(
             tenant_id=tenant.id,
+            widget_id=widget.id,
             title="Voice B",
             provider="Test",
-            modality="Voice",
+            category="Voice",
             price="$0",
             description="d",
             use_case_tags=[],
@@ -212,16 +235,18 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
             [
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=voice_a.id,
+                    catalog_item_id=voice_a.id,
                     metadata_json={},
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="model_view",
-                    model_id=voice_b.id,
+                    catalog_item_id=voice_b.id,
                     metadata_json={},
                 ),
             ]
@@ -246,35 +271,39 @@ def test_retrieval_applies_modality_filter_on_first_pass_only(tmp_path) -> None:
 
         store = RecordingStore()
         recommendation = prepare_retrieval_recommendation(
-            session, store, tenant.id, visitor_id, mesh_generator=None
+            session, store, widget.id, tenant.id, visitor_id, mesh_generator=None
         )
 
         assert recommendation is not None
-        assert store.wheres == [{"modality": "Voice"}, None]
+        assert store.wheres == [{"category": "Voice"}, None]
 
 
 def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         visitor_id = "v-empty"
 
         session.add_all(
             [
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "a b c d e"},
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "f g h"},
                 ),
                 Event(
                     tenant_id=tenant.id,
+                    widget_id=widget.id,
                     visitor_id=visitor_id,
                     event_type="search",
                     metadata_json={"query": "i j k"},
@@ -299,7 +328,7 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
 
         empty_store = EmptyVectorStore()
         recommendation = prepare_retrieval_recommendation(
-            session, empty_store, tenant.id, visitor_id, mesh_generator=None
+            session, empty_store, widget.id, tenant.id, visitor_id, mesh_generator=None
         )
 
         # Initial attempt + MAX_RETRIES(=2) retries, then give up without storing anything.
@@ -307,52 +336,33 @@ def test_grade_refine_stops_after_max_retries_with_no_candidates(tmp_path) -> No
         assert recommendation is None
 
 
-def _model(
+def _item(
     id,
     title,
-    modality,
-    latency_ms=None,
+    category,
     use_case_tags=None,
     description="d",
     story=None,
 ):
-    return Model(
+    return CatalogItem(
         id=id,
         title=title,
-        modality=modality,
+        category=category,
         provider="Test",
         price="$0",
-        latency_ms=latency_ms,
         description=description,
         use_case_tags=use_case_tags or [],
         story=story,
     )
 
 
-def test_contextual_reason_prefers_latency_comparison_over_compared_models() -> None:
-    candidate = _model(1, "Fast Voice", "Voice", latency_ms=100)
-    slower_compared = _model(2, "Slow Voice A", "Voice", latency_ms=300)
-    evidence = [
-        {
-            "action": "compared",
-            "label": "Slow Voice A",
-            "model": slower_compared,
-            "created_at": datetime.utcnow(),
-        },
-    ]
-    assert (
-        contextual_reason(candidate, 0.5, False, evidence)
-        == "beats Slow Voice A on latency"
-    )
-
-
 def test_contextual_reason_matches_search_term_to_use_case_tag() -> None:
-    candidate = _model(1, "Multilingual TTS", "Voice", use_case_tags=["multilingual"])
+    candidate = _item(1, "Multilingual TTS", "Voice", use_case_tags=["multilingual"])
     evidence = [
         {
             "action": "searched",
             "label": '"multilingual"',
-            "model": None,
+            "catalog_item": None,
             "created_at": datetime.utcnow(),
         },
     ]
@@ -363,7 +373,7 @@ def test_contextual_reason_matches_search_term_to_use_case_tag() -> None:
 
 
 def test_contextual_reason_falls_back_to_distance_reason() -> None:
-    candidate = _model(1, "Plain Model", "LLM")
+    candidate = _item(1, "Plain Item", "LLM")
     assert (
         contextual_reason(candidate, 0.5, False, [])
         == "Strong match to your recent activity"
@@ -375,8 +385,8 @@ def test_contextual_reason_falls_back_to_distance_reason() -> None:
 
 
 def test_contextual_reason_prefers_story_over_distance_fallback() -> None:
-    candidate = _model(
-        1, "Plain Model", "LLM", story="Pick this when cost matters more than speed."
+    candidate = _item(
+        1, "Plain Item", "LLM", story="Pick this when cost matters more than speed."
     )
     assert (
         contextual_reason(candidate, 0.5, False, [])
@@ -385,7 +395,7 @@ def test_contextual_reason_prefers_story_over_distance_fallback() -> None:
 
 
 def test_contextual_reason_prefers_search_match_over_story() -> None:
-    candidate = _model(
+    candidate = _item(
         1,
         "Multilingual TTS",
         "Voice",
@@ -396,7 +406,7 @@ def test_contextual_reason_prefers_search_match_over_story() -> None:
         {
             "action": "searched",
             "label": '"multilingual"',
-            "model": None,
+            "catalog_item": None,
             "created_at": datetime.utcnow(),
         },
     ]
@@ -423,13 +433,13 @@ def test_rerank_promotes_lexically_matching_candidate() -> None:
     # exactly matches every query term — the lexical bonus should promote it ahead.
     scored = [(1, 0.5), (2, 0.6)]
     documents_by_id = {
-        1: "Generic Model. SomeCo. LLM. A general purpose assistant.",
+        1: "Generic Item. SomeCo. LLM. A general purpose assistant.",
         2: "Voice Fast. Cartesia. Voice. Low-latency real-time voice synthesis.",
     }
     reranked = rerank_by_lexical_overlap(
         scored, "real-time voice synthesis", documents_by_id
     )
-    assert [model_id for model_id, _ in reranked] == [2, 1]
+    assert [catalog_item_id for catalog_item_id, _ in reranked] == [2, 1]
 
 
 def test_rerank_leaves_order_unchanged_with_no_lexical_overlap() -> None:
@@ -464,7 +474,7 @@ def test_feedback_downvote_penalizes_and_reorders() -> None:
     reranked = apply_feedback_adjustment(
         scored, {1: FeedbackRecord(rating="down", context_query="")}
     )
-    assert [model_id for model_id, _ in reranked] == [2, 1]
+    assert [catalog_item_id for catalog_item_id, _ in reranked] == [2, 1]
 
 
 def test_feedback_upvote_gives_a_smaller_bonus_than_downvote_penalty() -> None:
@@ -493,11 +503,11 @@ def test_feedback_adjustment_ignores_unrated_candidates() -> None:
 
 
 def test_feedback_does_not_carry_over_to_a_dissimilar_query() -> None:
-    # A downvote given while searching for a "rack based server model" should not
-    # suppress the same model when the user later genuinely searches for "voice".
+    # A downvote given while searching for a "rack based server item" should not
+    # suppress the same item when the user later genuinely searches for "voice".
     scored = [(1, 0.5)]
     feedback = {
-        1: FeedbackRecord(rating="down", context_query="rack based server model")
+        1: FeedbackRecord(rating="down", context_query="rack based server item")
     }
     assert (
         apply_feedback_adjustment(scored, feedback, "voice assistant realtime")
@@ -507,28 +517,9 @@ def test_feedback_does_not_carry_over_to_a_dissimilar_query() -> None:
 
 def test_feedback_carries_over_to_a_similar_query() -> None:
     scored = [(1, 0.5)]
-    feedback = {1: FeedbackRecord(rating="down", context_query="voice assistant model")}
-    reranked = apply_feedback_adjustment(scored, feedback, "looking for a voice model")
+    feedback = {1: FeedbackRecord(rating="down", context_query="voice assistant item")}
+    reranked = apply_feedback_adjustment(scored, feedback, "looking for a voice item")
     assert reranked == [(1, 0.5 + 1.0)]
-
-
-def test_contextual_reason_ignores_cross_modality_latency_and_unset_latency() -> None:
-    # A faster model in a different modality must never be used as a latency comparison —
-    # ms are only comparable within the same modality (e.g. Voice vs Voice).
-    candidate = _model(1, "Image Gen", "Image")
-    unrelated = _model(2, "Fast Voice", "Voice", latency_ms=50)
-    evidence = [
-        {
-            "action": "compared",
-            "label": "Fast Voice",
-            "model": unrelated,
-            "created_at": datetime.utcnow(),
-        },
-    ]
-    assert (
-        contextual_reason(candidate, 0.5, False, evidence)
-        == "Strong match to your recent activity"
-    )
 
 
 def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
@@ -559,7 +550,9 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
+        widget = _make_widget(session, tenant)
         tenant_id = tenant.id  # captured before the session closes below
+        widget_id = widget.id
         visitor_id = "v-secret-check"
 
         class LeakyMeshGenerator:
@@ -575,13 +568,19 @@ def test_agent_pipeline_trace_never_receives_secrets_as_traced_inputs(
         prepare_retrieval_recommendation(
             session,
             FakeVectorStore(1, 1),
+            widget_id,
             tenant_id,
             visitor_id,
             mesh_generator=LeakyMeshGenerator(),
         )
 
-    assert captured["params"] == ["tenant_id", "visitor_id", "trigger_reason"]
+    assert captured["params"] == [
+        "widget_id",
+        "tenant_id",
+        "visitor_id",
+        "trigger_reason",
+    ]
     assert "session" not in captured["params"]
     assert "vector_store" not in captured["params"]
     assert "mesh_generator" not in captured["params"]
-    assert captured["tags"] == [f"visitor:{visitor_id}", f"tenant:{tenant_id}"]
+    assert captured["tags"] == [f"visitor:{visitor_id}", f"widget:{widget_id}"]

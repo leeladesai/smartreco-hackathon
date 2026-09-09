@@ -9,9 +9,11 @@ import html
 
 from app.services.narrative import Narrative
 
-# Mirrors the modality accent colors used in the app itself (app/static/js/app.js
-# modalityColors) so the email doesn't invent a second, inconsistent palette.
-MODALITY_COLORS = {
+# Color hints for the old fixed AI-model categories (LLM/Voice/Image/...) — a
+# generalized tenant's own category strings (e.g. "Personal Loan") won't match any of
+# these and fall through to DEFAULT_CATEGORY_COLOR, which is fine; not worth a
+# per-tenant palette for an accent color.
+CATEGORY_COLORS = {
     "LLM": "#5ec8d8",
     "Voice": "#e8a33d",
     "Image": "#a78bfa",
@@ -19,17 +21,17 @@ MODALITY_COLORS = {
     "Embedding": "#4fd1a5",
     "Multimodal": "#5ec8d8",
 }
-DEFAULT_MODALITY_COLOR = "#8b93a3"
+DEFAULT_CATEGORY_COLOR = "#8b93a3"
 
 
 def _esc(value: str | None) -> str:
     return html.escape(value or "", quote=True)
 
 
-def _model_card_html(model: dict) -> str:
-    color = MODALITY_COLORS.get(model.get("modality") or "", DEFAULT_MODALITY_COLOR)
-    meta_bits = [bit for bit in (model.get("provider"), model.get("price")) if bit]
-    why_this = model.get("why_this")
+def _catalog_item_card_html(item: dict) -> str:
+    color = CATEGORY_COLORS.get(item.get("category") or "", DEFAULT_CATEGORY_COLOR)
+    meta_bits = [bit for bit in (item.get("provider"), item.get("price")) if bit]
+    why_this = item.get("why_this")
     why_block = (
         f"""
               <tr><td style="padding-top:10px;">
@@ -51,14 +53,14 @@ def _model_card_html(model: dict) -> str:
               <tr>
                 <td style="font-size:15px;font-weight:700;color:#1c1a16;font-family:
                     -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
-                  {_esc(model.get("title"))}
+                  {_esc(item.get("title"))}
                 </td>
                 <td align="right" style="white-space:nowrap;">
                   <span style="display:inline-block;padding:3px 10px;
                       border-radius:999px;font-size:11px;font-weight:600;
                       letter-spacing:.02em;background:{color}26;color:{color};
                       font-family:monospace;">
-                    {_esc(model.get("modality"))}
+                    {_esc(item.get("category"))}
                   </span>
                 </td>
               </tr>
@@ -76,14 +78,14 @@ def _model_card_html(model: dict) -> str:
 
 def render_recommendation_email_html(
     narrative: Narrative | None,
-    models: list[dict],
+    catalog_items: list[dict],
     fallback_summary: str,
     app_url: str | None = None,
 ) -> str:
-    """Builds the full HTML document for the digest email. `models` is a plain list of
-    dicts (title, provider, modality, price, why_this) — deliberately not the ORM
-    objects or the API's ModelResponse schema, so this module has no dependency on
-    either and stays easy to unit-test in isolation.
+    """Builds the full HTML document for the digest email. `catalog_items` is a plain
+    list of dicts (title, provider, category, price, why_this) — deliberately not the
+    ORM objects or the API's CatalogItemResponse schema, so this module has no
+    dependency on either and stays easy to unit-test in isolation.
     """
     understanding = narrative.understanding if narrative else fallback_summary
     points = narrative.points if narrative else []
@@ -104,7 +106,7 @@ def render_recommendation_email_html(
         <ul style="margin:0;padding-left:18px;">{items}</ul>
       </td></tr>"""
 
-    cards_html = "".join(_model_card_html(model) for model in models) or (
+    cards_html = "".join(_catalog_item_card_html(item) for item in catalog_items) or (
         """<tr><td style="padding:0 32px 16px;font-size:14px;color:#6b6455;">
              Retrieval is still catching up — check your dashboard shortly.
            </td></tr>"""

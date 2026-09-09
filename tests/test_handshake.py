@@ -37,10 +37,12 @@ def test_health_endpoint() -> None:
     assert response.json() == {"status": "ok", "service": "trailmind"}
 
 
-def test_admin_page_ships_admin_only_markup() -> None:
-    # Admins can't self-register (AUTH-5), and this module hits the real app singleton
-    # rather than an isolated per-test db, so seed a dedicated admin directly rather than
-    # relying on `seed_data.py` having already been run against whatever db this points to.
+def test_admin_login_returns_a_bearer_token_not_html() -> None:
+    # The admin console is the separate React app (frontend/) now — this backend is
+    # a pure JSON API and no longer serves any admin HTML of its own. Admins can't
+    # self-register (AUTH-5), and this module hits the real app singleton rather than
+    # an isolated per-test db, so seed a dedicated admin directly rather than relying
+    # on `seed_data.py` having already been run against whatever db this points to.
     email, password = "handshake-admin@test.dev", "handshake-admin-pw"
     with app.state.session_factory() as session:
         tenant = get_or_create_reference_tenant(session)
@@ -60,34 +62,33 @@ def test_admin_page_ships_admin_only_markup() -> None:
             )
         session.commit()
 
-    # A scoped client, not the shared module-level `client` — logging in here must not leak
-    # a session cookie into other tests in this file that assume an unauthenticated client.
     with TestClient(app) as admin_client:
-        admin_client.post(
+        login = admin_client.post(
             "/api/admin/login", json={"email": email, "password": password}
         )
-        response = admin_client.get("/admin/models")
+        assert login.status_code == 200
+        assert login.json()["token"]
 
+        response = admin_client.get(
+            "/api/admin/me",
+            headers={"Authorization": f"Bearer {login.json()['token']}"},
+        )
     assert response.status_code == 200
-    assert 'id="admin-model-table"' in response.text
-    assert 'id="model-form"' in response.text
-    assert 'onclick="openModelModal()"' in response.text
-    assert 'id="model-modal"' in response.text
+    assert response.json()["email"] == email
 
 
-def test_screen_routes_and_server_side_access_checks() -> None:
-    # Every admin console page requires a session — signed-out visitors are sent to
-    # /admin/login, the only page still browsable while signed out (besides /health).
-    admin = client.get("/admin", follow_redirects=False)
-    assert admin.status_code == 303
-    assert admin.headers["location"] == "/admin/login"
-
-    assert client.get("/admin/login").status_code == 200
-
-    for path in ("/admin/models", "/admin/observability", "/admin/users"):
-        response = client.get(path, follow_redirects=False)
-        assert response.status_code == 303
-        assert response.headers["location"] == "/admin/login"
+def test_admin_html_routes_are_gone() -> None:
+    # These used to be server-rendered Jinja2 pages — the backend no longer serves
+    # any HTML at all, admin or otherwise, now that the console is a separate app.
+    for path in (
+        "/admin",
+        "/admin/login",
+        "/admin/models",
+        "/admin/observability",
+        "/admin/users",
+        "/admin/tenants",
+    ):
+        assert client.get(path, follow_redirects=False).status_code == 404
 
 
 def test_removed_ai_engineer_routes_are_gone() -> None:

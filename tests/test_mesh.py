@@ -32,7 +32,7 @@ def test_generate_splits_understanding_and_points() -> None:
                 "Cartesia Sonic wins on latency.",
                 "ElevenLabs Turbo v2.5 wins on naturalness.",
             ],
-            "model_ids": [4, 3],
+            "catalog_item_ids": [4, 3],
         }
     )
     generator = _generator_with_response(content)
@@ -49,7 +49,7 @@ def test_generate_splits_understanding_and_points() -> None:
         "Cartesia Sonic wins on latency.",
         "ElevenLabs Turbo v2.5 wins on naturalness.",
     ]
-    assert result.model_ids == [4, 3]
+    assert result.catalog_item_ids == [4, 3]
 
 
 def test_generate_strips_id_mentions_from_both_sections() -> None:
@@ -59,7 +59,7 @@ def test_generate_strips_id_mentions_from_both_sections() -> None:
             "recommendation_points": [
                 "Cartesia Sonic (ID 4) beats ElevenLabs Turbo v2.5 (id: 3) on latency."
             ],
-            "model_ids": [4],
+            "catalog_item_ids": [4],
         }
     )
     generator = _generator_with_response(content)
@@ -76,7 +76,7 @@ def test_generate_strips_id_mentions_from_both_sections() -> None:
 
 
 def test_candidate_id_is_not_embedded_in_the_readable_description() -> None:
-    """The candidate_id must still reach the model (for model_ids grounding), but not as
+    """The candidate_id must still reach the model (for catalog_item_ids grounding), but not as
     part of the human-readable name/description text the narrative gets built from."""
     captured = {}
 
@@ -87,7 +87,7 @@ def test_candidate_id_is_not_embedded_in_the_readable_description() -> None:
                 {
                     "activity_understanding": "ok",
                     "recommendation_points": ["ok"],
-                    "model_ids": [4],
+                    "catalog_item_ids": [4],
                 }
             )
             message = SimpleNamespace(content=content)

@@ -2,9 +2,11 @@
 #
 # Usage: ./scripts/start_dev.sh [start|stop|restart|status|logs]
 #
-# SmartReco is a single FastAPI process serving both the JSON API and the
-# server-rendered frontend (Jinja2 + vanilla JS) — no separate frontend server, so
-# there's one process and one log file, not a frontend/backend pair.
+# This script manages the backend only — a pure FastAPI JSON API (the admin console
+# moved to a separate Next.js app in frontend/, started separately via `npm run dev`
+# there). The API also still serves the tracker/widget SDK as static JS
+# (app/static/js/tracker.js, widget.js) — those run on tenants' own sites and stay
+# framework-free regardless of what the admin console's stack is.
 #
 #   start    Start the server detached (survives this terminal closing), then tail its
 #            log. Ctrl-C only stops the tail — the server keeps running. If it's already
@@ -20,7 +22,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8001}"
+# 8001 collides with an unrelated project's own dev server on this machine
+# (banking_agent) — this default only matters the first time; PORT= still overrides.
+PORT="${PORT:-8011}"
 LOG_DIR="${ROOT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/smartreco-dev.log"
 PID_FILE="${LOG_DIR}/smartreco-dev.pid"
@@ -77,16 +81,29 @@ do_stop() {
 do_start() {
   local pid
   if pid="$(running_pid)"; then
-    echo "SmartReco is already running (PID ${pid}) on http://${HOST}:${PORT}"
+    echo "SmartReco backend is already running (PID ${pid}) on http://${HOST}:${PORT}"
     tail_logs
   fi
 
-  echo "Starting SmartReco on http://${HOST}:${PORT}"
-  echo "Frontend: http://${HOST}:${PORT}/"
+  echo "Starting SmartReco backend on http://${HOST}:${PORT}"
+  echo "API docs: http://${HOST}:${PORT}/docs"
   echo "Health:   http://${HOST}:${PORT}/health"
   echo "Log:      ${LOG_FILE}"
+  echo
+  echo "Admin console (separate app): cd frontend && npm run dev  ->  http://localhost:3000"
 
+  # --reload watches the whole repo root by default, which now also contains
+  # frontend/node_modules (hundreds of thousands of files) — a single file changing
+  # in there (e.g. during `npm install`) was enough to trigger a reload cycle that
+  # crashed the reloader outright. Excluding it (and other noisy/irrelevant dirs)
+  # keeps the watch scoped to what can actually affect the backend.
   nohup uv run uvicorn app.asgi:app --reload --host "${HOST}" --port "${PORT}" \
+    --reload-exclude 'frontend/*' \
+    --reload-exclude '.venv/*' \
+    --reload-exclude 'venv/*' \
+    --reload-exclude 'logs/*' \
+    --reload-exclude 'chroma_data/*' \
+    --reload-exclude '.git/*' \
     >>"${LOG_FILE}" 2>&1 &
   disown
   echo $! >"${PID_FILE}"
@@ -118,6 +135,16 @@ case "${1:-start}" in
     ;;
   status) do_status ;;
   logs) tail_logs ;;
+  help|-h|--help)
+    echo "Usage: $0 [start|stop|restart|status|logs]"
+    echo
+    echo "  start    Start the server detached, then tail its log (Ctrl-C stops the"
+    echo "           tail only). Already running -> just attaches to the log."
+    echo "  stop     Stop the detached server started by 'start'."
+    echo "  restart  stop, then start."
+    echo "  status   Report whether the server is running and its PID."
+    echo "  logs     Tail the log without starting or stopping anything."
+    ;;
   *)
     echo "Usage: $0 [start|stop|restart|status|logs]" >&2
     exit 1

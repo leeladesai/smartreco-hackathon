@@ -66,16 +66,23 @@ def build_embedding_function(settings):
     return DeterministicEmbeddingFunction(settings.embedding_dimension)
 
 
-class ModelVectorStore:
-    """Manages one Chroma collection per tenant (docs/design/09-Platform-Pivot-Decision.md
-    §5: separate collections chosen over a shared collection + metadata filter, for
-    stronger physical isolation between tenants sharing this store). `collection_name`
-    is the shared prefix; the actual collection a call touches is always
-    `{collection_name}_tenant_{tenant_id}`, created lazily on first use."""
+class CatalogItemVectorStore:
+    """Manages one Chroma collection per widget (docs/design/09-Platform-Pivot-Decision.md
+    §5, updated for the per-widget cutover: isolation now needs to stop a "Personal
+    Loans" widget from ever recommending a "Credit Cards" item, not just stop
+    cross-tenant leakage — a shared collection + metadata filter would still risk that
+    on a filter bug, so separate collections stay the stronger guarantee, just scoped
+    one level deeper). `collection_name` is the shared prefix; the actual collection a
+    call touches is always `{collection_name}_widget_{widget_id}`, created lazily on
+    first use."""
 
     def __init__(
         self,
         path: str,
+        # Matches Settings.chroma_collection_name's default ("models", unchanged by
+        # the CatalogItem rename) — this is a Chroma collection name on disk, not a
+        # Python identifier, and renaming it would orphan every already-synced
+        # widget's vectors under the old name until a full re-sync.
         collection_name: str = "models",
         embedding_function=None,
         embedding_dimension: int = 64,
@@ -94,51 +101,50 @@ class ModelVectorStore:
         )
         self._collections: dict[int, object] = {}
 
-    def _collection_for(self, tenant_id: int):
-        collection = self._collections.get(tenant_id)
+    def _collection_for(self, widget_id: int):
+        collection = self._collections.get(widget_id)
         if collection is None:
             collection = self.client.get_or_create_collection(
-                name=f"{self.collection_name}_tenant_{tenant_id}",
+                name=f"{self.collection_name}_widget_{widget_id}",
                 embedding_function=self.embedding_function,
             )
-            self._collections[tenant_id] = collection
+            self._collections[widget_id] = collection
         return collection
 
     @staticmethod
-    def document(model) -> str:
-        tags = ", ".join(model.use_case_tags or [])
-        story = f" {model.story}." if getattr(model, "story", None) else ""
+    def document(item) -> str:
+        tags = ", ".join(item.use_case_tags or [])
+        story = f" {item.story}." if getattr(item, "story", None) else ""
         return (
-            f"{model.title}. {model.provider}. {model.modality}. "
-            f"{model.description}.{story} {tags}"
+            f"{item.title}. {item.provider}. {item.category}. "
+            f"{item.description}.{story} {tags}"
         )
 
-    def upsert(self, model, tenant_id: int) -> None:
-        self._collection_for(tenant_id).upsert(
-            ids=[str(model.id)],
-            documents=[self.document(model)],
+    def upsert(self, item, widget_id: int) -> None:
+        self._collection_for(widget_id).upsert(
+            ids=[str(item.id)],
+            documents=[self.document(item)],
             metadatas=[
                 {
-                    "provider": model.provider,
-                    "modality": model.modality,
-                    "price": model.price,
-                    "latency_ms": model.latency_ms or -1,
+                    "provider": item.provider,
+                    "category": item.category,
+                    "price": item.price,
                 }
             ],
         )
 
-    def delete(self, model_id: int, tenant_id: int) -> None:
-        self._collection_for(tenant_id).delete(ids=[str(model_id)])
+    def delete(self, catalog_item_id: int, widget_id: int) -> None:
+        self._collection_for(widget_id).delete(ids=[str(catalog_item_id)])
 
     def query_scored(
-        self, text: str, tenant_id: int, limit: int = 5, where: dict | None = None
+        self, text: str, widget_id: int, limit: int = 5, where: dict | None = None
     ) -> list[tuple[int, float]]:
         """Like `query`, but also returns each result's distance (lower = more similar) —
         used by the grade/refine node to detect weak retrieval. `where` applies Chroma
-        metadata filtering (e.g. `{"modality": "Voice"}`) before the ANN search runs, not
-        as a post-hoc re-rank filter. Always scoped to `tenant_id`'s own collection —
-        never searches across tenants."""
-        collection = self._collection_for(tenant_id)
+        metadata filtering (e.g. `{"category": "Voice"}`) before the ANN search runs, not
+        as a post-hoc re-rank filter. Always scoped to `widget_id`'s own collection —
+        never searches across widgets, let alone tenants."""
+        collection = self._collection_for(widget_id)
         if not text.strip() or collection.count() == 0:
             return []
         try:
@@ -155,6 +161,6 @@ class ModelVectorStore:
         ids = results.get("ids", [[]])[0]
         distances = results.get("distances", [[]])[0]
         return [
-            (int(model_id), float(distance))
-            for model_id, distance in zip(ids, distances)
+            (int(catalog_item_id), float(distance))
+            for catalog_item_id, distance in zip(ids, distances)
         ]

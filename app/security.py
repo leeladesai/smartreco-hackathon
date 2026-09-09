@@ -33,7 +33,16 @@ def create_session_token(user: User, settings: Settings) -> str:
 
 
 def get_current_user(request: Request, session: Session, settings: Settings) -> User:
-    token = request.cookies.get(settings.session_cookie_name)
+    # The React admin frontend runs on its own origin and authenticates with a
+    # bearer token (Authorization header) rather than a cookie — no CORS
+    # credentials/SameSite coordination needed. The cookie is still accepted as a
+    # fallback for anything still relying on it during the frontend migration.
+    auth_header = request.headers.get("Authorization", "")
+    token = (
+        auth_header.removeprefix("Bearer ").strip()
+        if auth_header.startswith("Bearer ")
+        else None
+    ) or request.cookies.get(settings.session_cookie_name)
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required"
@@ -56,13 +65,17 @@ def get_current_user(request: Request, session: Session, settings: Settings) -> 
 def make_role_dependency(
     session_factory: Callable[[], Session],
     settings: Settings,
-    required_role: str | None = None,
+    required_role: str | tuple[str, ...] | None = None,
 ) -> Callable[[Request], User]:
+    allowed_roles = (
+        (required_role,) if isinstance(required_role, str) else required_role
+    )
+
     def dependency(request: Request) -> User:
         session = session_factory()
         try:
             user = get_current_user(request, session, settings)
-            if required_role and user.role != required_role:
+            if allowed_roles and user.role not in allowed_roles:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Admin access required",

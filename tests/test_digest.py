@@ -2,13 +2,13 @@ import pytest
 
 from app.config import Settings
 from app.db import build_session_factory
-from app.models import Event, Model, Recommendation, Tenant, User
+from app.models import CatalogItem, Event, Recommendation, Tenant, User
 from app.security import hash_password
 from app.services.digest import (
     EmailNotifier,
     LoggingNotifier,
     TelegramNotifier,
-    _recommendation_models,
+    _recommendation_catalog_items,
     build_notifier,
     run_digest,
 )
@@ -118,7 +118,7 @@ def test_telegram_notifier_prefers_users_own_chat_id(monkeypatch) -> None:
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id="personal-chat")
     recommendation = Recommendation(
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="s",
         activity_hash="h",
         trigger_reason="event_threshold",
@@ -146,7 +146,7 @@ def test_telegram_notifier_falls_back_to_shared_chat_id(monkeypatch) -> None:
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="s",
         activity_hash="h",
         trigger_reason="event_threshold",
@@ -161,7 +161,7 @@ def test_telegram_notifier_raises_without_any_chat_id() -> None:
     user = User(id=1, email="x@test.dev", role="user", telegram_chat_id=None)
     recommendation = Recommendation(
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         behavior_summary="s",
         activity_hash="h",
         trigger_reason="event_threshold",
@@ -176,9 +176,9 @@ class RecordingNotifier:
         self.sent: list[tuple[User, Recommendation, list[dict]]] = []
 
     def send(
-        self, user: User, recommendation: Recommendation, models: list[dict]
+        self, user: User, recommendation: Recommendation, catalog_items: list[dict]
     ) -> None:
-        self.sent.append((user, recommendation, models))
+        self.sent.append((user, recommendation, catalog_items))
 
 
 def test_run_digest_sends_latest_recommendation_and_skips_users_without_one(
@@ -243,7 +243,7 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
                 tenant_id=tenant.id,
                 visitor_id=str(user.id),
                 narrative="You'll like this.",
-                model_ids=[],
+                catalog_item_ids=[],
                 behavior_summary="prior activity",
                 activity_hash="deadbeef",
                 trigger_reason="event_threshold",
@@ -258,7 +258,7 @@ def test_run_digest_delivers_existing_recommendation_without_new_events(
 
     assert summary == {"sent": 1, "skipped": 0}
     assert len(notifier.sent) == 1
-    sent_user, sent_recommendation, _sent_models = notifier.sent[0]
+    sent_user, sent_recommendation, _sent_items = notifier.sent[0]
     assert sent_user.email == "stable@test.dev"
     assert sent_recommendation.narrative == "You'll like this."
 
@@ -280,7 +280,7 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
                 tenant_id=tenant.id,
                 visitor_id=str(user.id),
                 narrative="hi",
-                model_ids=[],
+                catalog_item_ids=[],
                 behavior_summary="s",
                 activity_hash="h",
                 trigger_reason="event_threshold",
@@ -290,7 +290,7 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
 
     class FailingNotifier:
         def send(
-            self, user: User, recommendation: Recommendation, models: list[dict]
+            self, user: User, recommendation: Recommendation, catalog_items: list[dict]
         ) -> None:
             raise RuntimeError("smtp down")
 
@@ -303,27 +303,29 @@ def test_run_digest_counts_delivery_failure_as_skipped(tmp_path) -> None:
     assert summary == {"sent": 0, "skipped": 1}
 
 
-def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) -> None:
+def test_recommendation_catalog_items_resolves_title_provider_and_why_this(
+    tmp_path,
+) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         tenant = _make_tenant(session)
-        model = Model(
+        item = CatalogItem(
             tenant_id=tenant.id,
             title="Voice X",
             provider="Test Labs",
-            modality="Voice",
+            category="Voice",
             price="$1",
             description="d",
             use_case_tags=[],
         )
-        session.add(model)
+        session.add(item)
         session.commit()
         recommendation = Recommendation(
             tenant_id=tenant.id,
             visitor_id="v1",
-            model_ids=[model.id],
+            catalog_item_ids=[item.id],
             retrieval_meta=[
-                {"model_id": model.id, "reason": "great fit", "distance": 0.2}
+                {"catalog_item_id": item.id, "reason": "great fit", "distance": 0.2}
             ],
             behavior_summary="s",
             activity_hash="h",
@@ -332,24 +334,24 @@ def test_recommendation_models_resolves_title_provider_and_why_this(tmp_path) ->
         session.add(recommendation)
         session.commit()
 
-        models = _recommendation_models(session, recommendation)
-        assert models == [
+        catalog_items = _recommendation_catalog_items(session, recommendation)
+        assert catalog_items == [
             {
                 "title": "Voice X",
                 "provider": "Test Labs",
-                "modality": "Voice",
+                "category": "Voice",
                 "price": "$1",
                 "why_this": "great fit",
             }
         ]
 
 
-def test_recommendation_models_skips_ids_with_no_matching_row(tmp_path) -> None:
+def test_recommendation_catalog_items_skips_ids_with_no_matching_row(tmp_path) -> None:
     session_factory = _make_session_factory(tmp_path)
     with session_factory() as session:
         recommendation = Recommendation(
             visitor_id="v1",
-            model_ids=[999],
+            catalog_item_ids=[999],
             behavior_summary="s",
             activity_hash="h",
             trigger_reason="event_threshold",
@@ -357,7 +359,7 @@ def test_recommendation_models_skips_ids_with_no_matching_row(tmp_path) -> None:
         session.add(recommendation)
         session.commit()
 
-        assert _recommendation_models(session, recommendation) == []
+        assert _recommendation_catalog_items(session, recommendation) == []
 
 
 class FakeSMTPServer:
@@ -390,7 +392,9 @@ class FakeSMTPServer:
         self.sent_message = message
 
 
-def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> None:
+def test_email_notifier_sends_html_alternative_with_catalog_item_cards(
+    monkeypatch,
+) -> None:
     import app.services.digest as digest_module
 
     FakeSMTPServer.instances = []
@@ -407,7 +411,7 @@ def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> 
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
         visitor_id="v1",
-        model_ids=[1],
+        catalog_item_ids=[1],
         narrative=encode_narrative(
             "You've been comparing low-latency voice models.",
             ["ElevenLabs beats the field on latency."],
@@ -416,23 +420,23 @@ def test_email_notifier_sends_html_alternative_with_model_cards(monkeypatch) -> 
         activity_hash="h",
         trigger_reason="event_threshold",
     )
-    models = [
+    catalog_items = [
         {
             "title": "ElevenLabs Turbo v2.5",
             "provider": "ElevenLabs",
-            "modality": "Voice",
+            "category": "Voice",
             "price": "$0.001/char",
             "why_this": "beats Cartesia Sonic on latency",
         }
     ]
 
-    notifier.send(user, recommendation, models)
+    notifier.send(user, recommendation, catalog_items)
 
     server = FakeSMTPServer.instances[-1]
     assert server.started_tls is True
     assert server.logged_in_as == "u"
     message = server.sent_message
-    assert message["Subject"] == "Your TrailMind picks: 1 models based on your activity"
+    assert message["Subject"] == "Your TrailMind picks: 1 picks based on your activity"
     assert message.is_multipart()
 
     html_part = message.get_body(preferencelist=("html",))
@@ -461,7 +465,7 @@ def test_email_notifier_omits_cta_link_when_app_url_unset(monkeypatch) -> None:
     user = User(id=1, email="recipient@test.dev", role="user")
     recommendation = Recommendation(
         visitor_id="v1",
-        model_ids=[],
+        catalog_item_ids=[],
         narrative="hi",
         behavior_summary="s",
         activity_hash="h",

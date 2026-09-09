@@ -6,9 +6,10 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.models import User
+from app.models import User, Widget
 from app.security import hash_password
 from app.services.tenants import get_or_create_reference_tenant
+from app.services.widgets import DEFAULT_WIDGET_NAME, create_widget
 
 # configure_langsmith (app/services/tracing.py) mutates these process-global env vars
 # with no cleanup — a test that enables tracing would otherwise leak it into every test
@@ -86,3 +87,22 @@ def client(tmp_path) -> Iterator[TestClient]:
         session.commit()
     with TestClient(test_app) as test_client:
         yield test_client
+
+
+@pytest.fixture()
+def reference_widget(client: TestClient) -> tuple[Widget, str]:
+    """The per-widget key cutover (see Widget's docstring in app/models.py) means
+    almost every tracker/widget-facing test now needs a real Widget + raw API key,
+    not just a tenant — this is the widget-level counterpart to `client`'s own
+    reference-tenant + curator-admin setup. Named "Default" (DEFAULT_WIDGET_NAME) so
+    it lines up with what `get_or_create_default_widget` would create if a test path
+    ever falls back to that instead."""
+    with client.app.state.session_factory() as session:
+        tenant = get_or_create_reference_tenant(session)
+        widget, raw_key = create_widget(session, tenant, DEFAULT_WIDGET_NAME)
+        # issue_api_key's own commit (inside create_widget) expires widget's
+        # attributes without refreshing them — expunge would otherwise hand back an
+        # object that raises DetachedInstanceError on the very next attribute read.
+        session.refresh(widget)
+        session.expunge(widget)
+        return widget, raw_key

@@ -21,22 +21,40 @@ class AdminUserResponse(UserResponse):
     created_at: datetime
 
 
-class ModelCreate(BaseModel):
+class LoginResponse(UserResponse):
+    token: str = Field(
+        description="Bearer token — send as `Authorization: Bearer <token>` on"
+        " every subsequent request. Valid 12 hours."
+    )
+
+
+class SignupRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=255)
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=8)
+
+
+class SignupResponse(BaseModel):
+    tenant_id: int
+    email: str
+    status: str
+
+
+class CatalogItemCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
     story: str | None = Field(default=None)
     provider: str = Field(min_length=1, max_length=120)
-    modality: str = Field(min_length=1, max_length=40)
+    category: str = Field(min_length=1, max_length=60)
     price: str = Field(min_length=1, max_length=120)
-    latency_ms: int | None = Field(default=None, ge=0)
-    context_window: str | None = Field(default=None, max_length=120)
+    # Arbitrary label -> value highlight pairs (e.g. {"Rate": "10.5-16% p.a."}) —
+    # replaces the old fixed latency_ms/context_window fields. See CatalogItem.
+    specs: dict[str, str] = Field(default_factory=dict)
     use_case_tags: list[str] = Field(default_factory=list)
     source_url: HttpUrl | None = None
 
-    model_config = ConfigDict(protected_namespaces=())
 
-
-class ModelResponse(ModelCreate):
+class CatalogItemResponse(CatalogItemCreate):
     id: int
     vector_synced: bool
     ingestion_adapter: str
@@ -97,7 +115,7 @@ class ScrapeConfirmRowResult(BaseModel):
     title: str | None = None
     status: str
     errors: list[str] = Field(default_factory=list)
-    model_id: int | None = None
+    catalog_item_id: int | None = None
 
 
 class ScrapeConfirmResponse(BaseModel):
@@ -118,23 +136,20 @@ class IngestionStatusResponse(BaseModel):
 
 class TenantCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    allowed_origins: list[str] = Field(default_factory=list)
 
 
 class TenantCreateResponse(BaseModel):
     id: int
     name: str
     status: str
-    api_key: str = Field(
-        description="Raw tracker API key — shown once, never retrievable again."
-    )
 
 
 class ApiKeyResponse(BaseModel):
-    api_key: str = Field(description="Raw tracker API key — shown once.")
+    api_key: str = Field(description="Raw widget API key — shown once.")
 
 
 class OnboardingStatusResponse(BaseModel):
+    widget_id: int
     tenant_id: int
     status: str
     tracker_verified: bool
@@ -142,36 +157,62 @@ class OnboardingStatusResponse(BaseModel):
     ready: bool
 
 
+class WidgetCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    allowed_origins: list[str] = Field(default_factory=list)
+
+
+class WidgetResponse(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
+    status: str
+    allowed_origins: list[str]
+    first_event_at: datetime | None = None
+    feed_url: str | None = None
+    tracker_verified: bool
+    catalog_ready: bool
+    ready: bool
+    created_at: datetime
+
+
+class WidgetCreateResponse(BaseModel):
+    widget: WidgetResponse
+    api_key: str = Field(
+        description="Raw widget API key — shown once, never retrievable again."
+    )
+
+
 class TrackEventInput(BaseModel):
+    # Event *type names* (model_view, model_compare, …) are a separate taxonomy from
+    # the CatalogItem entity rename — left as-is; changing these would reinterpret
+    # every already-stored Event row's meaning, which the entity rename doesn't
+    # require.
     event_type: str = Field(
         pattern="^(page_view|model_view|search|click|model_compare|dwell|catalog_filter"
         "|model_copy|model_watchlist|recommendation_feedback)$"
     )
-    model_id: int | None = None
+    catalog_item_id: int | None = None
     metadata: dict = Field(default_factory=dict)
-
-    model_config = ConfigDict(protected_namespaces=())
 
 
 class WidgetAskRequest(BaseModel):
     # Same key-in-body reasoning as TrackEventBatch below — the widget authenticates
     # the same way the tracker does, over a plain POST, not a header.
-    tenant_key: str = Field(min_length=1)
+    widget_key: str = Field(min_length=1)
     visitor_id: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=1, max_length=500)
 
 
 class WidgetAskResponse(BaseModel):
     answer: str
-    model_ids: list[int] = Field(default_factory=list)
-
-    model_config = ConfigDict(protected_namespaces=())
+    catalog_item_ids: list[int] = Field(default_factory=list)
 
 
 class TrackEventBatch(BaseModel):
-    # The tenant key travels in the body, not a header — navigator.sendBeacon (used
+    # The widget key travels in the body, not a header — navigator.sendBeacon (used
     # for the on-unload flush, app/static/js/tracker.js) can't set custom headers, so
     # a header-only scheme would silently lose every beacon-flushed batch.
-    tenant_key: str = Field(min_length=1)
+    widget_key: str = Field(min_length=1)
     visitor_id: str = Field(min_length=1, max_length=64)
     events: list[TrackEventInput] = Field(min_length=1, max_length=100)

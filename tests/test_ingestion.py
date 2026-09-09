@@ -3,21 +3,23 @@ preview/confirm (ING-2), both layered on top of the existing manual-entry adapte
 (CAT-1..5) via app/services/ingestion.py. Retrieval-exclusion for a "pending_review"
 scrape row is proven by checking it never lands in the vector store rather than by
 inspecting agent_graph internals — that's the actual mechanism (see
-app/services/catalog.py::create_model).
+app/services/catalog.py::create_catalog_item). Updated for the per-widget cutover:
+feed/scrape config and catalog scoping all live on a Widget now, not a Tenant (see
+Widget's docstring in app/models.py).
 """
 
 import httpx
 
 import app.services.ingestion as ingestion_module
-from app.models import Model, Tenant
+from app.models import CatalogItem, Widget
 from app.services.ingestion import (
     FeedSyncError,
     ScrapeError,
-    configure_feed,
     scrape_confirm,
     scrape_preview,
     sync_feed,
 )
+from app.services.widgets import configure_feed, create_widget
 
 
 class _FakeResponse:
@@ -33,7 +35,7 @@ class _FakeResponse:
 
 FEED_JSON = b"""
 {"models": [
-    {"title": "Feed Model One", "provider": "Feed Co", "modality": "LLM",
+    {"title": "Feed Item One", "provider": "Feed Co", "category": "LLM",
      "price": "$1", "description": "From the feed."}
 ]}
 """
@@ -58,37 +60,43 @@ def _login(client) -> None:
     assert login.status_code == 200
 
 
-def test_feed_sync_imports_rows_tagged_and_stamped(client, monkeypatch) -> None:
+def test_feed_sync_imports_rows_tagged_and_stamped(
+    client, reference_widget, monkeypatch
+) -> None:
     def fake_get(url, headers=None, timeout=None):
         return _FakeResponse(content=FEED_JSON)
 
     monkeypatch.setattr(ingestion_module.httpx, "get", fake_get)
+    widget, _ = reference_widget
 
     with client.app.state.session_factory() as session:
-        tenant = session.get(Tenant, 1)
-        configure_feed(session, tenant, "https://vendor.example.com/feed.json")
-        rows = sync_feed(session, client.app.state.vector_store, tenant)
+        widget = session.get(Widget, widget.id)
+        configure_feed(session, widget, "https://vendor.example.com/feed.json")
+        rows = sync_feed(session, client.app.state.vector_store, widget)
         assert rows[0]["status"] == "inserted"
 
-        model = session.query(Model).filter_by(title="Feed Model One").one()
-        assert model.ingestion_adapter == "feed"
-        assert model.review_status == "approved"
-        assert model.last_synced_at is not None
-        assert model.sync_stale is False
+        item = session.query(CatalogItem).filter_by(title="Feed Item One").one()
+        assert item.ingestion_adapter == "feed"
+        assert item.review_status == "approved"
+        assert item.last_synced_at is not None
+        assert item.sync_stale is False
         # Approved feed rows sync to the vector store immediately, same as manual.
-        assert model.vector_synced is True
+        assert item.vector_synced is True
 
 
-def test_feed_sync_marks_existing_rows_stale_on_failure(client, monkeypatch) -> None:
+def test_feed_sync_marks_existing_rows_stale_on_failure(
+    client, reference_widget, monkeypatch
+) -> None:
     def fake_get_ok(url, headers=None, timeout=None):
         return _FakeResponse(content=FEED_JSON)
 
     monkeypatch.setattr(ingestion_module.httpx, "get", fake_get_ok)
+    widget_id = reference_widget[0].id
 
     with client.app.state.session_factory() as session:
-        tenant = session.get(Tenant, 1)
-        configure_feed(session, tenant, "https://vendor.example.com/feed.json")
-        sync_feed(session, client.app.state.vector_store, tenant)
+        widget_row = session.get(Widget, widget_id)
+        configure_feed(session, widget_row, "https://vendor.example.com/feed.json")
+        sync_feed(session, client.app.state.vector_store, widget_row)
 
     def fake_get_fail(url, headers=None, timeout=None):
         raise httpx.ConnectError("network down")
@@ -96,15 +104,15 @@ def test_feed_sync_marks_existing_rows_stale_on_failure(client, monkeypatch) -> 
     monkeypatch.setattr(ingestion_module.httpx, "get", fake_get_fail)
 
     with client.app.state.session_factory() as session:
-        tenant = session.get(Tenant, 1)
+        widget_row = session.get(Widget, widget_id)
         try:
-            sync_feed(session, client.app.state.vector_store, tenant)
+            sync_feed(session, client.app.state.vector_store, widget_row)
             assert False, "expected FeedSyncError"
         except FeedSyncError:
             pass
 
-        model = session.query(Model).filter_by(title="Feed Model One").one()
-        assert model.sync_stale is True
+        item = session.query(CatalogItem).filter_by(title="Feed Item One").one()
+        assert item.sync_stale is True
 
 
 def test_scrape_preview_extracts_json_ld_product(client, monkeypatch) -> None:
@@ -133,13 +141,15 @@ def test_scrape_preview_raises_when_no_markup_found(client, monkeypatch) -> None
 
 
 def test_scrape_confirm_creates_pending_review_row_excluded_from_vector_store(
-    client,
+    client, reference_widget
 ) -> None:
+    widget, _ = reference_widget
     with client.app.state.session_factory() as session:
+        widget = session.get(Widget, widget.id)
         rows = scrape_confirm(
             session,
             client.app.state.vector_store,
-            1,
+            widget,
             "https://shop.example.com/widget",
             "json-ld",
             [
@@ -147,32 +157,34 @@ def test_scrape_confirm_creates_pending_review_row_excluded_from_vector_store(
                     "title": "Scraped Widget",
                     "description": "A widget.",
                     "provider": "Acme",
-                    "modality": "Hardware",
+                    "category": "Hardware",
                     "price": "USD 19.99",
                 }
             ],
         )
         assert rows[0]["status"] == "pending_review"
-        model_id = rows[0]["model_id"]
-        model = session.get(Model, model_id)
-        assert model.review_status == "pending_review"
-        assert model.ingestion_adapter == "scrape"
-        assert model.vector_synced is False
+        catalog_item_id = rows[0]["catalog_item_id"]
+        item = session.get(CatalogItem, catalog_item_id)
+        assert item.review_status == "pending_review"
+        assert item.ingestion_adapter == "scrape"
+        assert item.vector_synced is False
 
         # Not eligible for retrieval yet — the vector store never got an upsert for it.
         matches = client.app.state.vector_store.query_scored(
-            "Scraped Widget Acme Hardware", 1, limit=5
+            "Scraped Widget Acme Hardware", widget.id, limit=5
         )
-        assert model_id not in {mid for mid, _ in matches}
+        assert catalog_item_id not in {mid for mid, _ in matches}
 
 
-def test_admin_approve_endpoint_syncs_to_vector_store(client) -> None:
+def test_admin_approve_endpoint_syncs_to_vector_store(client, reference_widget) -> None:
     _login(client)
+    widget_id = reference_widget[0].id
     with client.app.state.session_factory() as session:
+        widget_row = session.get(Widget, widget_id)
         rows = scrape_confirm(
             session,
             client.app.state.vector_store,
-            1,
+            widget_row,
             "https://shop.example.com/widget",
             "json-ld",
             [
@@ -180,22 +192,27 @@ def test_admin_approve_endpoint_syncs_to_vector_store(client) -> None:
                     "title": "Pending Widget",
                     "description": "Awaiting approval.",
                     "provider": "Acme",
-                    "modality": "Hardware",
+                    "category": "Hardware",
                     "price": "USD 9.99",
                 }
             ],
         )
-        model_id = rows[0]["model_id"]
+        catalog_item_id = rows[0]["catalog_item_id"]
 
-    response = client.post(f"/api/admin/catalog/{model_id}/approve")
+    response = client.post(
+        f"/api/admin/widgets/{widget_id}/catalog-items/{catalog_item_id}/approve"
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["review_status"] == "approved"
     assert body["vector_synced"] is True
 
 
-def test_ingestion_status_reflects_feed_and_scrape_state(client, monkeypatch) -> None:
+def test_ingestion_status_reflects_feed_and_scrape_state(
+    client, reference_widget, monkeypatch
+) -> None:
     _login(client)
+    widget, _ = reference_widget
 
     def fake_get(url, headers=None, timeout=None):
         return _FakeResponse(content=FEED_JSON)
@@ -203,17 +220,18 @@ def test_ingestion_status_reflects_feed_and_scrape_state(client, monkeypatch) ->
     monkeypatch.setattr(ingestion_module.httpx, "get", fake_get)
 
     client.post(
-        "/api/admin/ingestion/feed",
+        f"/api/admin/widgets/{widget.id}/feed",
         json={"feed_url": "https://vendor.example.com/feed.json"},
     )
-    sync_response = client.post("/api/admin/ingestion/feed/sync")
+    sync_response = client.post(f"/api/admin/widgets/{widget.id}/feed/sync")
     assert sync_response.status_code == 200
 
     with client.app.state.session_factory() as session:
+        widget_row = session.get(Widget, widget.id)
         scrape_confirm(
             session,
             client.app.state.vector_store,
-            1,
+            widget_row,
             "https://shop.example.com/widget",
             "json-ld",
             [
@@ -221,13 +239,13 @@ def test_ingestion_status_reflects_feed_and_scrape_state(client, monkeypatch) ->
                     "title": "Status Widget",
                     "description": "For status coverage.",
                     "provider": "Acme",
-                    "modality": "Hardware",
+                    "category": "Hardware",
                     "price": "USD 5.00",
                 }
             ],
         )
 
-    status = client.get("/api/admin/ingestion/status")
+    status = client.get(f"/api/admin/widgets/{widget.id}/ingestion/status")
     assert status.status_code == 200
     body = status.json()
     assert body["feed"]["count"] == 1
@@ -235,23 +253,26 @@ def test_ingestion_status_reflects_feed_and_scrape_state(client, monkeypatch) ->
     assert body["scrape"]["pending_review"] == 1
 
 
-def test_non_admin_cannot_configure_feed(client) -> None:
+def test_non_admin_cannot_configure_feed(client, reference_widget) -> None:
+    widget, _ = reference_widget
     response = client.post(
-        "/api/admin/ingestion/feed",
+        f"/api/admin/widgets/{widget.id}/feed",
         json={"feed_url": "https://vendor.example.com/feed.json"},
     )
     assert response.status_code in (401, 403)
 
 
-def test_ingestion_status_isolated_per_tenant(client) -> None:
-    from app.models import User
+def test_ingestion_status_isolated_per_widget(client, reference_widget) -> None:
+    from app.models import Tenant, User
     from app.security import hash_password
 
+    widget, _ = reference_widget
     with client.app.state.session_factory() as session:
         other_tenant = Tenant(name="Other Tenant")
         session.add(other_tenant)
         session.commit()
         session.refresh(other_tenant)
+        other_widget, _ = create_widget(session, other_tenant, "Other Widget")
         session.add(
             User(
                 tenant_id=other_tenant.id,
@@ -261,19 +282,21 @@ def test_ingestion_status_isolated_per_tenant(client) -> None:
             )
         )
         session.commit()
+        other_widget_id = other_widget.id
 
+        widget_row = session.get(Widget, widget.id)
         scrape_confirm(
             session,
             client.app.state.vector_store,
-            1,
+            widget_row,
             "https://shop.example.com/widget",
             "json-ld",
             [
                 {
-                    "title": "Reference Tenant Widget",
-                    "description": "Belongs to tenant 1.",
+                    "title": "Reference Widget's Item",
+                    "description": "Belongs to the reference widget.",
                     "provider": "Acme",
-                    "modality": "Hardware",
+                    "category": "Hardware",
                     "price": "USD 5.00",
                 }
             ],
@@ -284,5 +307,5 @@ def test_ingestion_status_isolated_per_tenant(client) -> None:
         json={"email": "other-admin@test.dev", "password": "password123"},
     )
     assert login.status_code == 200
-    status = client.get("/api/admin/ingestion/status")
+    status = client.get(f"/api/admin/widgets/{other_widget_id}/ingestion/status")
     assert status.json()["scrape"]["pending_review"] == 0

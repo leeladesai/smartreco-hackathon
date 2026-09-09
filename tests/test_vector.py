@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 from app.config import Settings
 from app.vector import (
+    CatalogItemVectorStore,
     DeterministicEmbeddingFunction,
     MeshEmbeddingFunction,
-    ModelVectorStore,
     build_embedding_function,
 )
 
@@ -63,7 +63,7 @@ def test_query_scored_degrades_gracefully_on_embedding_failure(tmp_path) -> None
     """Regression test: retrieval is core to every recommendation (unlike narrative
     generation, which already degrades gracefully) — a transient embedding failure
     must return no candidates, not crash the whole background pipeline run."""
-    store = ModelVectorStore(
+    store = CatalogItemVectorStore(
         str(tmp_path / "chroma"),
         collection_name="test-failing",
         embedding_function=DeterministicEmbeddingFunction(8),
@@ -72,44 +72,45 @@ def test_query_scored_degrades_gracefully_on_embedding_failure(tmp_path) -> None
     assert store.query_scored("anything", 1) == []
 
 
-class _FakeModel:
+class _FakeCatalogItem:
     def __init__(self, id, title):
         self.id = id
         self.title = title
         self.provider = "Test"
-        self.modality = "LLM"
+        self.category = "LLM"
         self.description = "d"
         self.story = None
         self.use_case_tags = []
         self.price = "$0"
-        self.latency_ms = None
 
 
-def test_tenants_are_isolated_in_separate_collections(tmp_path) -> None:
-    """docs/design/09-Platform-Pivot-Decision.md §5: separate Chroma collections per
-    tenant, not a shared collection with a metadata filter — a query for one tenant
-    must never return another tenant's items, even when both have a model with the
-    same id."""
-    store = ModelVectorStore(
+def test_widgets_are_isolated_in_separate_collections(tmp_path) -> None:
+    """docs/design/09-Platform-Pivot-Decision.md §5, per-widget cutover: separate
+    Chroma collections per widget, not a shared collection with a metadata filter —
+    a query for one widget must never return another widget's items, even when both
+    have an item with the same id. Isolation now needs to stop a "Personal Loans"
+    widget from recommending a "Credit Cards" item, not just stop cross-tenant
+    leakage — see CatalogItemVectorStore's docstring."""
+    store = CatalogItemVectorStore(
         str(tmp_path / "chroma"),
         collection_name="isolation-test",
         embedding_function=DeterministicEmbeddingFunction(8),
     )
-    tenant_a_model = _FakeModel(1, "Tenant A Only Model")
-    tenant_b_model = _FakeModel(1, "Tenant B Only Model")
-    store.upsert(tenant_a_model, tenant_id=1)
-    store.upsert(tenant_b_model, tenant_id=2)
+    widget_a_item = _FakeCatalogItem(1, "Widget A Only Item")
+    widget_b_item = _FakeCatalogItem(1, "Widget B Only Item")
+    store.upsert(widget_a_item, widget_id=1)
+    store.upsert(widget_b_item, widget_id=2)
 
-    results_a = store.query_scored("Tenant A Only Model", tenant_id=1, limit=5)
-    results_b = store.query_scored("Tenant B Only Model", tenant_id=2, limit=5)
+    results_a = store.query_scored("Widget A Only Item", widget_id=1, limit=5)
+    results_b = store.query_scored("Widget B Only Item", widget_id=2, limit=5)
 
-    assert [model_id for model_id, _ in results_a] == [1]
-    assert [model_id for model_id, _ in results_b] == [1]
-    # Each tenant's collection holds only what was upserted into it — even querying
-    # tenant 1's collection with tenant 2's exact text can only ever return tenant 1's
-    # own single item, never tenant 2's, because the collections are entirely
+    assert [catalog_item_id for catalog_item_id, _ in results_a] == [1]
+    assert [catalog_item_id for catalog_item_id, _ in results_b] == [1]
+    # Each widget's collection holds only what was upserted into it — even querying
+    # widget 1's collection with widget 2's exact text can only ever return widget
+    # 1's own single item, never widget 2's, because the collections are entirely
     # separate indexes, not filtered views of one shared index.
-    cross_tenant = store.query_scored("Tenant B Only Model", tenant_id=1, limit=5)
-    assert [model_id for model_id, _ in cross_tenant] == [1]
+    cross_widget = store.query_scored("Widget B Only Item", widget_id=1, limit=5)
+    assert [catalog_item_id for catalog_item_id, _ in cross_widget] == [1]
     assert store._collection_for(1).count() == 1
     assert store._collection_for(2).count() == 1
